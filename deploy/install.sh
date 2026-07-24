@@ -56,6 +56,8 @@ echo "    deno: $(deno --version | head -1)"
 echo "==> Creating user '$BOT_USER' (if missing)..."
 id -u "$BOT_USER" &>/dev/null || useradd --system --create-home --shell /usr/sbin/nologin "$BOT_USER"
 
+git config --global --add safe.directory "$PROJECT_DIR" || true
+
 echo "==> Setting ownership..."
 mkdir -p "$PROJECT_DIR/downloads"
 chown -R "$BOT_USER:$BOT_USER" "$PROJECT_DIR"

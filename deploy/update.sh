@@ -17,8 +17,9 @@ if [[ "$EUID" -ne 0 ]]; then
 fi
 
 echo "==> Pulling latest code..."
-sudo -u "$BOT_USER" git -C "$PROJECT_DIR" fetch origin
-sudo -u "$BOT_USER" git -C "$PROJECT_DIR" reset --hard origin/main
+git -C "$PROJECT_DIR" fetch origin
+git -C "$PROJECT_DIR" reset --hard origin/main
+chown -R "$BOT_USER:$BOT_USER" "$PROJECT_DIR"
 
 echo "==> Syntax check..."
 "$PROJECT_DIR/.venv/bin/python" -m py_compile \
