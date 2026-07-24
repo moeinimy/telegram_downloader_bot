@@ -6,7 +6,7 @@
 
 set -uo pipefail
 
-REPO_URL="git@github.com:moeinimy/telegram_downloader_bot.git"
+REPO_URL="https://github.com/moeinimy/telegram_downloader_bot.git"
 PROJECT_DIR="/opt/telegram_downloader_bot"
 SERVICE_NAME="tg-downloader-bot"
 BOT_USER="botuser"
@@ -54,22 +54,6 @@ ensure_user() {
     ok "کاربر $BOT_USER آماده‌ست"
 }
 
-ensure_ssh_key() {
-    if [[ -f /root/.ssh/id_ed25519.pub ]]; then
-        return 0
-    fi
-    warn "کلید SSH نداری. می‌سازم..."
-    mkdir -p /root/.ssh && chmod 700 /root/.ssh
-    ssh-keygen -t ed25519 -f /root/.ssh/id_ed25519 -N "" -q
-    echo
-    warn "این کلید رو تو گیت‌هاب اضافه کن:"
-    warn "Repo > Settings > Deploy keys > Add deploy key"
-    echo
-    cat /root/.ssh/id_ed25519.pub
-    echo
-    read -rp "بعد از اضافه کردن، Enter بزن..." _
-}
-
 ensure_venv() {
     if [[ ! -x "$PROJECT_DIR/.venv/bin/python" ]]; then
         info "ساخت venv..."
@@ -114,7 +98,6 @@ do_install() {
     ensure_packages
     ensure_deno
     ensure_user
-    ensure_ssh_key
 
     if is_git_repo; then
         ok "پوشه از قبل به گیت وصله - فقط آپدیت می‌کنم"
@@ -141,8 +124,7 @@ do_install() {
         git -C "$PROJECT_DIR" remote remove origin 2>/dev/null
         git -C "$PROJECT_DIR" remote add origin "$REPO_URL"
         if ! git -C "$PROJECT_DIR" fetch -q origin; then
-            err "fetch نشد. کلید SSH رو تو Deploy keys گیت‌هاب اضافه کردی؟"
-            cat /root/.ssh/id_ed25519.pub
+            err "fetch نشد - اینترنت سرور رو چک کن"
             return 1
         fi
         # Only tracked files are replaced; .env/.venv/downloads are ignored
@@ -154,8 +136,7 @@ do_install() {
     else
         info "کلون کردن ریپو..."
         if ! git clone -q "$REPO_URL" "$PROJECT_DIR"; then
-            err "کلون نشد. کلید SSH رو تو Deploy keys گیت‌هاب اضافه کردی؟"
-            cat /root/.ssh/id_ed25519.pub
+            err "کلون نشد - اینترنت سرور رو چک کن"
             return 1
         fi
         ok "کلون شد"
@@ -209,7 +190,7 @@ do_update() {
 
     info "گرفتن آخرین تغییرات..."
     if ! git -C "$PROJECT_DIR" fetch -q origin; then
-        err "fetch نشد - اتصال یا کلید SSH رو چک کن"
+        err "fetch نشد - اینترنت سرور رو چک کن"
         return 1
     fi
 
@@ -371,19 +352,6 @@ do_instagram() {
     ok "ذخیره شد - استوری حالا فعاله"
 }
 
-do_sshkey() {
-    echo
-    if [[ -f /root/.ssh/id_ed25519.pub ]]; then
-        info "کلید Deploy این سرور:"
-        echo
-        cat /root/.ssh/id_ed25519.pub
-        echo
-        info "اینو تو Repo > Settings > Deploy keys اضافه کن (read-only)"
-    else
-        ensure_ssh_key
-    fi
-}
-
 install_shortcut() {
     ln -sf "$PROJECT_DIR/deploy/manage.sh" /usr/local/bin/botctl
     chmod +x "$PROJECT_DIR/deploy/manage.sh" 2>/dev/null
@@ -423,8 +391,7 @@ menu() {
     echo "  8) آپدیت yt-dlp (یوتیوب خراب شد؟)"
     echo "  9) فعال کردن آپلود ۲ گیگی"
     echo " 10) ست کردن کوکی اینستاگرام"
-    echo " 11) نمایش کلید SSH سرور"
-    echo " 12) توقف بات"
+    echo " 11) توقف بات"
     echo "  0) خروج"
     echo
 }
@@ -456,8 +423,7 @@ while true; do
         8)  do_ytdlp; pause ;;
         9)  do_botapi; pause ;;
         10) do_instagram; pause ;;
-        11) do_sshkey; pause ;;
-        12) systemctl stop "$SERVICE_NAME"; ok "بات خاموش شد"; pause ;;
+        11) systemctl stop "$SERVICE_NAME"; ok "بات خاموش شد"; pause ;;
         0)  echo; exit 0 ;;
         *)  err "گزینه نامعتبر"; sleep 1 ;;
     esac

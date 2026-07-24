@@ -1,86 +1,91 @@
-# Telegram Multi-Platform Downloader Bot
+# Telegram Downloader Bot
 
-Async Telegram bot that downloads media from **YouTube**, **Instagram**, and **Spotify**.
+یه ربات تلگرام برای دانلود از یوتیوب، اینستاگرام، اسپاتیفای و ساندکلاد — با تشخیص آهنگ (شزم) و متن ترانه.
 
-## Folder structure
+**فقط به توکن بات تلگرام نیاز داره.** نه کلید API اسپاتیفای، نه کوکی یوتیوب، نه اکانت اینستاگرام.
 
-```
-telegram_downloader_bot/
-├── main.py                 # entry point, builds the Application
-├── config.py               # env-driven settings
-├── requirements.txt
-├── .env.example
-│
-├── handlers/               # Telegram-side logic (no business logic here)
-│   ├── start.py            # /start /help
-│   ├── router.py           # text → URL detection → dispatch
-│   ├── youtube_handler.py
-│   ├── instagram_handler.py
-│   └── spotify_handler.py
-│
-├── modules/                # Pure downloader/business logic, no Telegram types
-│   ├── youtube.py          # yt-dlp wrapper
-│   ├── instagram.py        # instaloader wrapper
-│   └── spotify.py          # spotipy meta + spotdl/yt-dlp audio
-│
-├── utils/
-│   ├── url_router.py       # regex-based platform/kind detection
-│   ├── progress.py         # throttled "edit message" progress reporter
-│   └── helpers.py          # filename/size/duration utilities
-│
-└── downloads/              # temp working dir (auto-created)
-```
+---
 
-## Setup
+## نصب با یه دستور
+
+روی سرور Ubuntu/Debian، با کاربر root:
 
 ```bash
-python -m venv .venv
-.venv\Scripts\activate          # Windows
-pip install -r requirements.txt
-cp .env.example .env             # then fill in tokens
-
-# Required system dependency:
-# ffmpeg must be on PATH (used by yt-dlp/spotdl for audio extraction)
+bash <(curl -sSL https://raw.githubusercontent.com/moeinimy/telegram_downloader_bot/main/deploy/manage.sh) install
 ```
 
-Fill `.env`:
-- `TELEGRAM_BOT_TOKEN` — from @BotFather
-- `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` — https://developer.spotify.com/dashboard
-- `INSTAGRAM_USERNAME` / `INSTAGRAM_PASSWORD` — *optional*, only needed for stories
+توکن بات رو ازت می‌پرسه و بقیه‌ش خودکاره: پایتون، ffmpeg، Deno، venv، سرویس systemd.
 
-## Run
+بعد از نصب، برای هر کاری فقط `botctl` رو بزن:
 
 ```bash
-python main.py
+botctl
 ```
 
-## How requests are routed
+---
+
+## امکانات
+
+**🎧 تشخیص آهنگ** — ویدیو، ویس یا لینک بفرست؛ آهنگش رو پیدا می‌کنه و فایل MP3 با کاور اصلی و متن ترانه می‌فرسته.
+
+**▶️ یوتیوب** — انتخاب کیفیت (۳۶۰p تا ۴K) یا فقط MP3 با آلبوم آرت.
+
+**🎵 اسپاتیفای** — ترک، آلبوم، پلی‌لیست و تاپ‌۱۰ آرتیست. متادیتا از اسپاتیفای، فایل صوتی ۳۲۰kbps از یوتیوب/ساندکلاد.
+
+**📸 اینستاگرام** — ریلز و پست ویدیویی بدون اکانت. استوری و پست چندعکسی با کوکی اختیاری.
+
+**☁️ ساندکلاد** — ترک و پلی‌لیست.
+
+**🔎 سرچ متنی** — فقط اسم آهنگ رو تایپ کن.
+
+**📜 متن ترانه** — زیر هر آهنگی که می‌فرسته دکمه داره (از lrclib).
+
+---
+
+## منوی مدیریت
 
 ```
-text message ─→ handlers/router.py:handle_text
-                    │
-                    ├── utils/url_router.route(text)
-                    │     ├── spotify.com/{track,album,playlist,artist}/…  → spotify_handler
-                    │     ├── youtube.com / youtu.be / shorts                → youtube_handler
-                    │     └── instagram.com/{p,reel,stories,<user>}/…       → instagram_handler
-                    │
-                    └── no URL → spotify_handler.handle_search (free-text)
+ 1) نصب / اتصال به گیت‌هاب       7) ویرایش .env
+ 2) آپدیت از گیت‌هاب             8) آپدیت yt-dlp
+ 3) ریستارت بات                  9) فعال کردن آپلود ۲ گیگی
+ 4) وضعیت کامل                  10) ست کردن کوکی اینستاگرام
+ 5) لاگ زنده                    11) توقف بات
+ 6) فقط خطاهای اخیر
 ```
 
-Inline buttons are namespaced by prefix:
-`yt:*`, `ig:*`, `sp:*` — each module owns its callbacks.
+بدون منو هم می‌شه: `botctl update` / `botctl status` / `botctl restart` / `botctl logs`
 
-## Feature coverage
+آپدیت امنه — قبل از ریستارت سینتکس رو چک می‌کنه و اگه کد جدید خراب بود خودکار به نسخه قبلی برمی‌گرده.
 
-| Platform | Capability |
-|---|---|
-| YouTube | thumbnail + title preview, quality picker (360/480/720/1080/best), audio-only MP3 with embedded artwork |
-| Instagram | single post, reel, carousel (album send), stories (login required), profile picture |
-| Spotify | track / album / playlist / artist-top-10, free-text search, per-track buttons, bulk download, fallback to YouTube search when Spotify source missing |
+---
 
-## Limits
+## چطور بدون کلید کار می‌کنه؟
 
-- Telegram bot upload limit is **50 MB** for the public Bot API.
-  For larger files (e.g. 1080p videos) run your own [local Bot API server](https://github.com/tdlib/telegram-bot-api) and bump `MAX_UPLOAD_MB`.
-- Instagram stories require a valid login session and may trigger rate-limits.
-- Spotify only exposes metadata via API; actual audio is sourced via `spotdl`/`yt-dlp`.
+**اسپاتیفای:** Web API از اواخر ۲۰۲۴ برای اپ‌های رایگان ۴۰۳ می‌ده. به‌جاش صفحه‌ی `open.spotify.com/embed/...` خونده می‌شه که عمومیه و کل متادیتا رو به‌صورت JSON داره.
+
+**یوتیوب:** روی IP دیتاسنتر، کلاینت پیش‌فرض «Sign in to confirm you're not a bot» می‌ده. به‌جای کوکی، یه نردبان player client امتحان می‌شه (`android_vr` اول) که بدون PO token و بدون اکانت کل فرمت‌ها رو می‌ده.
+
+**اینستاگرام:** وقتی کوکی ست نشده، اصلاً سراغ instaloader نمی‌ره (که درخواست‌های GraphQL محدودشده مصرف می‌کنه) و مستقیم از yt-dlp استفاده می‌کنه.
+
+---
+
+## آپلود بالای ۵۰ مگ
+
+سقف ۵۰ مگابایتی مال Bot API عمومی تلگرامه. گزینه‌ی ۹ منو یه Local Bot API server با داکر راه می‌ندازه و سقف رو می‌بره ۲ گیگ. فقط API ID و API HASH از [my.telegram.org](https://my.telegram.org) لازم داری.
+
+---
+
+## ساختار پروژه
+
+```
+main.py                 راه‌اندازی و ثبت هندلرها
+config.py               تنظیمات از .env
+handlers/               منطق تلگرام (روتر، دکمه‌ها، پیام‌ها)
+modules/                کار با سرویس‌ها (یوتیوب، اسپاتیفای، اینستا، شزم، لیریک)
+utils/                  ابزار مشترک (روتر URL، تامبنیل، پروگرس)
+deploy/manage.sh        اسکریپت نصب و مدیریت
+```
+
+## لایسنس
+
+MIT
