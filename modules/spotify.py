@@ -1,20 +1,19 @@
 """
-Music module (Spotify metadata + multi-source search/download).
+Music module (metadata + multi-source search/download). No API keys required.
 
 Metadata:
-  - spotipy            -> tracks/albums/playlists/artists (falls back to
-                          embed-page scraping when the API 403s).
-  - iTunes Search API  -> free, keyless; used to replace raw YouTube titles
-                          and thumbnails with the real song name, artist and
-                          600x600 album art before downloading.
+  - Spotify embed pages -> tracks/albums/playlists/artist top-10, no auth.
+  - iTunes Search API   -> free, keyless; replaces raw YouTube titles and
+                           thumbnails with the real song name, artist and
+                           600x600 album art before downloading.
 
-Search (free text), when Spotify API is unavailable:
-  - YouTube  (ytsearch via yt-dlp)  -> ids prefixed "yt_"
-  - SoundCloud (scsearch via yt-dlp) -> ids prefixed "sc_"
+Search (free text):
+  - YouTube    (ytsearch via yt-dlp)  -> ids prefixed "yt_"
+  - SoundCloud (scsearch via yt-dlp)  -> ids prefixed "sc_"
 
 Download:
-  - yt-dlp bestaudio -> 320kbps MP3, sharing the YouTube module's cookie +
-    EJS-solver options. Album art + ID3 tags embedded via mutagen.
+  - yt-dlp bestaudio -> 320kbps MP3 through the YouTube module's client-fallback
+    ladder. Album art + ID3 tags embedded via mutagen.
 """
 
 from __future__ import annotations
@@ -23,29 +22,10 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import spotipy
-from spotipy.oauth2 import SpotifyClientCredentials
-
 from config import settings
 from utils.helpers import run_in_thread, safe_filename
 
 log = logging.getLogger(__name__)
-
-
-# ---------------- spotipy client ----------------
-
-_sp: spotipy.Spotify | None = None
-
-
-def _client() -> spotipy.Spotify:
-    global _sp
-    if _sp is None:
-        auth = SpotifyClientCredentials(
-            client_id=settings.spotify_client_id,
-            client_secret=settings.spotify_client_secret,
-        )
-        _sp = spotipy.Spotify(auth_manager=auth, requests_timeout=15)
-    return _sp
 
 
 # ---------------- dataclasses ----------------
@@ -91,21 +71,7 @@ class PlaylistMeta:
 _yt_cache: dict[str, TrackMeta] = {}
 
 
-# ---------------- meta loaders ----------------
-
-def _to_track(t: dict) -> TrackMeta:
-    album = t.get("album") or {}
-    images = album.get("images") or []
-    return TrackMeta(
-        id=t["id"],
-        name=t["name"],
-        artists=[a["name"] for a in t["artists"]],
-        album=album.get("name", ""),
-        duration_ms=t.get("duration_ms") or 0,
-        cover_url=images[0]["url"] if images else "",
-        spotify_url=t.get("external_urls", {}).get("spotify", ""),
-    )
-
+# ---------------- meta loaders (Spotify embed, keyless) ----------------
 
 @run_in_thread
 def get_track_meta(track_id: str) -> TrackMeta:
@@ -120,89 +86,44 @@ def get_track_meta(track_id: str) -> TrackMeta:
         # SoundCloud numeric ids cannot be turned back into URLs.
         raise RuntimeError("نتیجه جستجو منقضی شده؛ دوباره سرچ کن.")
 
-    try:
-        return _to_track(_client().track(track_id))
-    except spotipy.exceptions.SpotifyException as e:
-        # Spotify's late-2024 policy change blocks free-tier dev apps from
-        # most endpoints with HTTP 403. Fall back to public embed scraper.
-        log.warning("Spotify API rejected track lookup (%s) — using embed scraper.", e)
-        from modules.spotify_scraper import fetch_track_meta
-        return fetch_track_meta(track_id)
+    from modules.spotify_scraper import fetch_track_meta
+    return fetch_track_meta(track_id)
 
 
 @run_in_thread
 def get_album_tracks(album_id: str) -> AlbumMeta:
-    sp = _client()
-    album = sp.album(album_id)
-    items = album["tracks"]["items"]
-    # album.tracks doesn't include album field on each item — inject it
-    for it in items:
-        it["album"] = {"name": album["name"], "images": album["images"]}
-    return AlbumMeta(
-        id=album["id"],
-        name=album["name"],
-        artists=[a["name"] for a in album["artists"]],
-        cover_url=album["images"][0]["url"] if album["images"] else "",
-        tracks=[_to_track(t) for t in items],
-    )
+    from modules.spotify_scraper import fetch_album
+    return fetch_album(album_id)
 
 
 @run_in_thread
 def get_playlist_tracks(playlist_id: str) -> PlaylistMeta:
-    sp = _client()
-    pl = sp.playlist(playlist_id)
-    tracks: list[TrackMeta] = []
-    results = pl["tracks"]
-    while results:
-        for item in results["items"]:
-            t = item.get("track")
-            if t and t.get("id"):
-                tracks.append(_to_track(t))
-        results = sp.next(results) if results.get("next") else None
-    return PlaylistMeta(
-        id=pl["id"],
-        name=pl["name"],
-        owner=pl["owner"]["display_name"],
-        tracks=tracks,
-    )
+    from modules.spotify_scraper import fetch_playlist
+    return fetch_playlist(playlist_id)
 
 
 @run_in_thread
 def get_artist_top_tracks(artist_id: str, market: str = "US") -> list[TrackMeta]:
-    sp = _client()
-    res = sp.artist_top_tracks(artist_id, country=market)
-    return [_to_track(t) for t in res["tracks"][:10]]
+    from modules.spotify_scraper import fetch_artist_top
+    return fetch_artist_top(artist_id)
 
 
 @run_in_thread
 def search_tracks(query: str, limit: int = 10) -> list[TrackMeta]:
-    try:
-        res = _client().search(q=query, type="track", limit=limit)
-        return [_to_track(t) for t in res["tracks"]["items"]]
-    except spotipy.exceptions.SpotifyException as e:
-        log.warning("Spotify search rejected (%s) — using YouTube+SoundCloud.", e)
-        return _fallback_search_tracks(query, limit)
-
-
-@run_in_thread
-def search_artist(name: str) -> str | None:
-    """Return first artist id matching name, or None."""
-    sp = _client()
-    res = sp.search(q=name, type="artist", limit=1)
-    items = res["artists"]["items"]
-    return items[0]["id"] if items else None
+    """Spotify has no keyless search endpoint, so free text is resolved
+    against YouTube + SoundCloud."""
+    return _fallback_search_tracks(query, limit)
 
 
 # ---------------- yt-dlp based search / probing ----------------
 
 def _flat_entries(search_url: str) -> list[dict]:
-    from yt_dlp import YoutubeDL
+    from modules.youtube import ytdlp_run
 
-    from modules.youtube import _base_opts
-
-    opts = _base_opts() | {"extract_flat": True, "skip_download": True}
-    with YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(search_url, download=False)
+    info = ytdlp_run(
+        {"extract_flat": True, "skip_download": True},
+        lambda ydl: ydl.extract_info(search_url, download=False),
+    )
     return info.get("entries") or []
 
 
@@ -253,12 +174,12 @@ def _fallback_search_tracks(query: str, limit: int) -> list[TrackMeta]:
 
 def _probe_source_track_sync(url: str, prefix: str) -> TrackMeta:
     """Resolve full metadata for a single YouTube/SoundCloud URL."""
-    from yt_dlp import YoutubeDL
+    from modules.youtube import ytdlp_run
 
-    from modules.youtube import _base_opts
-
-    with YoutubeDL(_base_opts() | {"skip_download": True}) as ydl:
-        info = ydl.extract_info(url, download=False)
+    info = ytdlp_run(
+        {"skip_download": True},
+        lambda ydl: ydl.extract_info(url, download=False),
+    )
     meta = TrackMeta(
         id=f"{prefix}_{info['id']}",
         name=info.get("title") or "Unknown",
@@ -341,9 +262,7 @@ def download_track(meta: TrackMeta) -> Path:
     tags. yt_/sc_ tracks download their exact source URL; Spotify tracks
     are located via a YouTube search.
     """
-    from yt_dlp import YoutubeDL
-
-    from modules.youtube import _base_opts
+    from modules.youtube import ytdlp_run
 
     # Fix metadata + cover before computing the filename.
     if meta.id.startswith(("yt_", "sc_")):
@@ -363,7 +282,7 @@ def download_track(meta: TrackMeta) -> Path:
     else:
         target = f"ytsearch1:{meta.search_query} audio"
 
-    opts = _base_opts() | {
+    extra = {
         "format": "bestaudio/best",
         "outtmpl": str(out_path.with_suffix(".%(ext)s")),
         "postprocessors": [
@@ -375,11 +294,10 @@ def download_track(meta: TrackMeta) -> Path:
             {"key": "FFmpegMetadata"},
         ],
     }
-    with YoutubeDL(opts) as ydl:
-        ydl.download([target])
+    ytdlp_run(extra, lambda ydl: ydl.download([target]))
 
     if not out_path.exists():
-        raise RuntimeError(f"Download produced no file for: {meta.display}")
+        raise RuntimeError(f"دانلود فایلی تولید نکرد: {meta.display}")
 
     _embed_cover_and_tags(out_path, meta)
     return out_path

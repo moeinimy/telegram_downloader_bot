@@ -1,6 +1,12 @@
 """
 Central configuration loaded from environment variables.
 All modules import settings from here instead of touching os.environ directly.
+
+Only TELEGRAM_BOT_TOKEN is required. Everything else is optional:
+  - Spotify needs no credentials (metadata comes from public embed pages).
+  - YouTube needs no cookies (alternative player clients are tried instead).
+  - Instagram cookies only unlock stories and photo carousels; reels and
+    video posts work without an account.
 """
 
 from __future__ import annotations
@@ -19,23 +25,18 @@ def _get(name: str, default: str | None = None, *, required: bool = False) -> st
     value = os.getenv(name, default)
     if required and not value:
         raise RuntimeError(f"Missing required environment variable: {name}")
-    return value or ""
+    return (value or "").strip()
 
 
 @dataclass(frozen=True)
 class Settings:
-    # Telegram
+    # Telegram (the only required setting)
     telegram_token: str
 
-    # Spotify
-    spotify_client_id: str
-    spotify_client_secret: str
-
-    # Instagram. Preferred auth: browser session cookies (sessionid etc.),
-    # which avoid the login-from-datacenter-IP checkpoint that
-    # username/password logins trigger.
+    # Instagram (optional). Browser session cookies from a throwaway account
+    # unlock stories + photo carousels. Without them the bot still handles
+    # reels and video posts anonymously.
     instagram_username: str
-    instagram_password: str
     ig_sessionid: str
     ig_csrftoken: str
     ig_ds_user_id: str
@@ -48,27 +49,41 @@ class Settings:
     download_dir: Path
     max_upload_mb: int
 
-    # YouTube cookies (optional but recommended on datacenter IPs).
-    # Path to a Netscape-format cookies.txt exported from a logged-in browser.
+    # YouTube cookies (optional). Path to a Netscape-format cookies.txt.
+    # Leave empty: the client ladder in modules/youtube.py handles the
+    # "Sign in to confirm you're not a bot" check without an account.
     yt_cookies_file: str
 
     # Logging
     log_level: str
 
+    @property
+    def has_instagram_session(self) -> bool:
+        return bool(self.ig_sessionid and self.instagram_username)
+
+
+def _cookies_path() -> str:
+    """Ignore a configured cookies file that doesn't actually exist, so a
+    stale default path can't break every YouTube download."""
+    path = _get("YT_COOKIES_FILE")
+    if path and not Path(path).is_file():
+        logging.getLogger(__name__).warning(
+            "YT_COOKIES_FILE=%s does not exist - continuing without cookies.", path
+        )
+        return ""
+    return path
+
 
 settings = Settings(
     telegram_token=_get("TELEGRAM_BOT_TOKEN", required=True),
-    spotify_client_id=_get("SPOTIFY_CLIENT_ID", required=True),
-    spotify_client_secret=_get("SPOTIFY_CLIENT_SECRET", required=True),
     instagram_username=_get("INSTAGRAM_USERNAME"),
-    instagram_password=_get("INSTAGRAM_PASSWORD"),
     ig_sessionid=_get("IG_SESSIONID"),
     ig_csrftoken=_get("IG_CSRFTOKEN"),
     ig_ds_user_id=_get("IG_DS_USER_ID"),
-    bot_api_base_url=_get("BOT_API_BASE_URL", ""),
+    bot_api_base_url=_get("BOT_API_BASE_URL"),
     download_dir=Path(_get("DOWNLOAD_DIR", "./downloads")).resolve(),
-    max_upload_mb=int(_get("MAX_UPLOAD_MB", "50")),
-    yt_cookies_file=_get("YT_COOKIES_FILE", ""),
+    max_upload_mb=int(_get("MAX_UPLOAD_MB", "50") or 50),
+    yt_cookies_file=_cookies_path(),
     log_level=_get("LOG_LEVEL", "INFO"),
 )
 

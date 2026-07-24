@@ -1,14 +1,16 @@
 """
-Instagram module — instaloader with browser-session auth, plus a yt-dlp
-fallback for reels/video posts when instaloader is rate-limited.
+Instagram module.
 
-Auth strategy (in order):
-  1. IG_SESSIONID (+ optional IG_CSRFTOKEN / IG_DS_USER_ID) from .env —
-     cookies copied from a logged-in browser. This avoids the login
-     checkpoint Instagram triggers for username/password logins from
-     datacenter IPs.
-  2. INSTAGRAM_USERNAME / INSTAGRAM_PASSWORD login (legacy, often blocked).
-  3. Anonymous (rate-limited hard on datacenter IPs).
+Two paths, picked automatically:
+
+  1. No session cookies configured (the simple, account-free default):
+     everything goes straight through yt-dlp, which handles reels, video
+     posts and most photo posts anonymously. Stories are not reachable
+     without an account and return a clear message.
+
+  2. IG_SESSIONID + INSTAGRAM_USERNAME set: instaloader is tried first
+     (it also covers stories and multi-photo carousels), with the yt-dlp
+     path as a fallback.
 
 Public coroutines:
   - fetch_post(shortcode)        -> list[Path]
@@ -24,8 +26,6 @@ import threading
 import time
 from pathlib import Path
 
-import instaloader
-
 from config import settings
 from utils.helpers import run_in_thread, safe_filename
 
@@ -33,10 +33,16 @@ log = logging.getLogger(__name__)
 
 
 # Global pacing: Instagram flags accounts that fire requests back-to-back.
-# Enforce a minimum gap between bot-initiated Instagram operations.
+# Only relevant on the logged-in path; anonymous yt-dlp calls are not paced.
 _ig_gate = threading.Lock()
 _last_op = 0.0
 _MIN_INTERVAL = 20.0  # seconds
+
+_NO_SESSION_MSG = (
+    "استوری بدون اکانت اینستاگرام قابل دانلود نیست. "
+    "اگه لازمش داری، کوکی‌های یه اکانت یه‌بارمصرف رو تو .env ست کن "
+    "(IG_SESSIONID / IG_CSRFTOKEN / IG_DS_USER_ID / INSTAGRAM_USERNAME)."
+)
 
 
 def _throttle() -> None:
@@ -61,21 +67,12 @@ def _friendly_error(e: Exception) -> RuntimeError:
         return RuntimeError(
             "سشن اینستاگرام منقضی شده. کوکی‌ها رو از مرورگر دوباره بگیر و تو .env آپدیت کن."
         )
+    if "no video formats" in s.lower() or "unsupported url" in s.lower():
+        return RuntimeError(
+            "این پست رو بدون اکانت نتونستم بگیرم. اگه پست چندعکسیه، "
+            "کوکی‌های اینستاگرام رو تو .env ست کن."
+        )
     return RuntimeError(f"Instagram: {s}")
-
-
-class _FastFailRateController(instaloader.RateController):
-    """instaloader's default behaviour on HTTP 429 is to sleep for up to
-    30 minutes inside the worker thread, freezing that task. Fail fast
-    instead so the user gets an error and the bot stays usable."""
-
-    def sleep(self, secs: float) -> None:
-        if secs > 90:
-            raise instaloader.exceptions.AbortDownloadException(
-                f"Instagram rate-limited us (asked to wait {int(secs)}s). "
-                "Try again in ~30 minutes."
-            )
-        time.sleep(secs)
 
 
 def _session_cookies() -> dict[str, str]:
@@ -89,7 +86,26 @@ def _session_cookies() -> dict[str, str]:
     return cookies
 
 
-def _new_loader() -> instaloader.Instaloader:
+# ---------------- instaloader (only when a session is configured) ----------------
+
+_loader = None
+
+
+def _new_loader():
+    import instaloader
+
+    class _FastFailRateController(instaloader.RateController):
+        """instaloader's default behaviour on HTTP 429 is to sleep for up to
+        30 minutes inside the worker thread, freezing that task. Fail fast
+        instead so the user gets an error and the bot stays usable."""
+
+        def sleep(self, secs: float) -> None:
+            if secs > 90:
+                raise instaloader.exceptions.AbortDownloadException(
+                    f"Instagram rate-limited us (asked to wait {int(secs)}s)."
+                )
+            time.sleep(secs)
+
     loader = instaloader.Instaloader(
         download_pictures=True,
         download_videos=True,
@@ -103,29 +119,16 @@ def _new_loader() -> instaloader.Instaloader:
         rate_controller=lambda ctx: _FastFailRateController(ctx),
     )
 
-    cookies = _session_cookies()
-    if cookies and settings.instagram_username:
-        try:
-            loader.load_session(settings.instagram_username, cookies)
-            log.info("Instagram: loaded browser session for %s", settings.instagram_username)
-            return loader
-        except Exception as e:
-            log.warning("Instagram session-cookie load failed: %s", e)
-
-    if settings.instagram_username and settings.instagram_password:
-        try:
-            loader.login(settings.instagram_username, settings.instagram_password)
-            log.info("Instagram: password login OK for %s", settings.instagram_username)
-        except Exception as e:
-            log.warning("Instagram password login failed: %s", e)
+    try:
+        loader.load_session(settings.instagram_username, _session_cookies())
+        log.info("Instagram: loaded browser session for %s", settings.instagram_username)
+    except Exception as e:
+        log.warning("Instagram session-cookie load failed: %s", e)
 
     return loader
 
 
-_loader: instaloader.Instaloader | None = None
-
-
-def _loader_instance() -> instaloader.Instaloader:
+def _loader_instance():
     global _loader
     if _loader is None:
         _loader = _new_loader()
@@ -136,11 +139,21 @@ def _loader_instance() -> instaloader.Instaloader:
 
 @run_in_thread
 def fetch_post(shortcode: str) -> list[Path]:
-    """Single post / reel / carousel — returns all media files in order.
-    Falls back to yt-dlp for video content if instaloader is blocked."""
-    _throttle()
+    """Single post / reel / carousel — returns all media files in order."""
     target = settings.download_dir / "instagram" / shortcode
+
+    # Account-free default: yt-dlp only. Never touch instaloader, which would
+    # burn anonymous GraphQL requests and get the IP rate-limited for nothing.
+    if not settings.has_instagram_session:
+        try:
+            return _ytdlp_fetch(shortcode, target)
+        except Exception as e:
+            raise _friendly_error(e) from e
+
+    _throttle()
     try:
+        import instaloader
+
         L = _loader_instance()
         post = instaloader.Post.from_shortcode(L.context, shortcode)
         target.mkdir(parents=True, exist_ok=True)
@@ -149,25 +162,33 @@ def fetch_post(shortcode: str) -> list[Path]:
     except Exception as e:
         log.warning("instaloader failed for %s (%s) — trying yt-dlp fallback.", shortcode, e)
         try:
-            return _ytdlp_fallback(shortcode, target)
+            return _ytdlp_fetch(shortcode, target)
         except Exception:
-            # yt-dlp only handles video; for photo/carousel posts surface
-            # the original instaloader error, which is the meaningful one.
+            # yt-dlp mostly handles video; for photo/carousel posts the
+            # original instaloader error is the meaningful one.
             raise _friendly_error(e) from e
 
 
 @run_in_thread
 def fetch_profile_pic(username: str) -> Path:
-    _throttle()
+    target = settings.download_dir / "instagram" / f"profile_{username}"
+    target.mkdir(parents=True, exist_ok=True)
+    out = target / f"{safe_filename(username)}_pp.jpg"
+
+    if settings.has_instagram_session:
+        _throttle()
+        try:
+            import instaloader
+
+            L = _loader_instance()
+            profile = instaloader.Profile.from_username(L.context, username)
+            L.context.get_and_write_raw(profile.profile_pic_url, str(out))
+            return out
+        except Exception as e:
+            log.warning("instaloader profile pic failed (%s) — trying anonymous.", e)
+
     try:
-        L = _loader_instance()
-        profile = instaloader.Profile.from_username(L.context, username)
-        target = settings.download_dir / "instagram" / f"profile_{username}"
-        target.mkdir(parents=True, exist_ok=True)
-        url = profile.profile_pic_url
-        out = target / f"{safe_filename(username)}_pp.jpg"
-        L.context.get_and_write_raw(url, str(out))
-        return out
+        return _anonymous_profile_pic(username, out)
     except Exception as e:
         raise _friendly_error(e) from e
 
@@ -175,12 +196,15 @@ def fetch_profile_pic(username: str) -> Path:
 @run_in_thread
 def fetch_story(username: str) -> list[Path]:
     """Requires a logged-in session. Downloads ALL active story items."""
+    if not settings.has_instagram_session:
+        raise RuntimeError(_NO_SESSION_MSG)
+
     _throttle()
+    import instaloader
+
     L = _loader_instance()
     if not L.context.is_logged_in:
-        raise RuntimeError(
-            "سشن اینستاگرام لازمه — IG_SESSIONID رو تو .env ست کن."
-        )
+        raise RuntimeError(_NO_SESSION_MSG)
     try:
         profile = instaloader.Profile.from_username(L.context, username)
         target = settings.download_dir / "instagram" / f"stories_{username}"
@@ -195,7 +219,7 @@ def fetch_story(username: str) -> list[Path]:
         raise _friendly_error(e) from e
 
 
-# ---------------- yt-dlp fallback (reels / video posts) ----------------
+# ---------------- anonymous (yt-dlp) path ----------------
 
 def _instagram_cookiefile() -> str | None:
     """Write a Netscape cookies.txt from the IG session cookies in .env so
@@ -206,8 +230,7 @@ def _instagram_cookiefile() -> str | None:
         return None
     path = settings.download_dir / "instagram" / "ig_cookies.txt"
     path.parent.mkdir(parents=True, exist_ok=True)
-    # far-future expiry; Instagram session cookies are long-lived
-    expiry = 2000000000
+    expiry = 2000000000  # far future; IG session cookies are long-lived
     lines = ["# Netscape HTTP Cookie File"]
     for name, value in cookies.items():
         lines.append(f".instagram.com\tTRUE\t/\tTRUE\t{expiry}\t{name}\t{value}")
@@ -215,26 +238,51 @@ def _instagram_cookiefile() -> str | None:
     return str(path)
 
 
-def _ytdlp_fallback(shortcode: str, target: Path) -> list[Path]:
-    """yt-dlp can often grab reels even when the GraphQL API is
-    rate-limiting instaloader. Only works for video content."""
+def _ytdlp_fetch(shortcode: str, target: Path) -> list[Path]:
+    """Download a post/reel with yt-dlp. Works anonymously for reels, video
+    posts and single photos; multi-photo carousels are hit-or-miss."""
     from yt_dlp import YoutubeDL
 
     target.mkdir(parents=True, exist_ok=True)
-    url = f"https://www.instagram.com/reel/{shortcode}/"
     opts = {
         "quiet": True,
+        "no_warnings": True,
         "socket_timeout": 30,
-        "outtmpl": str(target / "%(id)s.%(ext)s"),
+        "retries": 3,
+        "outtmpl": str(target / "%(id)s_%(autonumber)s.%(ext)s"),
         "merge_output_format": "mp4",
     }
     cookiefile = _instagram_cookiefile()
     if cookiefile:
         opts["cookiefile"] = cookiefile
 
-    with YoutubeDL(opts) as ydl:
-        ydl.download([url])
-    return _collect_media(target)
+    # /p/ and /reel/ are interchangeable server-side, but the extractor picks
+    # a different code path for each, so try both before giving up.
+    last: Exception | None = None
+    for kind in ("p", "reel"):
+        try:
+            with YoutubeDL(opts) as ydl:
+                ydl.download([f"https://www.instagram.com/{kind}/{shortcode}/"])
+            return _collect_media(target)
+        except Exception as e:
+            last = e
+            log.warning("yt-dlp /%s/ failed for %s: %s", kind, shortcode, e)
+
+    raise last or RuntimeError("yt-dlp could not fetch the post")
+
+
+def _anonymous_profile_pic(username: str, out: Path) -> Path:
+    """Profile pictures are available from unauthenticated mirrors."""
+    import httpx
+
+    url = f"https://unavatar.io/instagram/{username}?fallback=false"
+    with httpx.Client(timeout=20, follow_redirects=True) as client:
+        r = client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+        r.raise_for_status()
+        if not r.headers.get("content-type", "").startswith("image"):
+            raise RuntimeError("عکس پروفایل رو پیدا نکردم.")
+        out.write_bytes(r.content)
+    return out
 
 
 # ---------------- internals ----------------

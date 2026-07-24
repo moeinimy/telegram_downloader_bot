@@ -1,6 +1,6 @@
 # راهنمای دیپلوی (گیت‌محور)
 
-جریان کار: کد روی گیت‌هابه. سرور مستقیم از گیت‌هاب clone می‌کنه و هر آپدیت فقط یه دستوره:
+کد روی گیت‌هابه. سرور مستقیم از گیت‌هاب clone می‌کنه و هر آپدیت فقط یه دستوره:
 
 ```bash
 bash /opt/telegram_downloader_bot/deploy/update.sh
@@ -10,51 +10,63 @@ bash /opt/telegram_downloader_bot/deploy/update.sh
 
 ---
 
+## چی لازم داری؟ (تقریبا هیچی)
+
+فقط **توکن بات تلگرام**. بقیه چیزا اختیاریه:
+
+| بخش | نیاز به اکانت/کلید؟ |
+|---|---|
+| یوتیوب (ویدیو + MP3) | ❌ نه — از player client های جایگزین استفاده می‌کنه |
+| اسپاتیفای (ترک/آلبوم/پلی‌لیست/آرتیست) | ❌ نه — از صفحه embed عمومی می‌خونه |
+| ساندکلاد | ❌ نه |
+| سرچ متنی آهنگ | ❌ نه |
+| شزم (تشخیص آهنگ) + متن ترانه | ❌ نه |
+| اینستاگرام: ریلز و پست ویدیویی | ❌ نه |
+| اینستاگرام: **استوری** و پست چندعکسی | ✅ کوکی یه اکانت یه‌بارمصرف |
+| آپلود بالای ۵۰ مگ | ✅ Local Bot API (پایین توضیح داده شده) |
+
+---
+
 ## نصب روی سرور جدید (Ubuntu 24)
 
-### 1) کلون پروژه
+### ۱) کلون
+
+ریپو پرایوته، پس اول روی سرور کلید بساز:
 
 ```bash
-git clone https://github.com/<USERNAME>/telegram_downloader_bot.git /opt/telegram_downloader_bot
-cd /opt/telegram_downloader_bot
+ssh-keygen -t ed25519 -f /root/.ssh/id_ed25519 -N "" -q
 ```
 
-اگه ریپو **پرایوته**، یه Personal Access Token بساز (GitHub → Settings → Developer settings → Fine-grained tokens → فقط دسترسی read به همین ریپو) و اینجوری کلون کن:
+کلید عمومی (`cat /root/.ssh/id_ed25519.pub`) رو تو گیت‌هاب اضافه کن:
+Settings ریپو → Deploy keys → Add deploy key (فقط read).
 
 ```bash
-git clone https://<TOKEN>@github.com/<USERNAME>/telegram_downloader_bot.git /opt/telegram_downloader_bot
+git clone git@github.com:moeinimy/telegram_downloader_bot.git /opt/telegram_downloader_bot
 ```
 
-### 2) ساخت .env
+### ۲) ساخت .env
 
 ```bash
-cp .env.example .env
-nano .env
+cp /opt/telegram_downloader_bot/.env.example /opt/telegram_downloader_bot/.env
+nano /opt/telegram_downloader_bot/.env
 ```
 
-مقادیر لازم: `TELEGRAM_BOT_TOKEN`، `SPOTIFY_CLIENT_ID/SECRET`، کوکی‌های اینستاگرام (`IG_SESSIONID`, `IG_CSRFTOKEN`, `IG_DS_USER_ID`, `INSTAGRAM_USERNAME`)، و اگه Local Bot API راه انداختی `BOT_API_BASE_URL` و `MAX_UPLOAD_MB=2000`.
+فقط `TELEGRAM_BOT_TOKEN` رو پر کن. بقیه رو خالی بذار.
 
-### 3) آپلود کوکی یوتیوب
-
-فایل `youtube_cookies.txt` (فرمت Netscape، اکسپورت از مرورگر لاگین‌شده) رو با SFTP بذار توی:
-
-```
-/opt/telegram_downloader_bot/youtube_cookies.txt
-```
-
-### 4) اجرای نصب
+### ۳) نصب
 
 ```bash
-bash deploy/install.sh
+bash /opt/telegram_downloader_bot/deploy/install.sh
 ```
 
-این اسکریپت خودش python/ffmpeg/Deno رو نصب می‌کنه، کاربر `botuser` می‌سازه، venv می‌سازه و سرویس systemd رو فعال می‌کنه.
+خودش python، ffmpeg، Deno، کاربر `botuser`، venv و سرویس systemd رو راه می‌ندازه.
 
-### 5) (اختیاری ولی پیشنهادی) Local Bot API — لیمیت آپلود 2GB
+---
+
+## اختیاری: آپلود تا ۲ گیگ (Local Bot API)
 
 ```bash
-apt-get install -y docker.io
-systemctl enable --now docker
+apt-get install -y docker.io && systemctl enable --now docker
 
 docker run -d --name telegram-bot-api --restart always \
   -p 127.0.0.1:8081:8081 \
@@ -64,32 +76,47 @@ docker run -d --name telegram-bot-api --restart always \
   aiogram/telegram-bot-api:latest --local
 ```
 
-`API_ID` و `API_HASH` از https://my.telegram.org می‌گیری. بعد توی `.env`:
+`API_ID` و `API_HASH` از https://my.telegram.org می‌گیری. اگه بات قبلا به کلود تلگرام وصل بوده اول logout کن:
+
+```bash
+curl -s "https://api.telegram.org/bot<TOKEN>/logOut"
+```
+
+بعد تو `.env`:
 
 ```
 BOT_API_BASE_URL=http://127.0.0.1:8081
 MAX_UPLOAD_MB=2000
 ```
 
-اگه بات قبلا به سرور کلود تلگرام وصل بوده، اول باید از کلود logout کنی:
-
-```bash
-curl -s "https://api.telegram.org/bot<TOKEN>/logOut"
-```
-
-بعد: `systemctl restart tg-downloader-bot`
+و `systemctl restart tg-downloader-bot`
 
 ---
 
-## آپدیت (بعد از هر تغییر کد)
+## اختیاری: استوری اینستاگرام
 
-روی ویندوز (پوش به گیت‌هاب):
+با یه اکانت یه‌بارمصرف تو مرورگر لاگین کن، بعد از DevTools → Application → Cookies → instagram.com این‌ها رو بردار و تو `.env` بذار:
+
+```
+INSTAGRAM_USERNAME=<یوزرنیم اکانت>
+IG_SESSIONID=...
+IG_CSRFTOKEN=...
+IG_DS_USER_ID=...
+```
+
+بدون این‌ها ربات ریلز و پست ویدیویی رو مشکلی نداره؛ فقط استوری و پست چندعکسی کار نمی‌کنه.
+
+---
+
+## آپدیت
+
+روی ویندوز:
 
 ```bash
 git add -A && git commit -m "update" && git push
 ```
 
-روی سرور (یه دستور):
+روی سرور:
 
 ```bash
 bash /opt/telegram_downloader_bot/deploy/update.sh
@@ -100,7 +127,9 @@ bash /opt/telegram_downloader_bot/deploy/update.sh
 ## دستورات مفید
 
 ```bash
-systemctl status tg-downloader-bot        # وضعیت
-journalctl -u tg-downloader-bot -f        # لاگ زنده
-systemctl restart tg-downloader-bot       # ریستارت دستی
+systemctl status tg-downloader-bot
+```
+
+```bash
+journalctl -u tg-downloader-bot -f
 ```

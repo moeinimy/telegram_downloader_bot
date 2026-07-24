@@ -54,37 +54,34 @@ async def recognize_file(path: Path) -> RecognizedSong | None:
 def fetch_audio_snippet(url: str, seconds: int = 45, offset: int = 0) -> Path:
     """
     Download a short audio snippet [offset, offset+seconds] from a video URL
-    for fingerprinting. Reuses the YouTube base options (cookies + EJS
-    solver), which are harmless for other sites.
+    for fingerprinting. Goes through the YouTube module's client-fallback
+    ladder so it works without cookies on datacenter IPs.
     """
-    from yt_dlp import YoutubeDL
-
     try:
         from yt_dlp.utils import download_range_func
     except Exception:
         download_range_func = None
 
-    from modules.youtube import _base_opts
+    from modules.youtube import ytdlp_run
 
     out_dir = settings.download_dir / "recognize"
     out_dir.mkdir(parents=True, exist_ok=True)
-    outtmpl = str(out_dir / f"%(id)s_snip{offset}.%(ext)s")
 
-    opts = _base_opts() | {
+    extra = {
         "format": "bestaudio/best",
-        "outtmpl": outtmpl,
+        "outtmpl": str(out_dir / f"%(id)s_snip{offset}.%(ext)s"),
         "overwrites": True,
     }
     # Clip to the requested window so long videos stay fast.
     if download_range_func:
-        opts["download_ranges"] = download_range_func(
-            None, [(offset, offset + seconds)]
-        )
-        opts["force_keyframes_at_cuts"] = True
+        extra["download_ranges"] = download_range_func(None, [(offset, offset + seconds)])
+        extra["force_keyframes_at_cuts"] = True
 
-    with YoutubeDL(opts) as ydl:
+    def _run(ydl):
         info = ydl.extract_info(url, download=True)
-        path = Path(ydl.prepare_filename(info))
+        return info, Path(ydl.prepare_filename(info))
+
+    info, path = ytdlp_run(extra, _run)
 
     if not path.exists():
         candidates = list(out_dir.glob(f"{info['id']}_snip{offset}.*"))

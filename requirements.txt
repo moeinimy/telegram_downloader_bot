@@ -7,14 +7,11 @@ aiofiles==24.1.0
 aiohttp==3.10.10
 httpx==0.27.2
 
-# YouTube & generic media extraction (keep latest; YouTube breaks often)
+# YouTube / SoundCloud / Instagram extraction (keep latest; sites break often)
 yt-dlp
 
-# Instagram
+# Instagram stories + photo carousels (only used when session cookies are set)
 instaloader==4.13.1
-
-# Spotify (metadata only; audio sourced via yt-dlp)
-spotipy==2.24.0
 
 # Music recognition (Shazam)
 shazamio
