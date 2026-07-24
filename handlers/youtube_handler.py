@@ -1,0 +1,145 @@
+"""
+YouTube flow:
+  1) probe -> show thumbnail + inline keyboard (qualities + audio).
+  2) callback `yt:<videoid>:<choice>` -> download and upload.
+
+We keep per-message state in chat_data: {video_id: {"url": ..., "info": ...}}.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Update,
+)
+from telegram.ext import ContextTypes
+
+from config import settings
+from modules import youtube as yt
+from utils.helpers import file_too_big, fmt_duration, prepare_telegram_thumb
+from utils.progress import ProgressReporter
+from utils.url_router import RouteResult
+
+log = logging.getLogger(__name__)
+
+
+async def handle_url(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, route: RouteResult
+) -> None:
+    msg = update.effective_message
+    status = await msg.reply_text("🔎 در حال گرفتن اطلاعات ویدیو…")
+
+    try:
+        info = await yt.probe_video(route.url)
+    except Exception as e:
+        await status.edit_text(f"❌ نتونستم اطلاعات ویدیو رو بگیرم: {e}")
+        return
+
+    # stash for later
+    context.chat_data.setdefault("yt", {})[info.id] = {"url": route.url, "info": info}
+
+    kb_rows: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
+    for q in yt.quality_options_for(info):
+        row.append(InlineKeyboardButton(f"🎬 {q}", callback_data=f"yt:{info.id}:{q}"))
+        if len(row) == 3:
+            kb_rows.append(row)
+            row = []
+    if row:
+        kb_rows.append(row)
+    kb_rows.append([InlineKeyboardButton("🎵 Audio (MP3)", callback_data=f"yt:{info.id}:audio")])
+    kb_rows.append([InlineKeyboardButton("🎧 پیدا کردن آهنگ ویدیو (Shazam)", callback_data=f"yt:{info.id}:shazam")])
+
+    caption = (
+        f"*{info.title}*\n"
+        f"👤 {info.uploader}\n"
+        f"⏱ {fmt_duration(info.duration)}"
+    )
+    await status.delete()
+    await msg.reply_photo(
+        photo=info.thumbnail,
+        caption=caption,
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(kb_rows),
+    )
+
+
+async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles callbacks of the form yt:<videoid>:<quality|audio>."""
+    query = update.callback_query
+    await query.answer()
+    _, video_id, choice = query.data.split(":", 2)
+
+    state = context.chat_data.get("yt", {}).get(video_id)
+    if not state:
+        await query.message.reply_text("⌛ سشن منقضی شده. دوباره لینک رو بفرست.")
+        return
+
+    info = state["info"]
+    url = state["url"]
+
+    if choice == "shazam":
+        from handlers.recognize_handler import recognize_from_url
+        await recognize_from_url(query.message, url)
+        return
+
+    status = await query.message.reply_text("⬇️ شروع دانلود…")
+    reporter = ProgressReporter(message=status, loop=asyncio.get_running_loop())
+
+    try:
+        if choice == "audio":
+            path = await yt.download_audio(url, info, progress_hook=reporter.hook)
+        else:
+            path = await yt.download_video(url, info, quality=choice, progress_hook=reporter.hook)
+    except Exception as e:
+        log.exception("yt download failed")
+        await status.edit_text(f"❌ دانلود ناموفق: {e}")
+        return
+
+    if file_too_big(path, settings.max_upload_mb):
+        size_mb = path.stat().st_size / (1024 * 1024)
+        await status.edit_text(
+            f"⚠️ فایل {size_mb:.0f}MB شد که از حد مجاز تلگرام ({settings.max_upload_mb}MB) "
+            "بزرگ‌تره. یه کیفیت پایین‌تر انتخاب کن."
+        )
+        path.unlink(missing_ok=True)
+        return
+
+    # iOS/Desktop clients only show thumbnails passed via the API.
+    thumb_path = None
+    if info.thumbnail:
+        thumb_path = await prepare_telegram_thumb(
+            info.thumbnail, settings.download_dir / "thumbs" / f"{info.id}.jpg"
+        )
+
+    await status.edit_text("📤 در حال آپلود…")
+    try:
+        with path.open("rb") as fh:
+            if choice == "audio":
+                from handlers.lyrics_handler import lyrics_button
+
+                await query.message.reply_audio(
+                    audio=fh,
+                    title=info.title,
+                    performer=info.uploader,
+                    duration=info.duration,
+                    thumbnail=thumb_path.open("rb") if thumb_path else None,
+                    reply_markup=lyrics_button(info.uploader, info.title),
+                )
+            else:
+                await query.message.reply_video(
+                    video=fh,
+                    caption=info.title,
+                    supports_streaming=True,
+                    thumbnail=thumb_path.open("rb") if thumb_path else None,
+                )
+        await status.delete()
+    except Exception as e:
+        log.exception("upload failed")
+        await status.edit_text(f"❌ آپلود ناموفق: {e}")
+    finally:
+        path.unlink(missing_ok=True)

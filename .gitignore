@@ -1,0 +1,23 @@
+# Secrets - NEVER commit these
+.env
+*cookies*.txt
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+
+# Runtime data
+downloads/
+*.log
+*.session
+*.session-journal
+
+# OS / editor junk
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

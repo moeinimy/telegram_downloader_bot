@@ -1,0 +1,16 @@
+services:
+  bot:
+    build: .
+    image: telegram-downloader-bot:latest
+    container_name: tg-downloader-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./downloads:/app/downloads
+    # No ports needed — bot uses long polling (outbound only).
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

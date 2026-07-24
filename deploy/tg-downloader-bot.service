@@ -1,0 +1,30 @@
+[Unit]
+Description=Telegram Multi-Platform Downloader Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=botuser
+Group=botuser
+WorkingDirectory=/opt/telegram_downloader_bot
+EnvironmentFile=/opt/telegram_downloader_bot/.env
+ExecStart=/opt/telegram_downloader_bot/.venv/bin/python /opt/telegram_downloader_bot/main.py
+
+Restart=always
+RestartSec=5
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/telegram_downloader_bot/downloads
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tg-downloader-bot
+
+[Install]
+WantedBy=multi-user.target
