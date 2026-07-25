@@ -437,20 +437,38 @@ do_botapi() {
         sleep 2
     fi
 
+    # In --local mode getFile answers with a path on the SERVER's filesystem
+    # rather than a download URL. With a named docker volume that path exists
+    # only inside the container, so the bot could not open it and every media
+    # download failed with "Not Found". Bind-mount the same path on the host.
+    local data_dir="/var/lib/telegram-bot-api"
+    mkdir -p "$data_dir"
+    chmod 755 "$data_dir"
+
     docker rm -f telegram-bot-api 2>/dev/null
     docker run -d --name telegram-bot-api --restart always \
         -p 127.0.0.1:8081:8081 \
         -e TELEGRAM_API_ID="$api_id" \
         -e TELEGRAM_API_HASH="$api_hash" \
-        -v telegram-bot-api-data:/var/lib/telegram-bot-api \
-        aiogram/telegram-bot-api:latest --local || { err "docker بالا نیومد"; return; }
+        -v "$data_dir:$data_dir" \
+        aiogram/telegram-bot-api:latest --local --dir="$data_dir" \
+        || { err "docker بالا نیومد"; return; }
 
-    sed -i 's|^BOT_API_BASE_URL=.*|BOT_API_BASE_URL=http://127.0.0.1:8081|' "$PROJECT_DIR/.env"
-    sed -i 's|^MAX_UPLOAD_MB=.*|MAX_UPLOAD_MB=2000|' "$PROJECT_DIR/.env"
+    if grep -q '^BOT_API_BASE_URL=' "$PROJECT_DIR/.env"; then
+        sed -i 's|^BOT_API_BASE_URL=.*|BOT_API_BASE_URL=http://127.0.0.1:8081|' "$PROJECT_DIR/.env"
+    else
+        echo "BOT_API_BASE_URL=http://127.0.0.1:8081" >> "$PROJECT_DIR/.env"
+    fi
+    if grep -q '^MAX_UPLOAD_MB=' "$PROJECT_DIR/.env"; then
+        sed -i 's|^MAX_UPLOAD_MB=.*|MAX_UPLOAD_MB=2000|' "$PROJECT_DIR/.env"
+    else
+        echo "MAX_UPLOAD_MB=2000" >> "$PROJECT_DIR/.env"
+    fi
 
     sleep 5
     systemctl restart "$SERVICE_NAME"
-    ok "فعال شد - حالا تا ۲ گیگ آپلود می‌شه"
+    ok "فعال شد - آپلود تا ۲ گیگ و دانلود فایل‌های بزرگ"
+    info "پوشه داده: $data_dir (باید برای کاربر $BOT_USER خوندنی باشه)"
 }
 
 do_instagram() {

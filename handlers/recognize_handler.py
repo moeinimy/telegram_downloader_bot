@@ -14,6 +14,7 @@ send with cover art) so the user gets a tagged 320kbps MP3.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 
@@ -132,17 +133,46 @@ async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     dest = out_dir / f"upload_{media.file_unique_id}"
 
     try:
-        tg_file = await context.bot.get_file(media.file_id)
-        saved = await tg_file.download_to_drive(custom_path=str(dest))
+        saved = await _fetch_to_disk(context, media.file_id, dest)
     except Exception as e:
-        detail = str(e)
-        if "too big" in detail.lower() or "not found" in detail.lower():
-            detail += (
-                "\n\nاحتمالا فایل برای Bot API بزرگه. با فعال کردن Local Bot API "
-                "(botctl → گزینه ۹) حل می‌شه."
-            )
-        await status.edit_text(f"❌ دریافت فایل ناموفق: {detail}")
+        await status.edit_text(f"❌ دریافت فایل ناموفق: {e}")
         return
 
     await status.delete()
     await recognize_from_file(msg, Path(saved), cleanup=True)
+
+
+async def _fetch_to_disk(context, file_id: str, dest: Path) -> Path:
+    """
+    Get a Telegram file onto local disk.
+
+    With a local Bot API server in --local mode, getFile returns a path on the
+    server's own filesystem instead of a download URL. That only works if the
+    bot can actually see that path: when the server runs in Docker on a named
+    volume, the path exists solely inside the container and every download
+    fails. Copy it directly when it is visible, and say exactly what is wrong
+    when it is not.
+    """
+    import shutil
+
+    tg_file = await context.bot.get_file(file_id)
+    file_path = getattr(tg_file, "file_path", "") or ""
+
+    # The Bot API server is always POSIX, so its paths start with "/" even if
+    # this process were running elsewhere.
+    is_server_path = file_path.startswith("/") or Path(file_path).is_absolute()
+    if settings.bot_api_base_url and file_path and is_server_path:
+        src = Path(file_path)
+        if src.exists():
+            await asyncio.to_thread(shutil.copyfile, src, dest)
+            return dest
+        raise RuntimeError(
+            "سرور Local Bot API فایل رو اینجا گذاشته:\n"
+            f"{src}\n"
+            "ولی این مسیر برای بات قابل دیدن نیست (کانتینر داکر با volume "
+            "نام‌دار بالا اومده).\n\n"
+            "روی سرور یه بار «botctl → گزینه ۹» رو دوباره اجرا کن تا کانتینر "
+            "با مسیر مشترک ساخته بشه."
+        )
+
+    return Path(await tg_file.download_to_drive(custom_path=str(dest)))
