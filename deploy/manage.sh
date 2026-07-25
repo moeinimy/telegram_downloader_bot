@@ -40,6 +40,10 @@ ensure_packages() {
 
     apt-get update -qq || { err "apt update نشد - اینترنت سرور رو چک کن"; return 1; }
 
+    # Heal any previously-broken/half-installed packages (missing font deps,
+    # g++, etc.) that block every new install.
+    apt-get --fix-broken install -y 2>/dev/null || apt-get --fix-broken install -y || true
+
     # python3-venv is versioned on some releases (python3.10-venv etc.); install
     # the exact one that matches the running interpreter, plus the generic name.
     local pyver
@@ -47,8 +51,8 @@ ensure_packages() {
     apt-get install -y -qq \
         python3 python3-pip python3-venv "python${pyver}-venv" \
         ffmpeg git unzip curl ca-certificates 2>/dev/null \
-      || apt-get install -y python3 python3-pip python3-venv ffmpeg git unzip curl ca-certificates \
-      || { err "نصب پکیج‌ها شکست خورد"; return 1; }
+      || apt-get install -y python3 python3-pip "python${pyver}-venv" ffmpeg git unzip curl ca-certificates \
+      || warn "بعضی پکیج‌ها نصب نشدن - ادامه می‌دم و venv رو چک می‌کنم"
 
     # Verify venv actually works now, otherwise stop before we build a broken one.
     if ! python3 -c 'import ensurepip, venv' 2>/dev/null; then
@@ -135,8 +139,17 @@ do_install() {
     ensure_user
 
     if is_git_repo; then
-        ok "پوشه از قبل به گیت وصله - فقط آپدیت می‌کنم"
-        git -C "$PROJECT_DIR" remote set-url origin "$REPO_URL"
+        ok "پوشه از قبل به گیت وصله - سینک با گیت‌هاب"
+        git config --global --add safe.directory "$PROJECT_DIR" 2>/dev/null
+        git -C "$PROJECT_DIR" remote set-url origin "$REPO_URL" 2>/dev/null \
+            || git -C "$PROJECT_DIR" remote add origin "$REPO_URL"
+        if git -C "$PROJECT_DIR" fetch -q origin; then
+            git -C "$PROJECT_DIR" reset -q --hard origin/main
+            git -C "$PROJECT_DIR" clean -qfd
+            ok "کد با آخرین نسخه همگام شد"
+        else
+            warn "fetch نشد - با کد فعلی ادامه می‌دم"
+        fi
 
     elif [[ -d "$PROJECT_DIR" ]]; then
         warn "پوشه $PROJECT_DIR هست ولی به گیت وصل نیست."
