@@ -155,7 +155,22 @@ async def _fetch_to_disk(context, file_id: str, dest: Path) -> Path:
     """
     import shutil
 
-    tg_file = await context.bot.get_file(file_id)
+    try:
+        tg_file = await context.bot.get_file(file_id)
+    except Exception as e:
+        if settings.bot_api_base_url and "not found" in str(e).lower():
+            # python-telegram-bot only keeps the server's absolute path when it
+            # can stat it. If the bot user cannot read the Bot API data dir the
+            # path looks remote, PTB retries it over HTTP, and the local server
+            # replies 404 - which arrives here as a bare "Not Found".
+            raise RuntimeError(
+                "سرور Local Bot API فایل رو گرفته ولی بات اجازه‌ی خوندنش رو نداره.\n\n"
+                "روی سرور این رو بزن:\n"
+                "botctl fixperms\n\n"
+                "و برای اینکه دیگه تکرار نشه یه بار «botctl → گزینه ۹» رو دوباره اجرا کن."
+            ) from e
+        raise
+
     file_path = getattr(tg_file, "file_path", "") or ""
 
     # The Bot API server is always POSIX, so its paths start with "/" even if

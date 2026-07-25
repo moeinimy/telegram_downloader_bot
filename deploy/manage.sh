@@ -443,10 +443,20 @@ do_botapi() {
     # download failed with "Not Found". Bind-mount the same path on the host.
     local data_dir="/var/lib/telegram-bot-api"
     mkdir -p "$data_dir"
+
+    # Run the server AS the bot user. The media it writes lands two levels
+    # down in per-token directories; created as root they are unreadable to
+    # the bot, python-telegram-bot then quietly falls back to fetching them
+    # over HTTP, and the local server answers that with 404 - surfacing as a
+    # bare "Not Found" no matter the file size.
+    local uid gid
+    uid=$(id -u "$BOT_USER") ; gid=$(id -g "$BOT_USER")
+    chown -R "$uid:$gid" "$data_dir"
     chmod 755 "$data_dir"
 
     docker rm -f telegram-bot-api 2>/dev/null
     docker run -d --name telegram-bot-api --restart always \
+        --user "$uid:$gid" \
         -p 127.0.0.1:8081:8081 \
         -e TELEGRAM_API_ID="$api_id" \
         -e TELEGRAM_API_HASH="$api_hash" \
@@ -490,6 +500,34 @@ do_instagram() {
     ok "ذخیره شد - استوری حالا فعاله"
 }
 
+do_fixperms() {
+    echo; info "=== اصلاح دسترسی فایل‌های Local Bot API ==="
+    local data_dir="/var/lib/telegram-bot-api"
+    if [[ ! -d "$data_dir" ]]; then
+        err "$data_dir وجود نداره - اول گزینه ۹ رو بزن"
+        return 1
+    fi
+    local uid gid
+    uid=$(id -u "$BOT_USER") ; gid=$(id -g "$BOT_USER")
+
+    chown -R "$uid:$gid" "$data_dir"
+    chmod -R u+rwX,go+rX "$data_dir"
+    ok "مالکیت و دسترسی اصلاح شد"
+
+    # Existing files are fixed above, but the running container keeps writing
+    # as root unless it is restarted under the bot user.
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^telegram-bot-api$'; then
+        if ! docker inspect telegram-bot-api --format '{{.Config.User}}' 2>/dev/null \
+             | grep -q "$uid"; then
+            warn "کانتینر هنوز با کاربر root اجرا می‌شه؛ فایل‌های جدید دوباره مشکل‌دار می‌شن."
+            warn "برای اصلاح دائمی گزینه ۹ رو دوباره اجرا کن."
+        fi
+    fi
+    systemctl restart "$SERVICE_NAME"
+    ok "بات ریستارت شد"
+}
+
+
 do_diag() {
     echo; info "=== تشخیص مشکل Local Bot API ==="; echo
 
@@ -525,17 +563,32 @@ do_diag() {
     fi
 
     echo
-    info "دسترسی خوندن برای کاربر $BOT_USER:"
+    info "دسترسی کاربر $BOT_USER به فایل‌های واقعی:"
     if [[ -d /var/lib/telegram-bot-api ]]; then
         ls -ld /var/lib/telegram-bot-api | sed 's/^/    /'
-        if sudo -u "$BOT_USER" test -r /var/lib/telegram-bot-api; then
-            ok "خوندنی هست"
+
+        # Reading the top directory proves nothing: the media sits two levels
+        # down and the server creates those with restrictive modes. python-
+        # telegram-bot silently falls back to an HTTP fetch when it cannot
+        # stat the path, and the local server answers that with 404 -> the
+        # user sees "Not Found". So test the real file.
+        local sample
+        sample=$(find /var/lib/telegram-bot-api -type f -path '*/videos/*' 2>/dev/null | head -1)
+        [[ -z "$sample" ]] && sample=$(find /var/lib/telegram-bot-api -type f \
+            \( -path '*/photos/*' -o -path '*/documents/*' -o -path '*/music/*' \) 2>/dev/null | head -1)
+
+        if [[ -z "$sample" ]]; then
+            warn "هنوز فایل رسانه‌ای دانلود نشده - یه ویدیو به بات بفرست و دوباره بزن"
         else
-            err "خوندنی نیست - بزن: chmod -R a+rX /var/lib/telegram-bot-api"
+            ls -l "$sample" | sed 's/^/    /'
+            if sudo -u "$BOT_USER" test -r "$sample"; then
+                ok "بات می‌تونه فایل رو بخونه"
+            else
+                err "بات نمی‌تونه این فایل رو بخونه — دلیل «Not Found» همینه"
+                warn "گزینه ۹ رو دوباره اجرا کن (کانتینر با کاربر $BOT_USER ساخته می‌شه)"
+                warn "یا سریع: bash deploy/manage.sh fixperms"
+            fi
         fi
-        echo
-        info "چند فایل اخیر:"
-        find /var/lib/telegram-bot-api -type f -printf '    %s bytes  %p\n' 2>/dev/null | tail -3
     else
         err "/var/lib/telegram-bot-api روی هاست وجود نداره -> mount اشتباهه"
     fi
@@ -638,7 +691,8 @@ menu() {
     echo " 12) پاک کردن کش (کاور/فایل‌های قدیمی)"
     echo " 13) فرمت فایل صوتی (m4a / mp3 / flac)"
     echo " 14) تشخیص مشکل Local Bot API"
-    echo " 15) نصب مجدد از صفر (پاک کردن همه چی)"
+    echo " 15) اصلاح دسترسی فایل‌های Bot API"
+    echo " 16) نصب مجدد از صفر (پاک کردن همه چی)"
     echo "  0) خروج"
     echo
 }
@@ -649,6 +703,7 @@ case "${1:-}" in
     reset)   do_reset;   exit $? ;;
     clearcache) do_clearcache; exit $? ;;
     diag)    do_diag;    exit 0 ;;
+    fixperms) do_fixperms; exit $? ;;
     update)  do_update;  exit $? ;;
     restart) systemctl restart "$SERVICE_NAME"; exit $? ;;
     status)  do_status;  exit 0 ;;
@@ -677,7 +732,8 @@ while true; do
         12) do_clearcache; pause ;;
         13) do_audioformat; pause ;;
         14) do_diag; pause ;;
-        15) do_reset; pause ;;
+        15) do_fixperms; pause ;;
+        16) do_reset; pause ;;
         0)  echo; exit 0 ;;
         *)  err "گزینه نامعتبر"; sleep 1 ;;
     esac

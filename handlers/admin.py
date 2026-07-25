@@ -21,6 +21,13 @@ log = logging.getLogger(__name__)
 
 _PAGE = 8
 
+_KIND_LABELS = {
+    "music": "🎵 موزیک",
+    "music-cached": "⚡ موزیک (از کش)",
+    "yt-audio": "🎧 صدای یوتیوب",
+    "yt-video": "🎬 ویدیو یوتیوب",
+}
+
 
 def _is_admin(update: Update) -> bool:
     user = update.effective_user
@@ -63,14 +70,23 @@ def _summary_text() -> str:
         "",
         f"⚡ کل تعاملات: {d['actions']}",
     ]
-    if d["by_kind"]:
-        lines.append("")
-        lines.append("*بر اساس نوع:*")
-        lines += [f"   • {k or '?'}: {c}" for k, c in d["by_kind"]]
-    if d["top_tracks"]:
-        lines.append("")
-        lines.append("*پرتکرارترین‌ها:*")
-        lines += [f"   {i}. {t[:38]} ({c})" for i, (t, c) in enumerate(d["top_tracks"], 1)]
+    # Always render these sections. Hiding them when empty looked like a
+    # missing feature rather than "nothing recorded yet".
+    lines += ["", "*بر اساس نوع:*"]
+    lines += (
+        [f"   • {_KIND_LABELS.get(k, k or '?')}: {c}" for k, c in d["by_kind"]]
+        if d["by_kind"]
+        else ["   — هنوز دانلودی ثبت نشده"]
+    )
+
+    lines += ["", "*پرتکرارترین‌ها:*"]
+    lines += (
+        [f"   {i}. {t[:38]} ({c})" for i, (t, c) in enumerate(d["top_tracks"], 1)]
+        if d["top_tracks"]
+        else ["   — هنوز چیزی نیست"]
+    )
+
+    lines += ["", f"🕐 {time.strftime('%H:%M:%S')}"]
     return "\n".join(lines)
 
 
@@ -177,5 +193,11 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def track_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Runs for every update (group -1) purely to keep the user table fresh."""
     user = update.effective_user
-    if user and not user.is_bot:
-        stats.touch_user(user.id, user.username, user.first_name)
+    if not user or user.is_bot:
+        return
+    # Browsing the panel is not bot usage - counting it made the refresh
+    # button bump the interaction total on every press.
+    query = update.callback_query
+    if query and (query.data or "").startswith("adm:"):
+        return
+    stats.touch_user(user.id, user.username, user.first_name)
