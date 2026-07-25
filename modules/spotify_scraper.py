@@ -194,13 +194,15 @@ def fetch_playlist(playlist_id: str):
     from modules.spotify import PlaylistMeta
 
     entity = _fetch_entity("playlist", playlist_id)
-    # Deliberately no fallback cover: every track would otherwise show the
-    # playlist artwork instead of its own album art.
+    # Deliberately no fallback cover on the tracks: each would otherwise show
+    # the playlist artwork instead of its own album art. The playlist image is
+    # kept on the container, for the single header photo.
     tracks = _tracklist_to_metas(entity, "")
     pl = PlaylistMeta(
         id=playlist_id,
         name=entity.get("name") or "Playlist",
         owner=entity.get("subtitle") or "Spotify",
+        cover_url=_cover(entity),
         tracks=tracks,
     )
     # The keyless embed page serves at most 100 entries; tell the caller so it

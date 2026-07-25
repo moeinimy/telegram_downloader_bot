@@ -241,9 +241,16 @@ async def _send_container_menu(msg, kind: str, rid: str) -> None:
         header += (
             "\n⚠️ اسپاتیفای بدون اکانت فقط ۱۰۰ ترک اول رو می‌ده؛ بقیه در دسترس نیست."
         )
-    await msg.reply_text(
-        header, reply_markup=_page_keyboard(kind, rid, container, 0)
-    )
+
+    keyboard = _page_keyboard(kind, rid, container, 0)
+    cover = getattr(container, "cover_url", "")
+    if cover:
+        try:
+            await msg.reply_photo(photo=cover, caption=header, reply_markup=keyboard)
+            return
+        except Exception as e:
+            log.info("container cover failed (%s) - sending text menu", e)
+    await msg.reply_text(header, reply_markup=keyboard)
 
 
 # Tracks fetched at once. Downloads are network- and ffmpeg-bound, so running
@@ -353,19 +360,28 @@ async def _download_range(msg, container, offset: int, count: int) -> None:
         pass
 
 
-async def _send_cover(msg, meta) -> None:
+def _cover_caption(meta, status: str = "") -> str:
+    caption = f"🎵 *{meta.name}*\n👤 {', '.join(meta.artists)}"
+    if meta.album:
+        caption += f"\n💿 {meta.album}"
+    if status:
+        caption += f"\n\n{status}"
+    return caption
+
+
+async def _send_cover(msg, meta, status: str = ""):
     """Cover art as its own message, full resolution, with the platform links
     beneath it. Telegram compresses a photo far less than the 320x320 thumbnail
-    the audio file is allowed to carry."""
+    the audio file is allowed to carry. Returns the sent message (or None) so
+    the caller can update its caption instead of posting a separate status."""
     if not meta.cover_url:
-        return
+        return None
     from handlers.lyrics_handler import platform_keyboard
 
     try:
-        await msg.reply_photo(
+        return await msg.reply_photo(
             photo=meta.cover_url,
-            caption=f"🎵 *{meta.name}*\n👤 {', '.join(meta.artists)}"
-            + (f"\n💿 {meta.album}" if meta.album else ""),
+            caption=_cover_caption(meta, status),
             parse_mode="Markdown",
             reply_markup=platform_keyboard(
                 ", ".join(meta.artists), meta.name, sp.platform_links(meta)
@@ -373,6 +389,7 @@ async def _send_cover(msg, meta) -> None:
         )
     except Exception as e:
         log.info("cover send failed for %s: %s", meta.display, e)
+        return None
 
 
 async def _upload_track(msg, meta, path, *, with_cover: bool = True) -> bool:
@@ -445,29 +462,36 @@ async def _send_and_download_track(msg, meta, *, quiet: bool = False) -> bool:
             log.info("cached file_id rejected (%s) - re-downloading", e)
             file_cache.drop(cache_key)
 
-    # Show the cover (and its platform links) straight away. The metadata is
-    # already in hand, so the user gets something within a few hundred ms
-    # instead of staring at a progress line for the whole download.
+    # The cover goes out first, carrying the progress line in its caption.
+    # A separate status message plus its edits and deletion cost three extra
+    # round trips per track, which is most of the wait on a cached song.
     await sp.fill_cover(meta)
-    await _send_cover(msg, meta)
+    cover_msg = await _send_cover(msg, meta, status="⬇️ در حال دانلود…")
 
     status = None
-    if not quiet:
+    if cover_msg is None and not quiet:
         status = await msg.reply_text(
             f"⬇️ دانلود: *{meta.display}*", parse_mode="Markdown"
         )
+
     try:
         path = await sp.download_track(meta)
     except Exception as e:
         if status:
             await status.edit_text(f"❌ {e}")
         else:
-            await msg.reply_text(f"❌ {e}")
+            await msg.reply_text(f"❌ {meta.display} — {e}")
         return False
 
-    if status:
-        await status.edit_text("📤 آپلود به تلگرام…")
     ok = await _upload_track(msg, meta, path, with_cover=False)
+
+    if cover_msg is not None:
+        try:
+            await cover_msg.edit_caption(
+                caption=_cover_caption(meta), parse_mode="Markdown"
+            )
+        except Exception:
+            pass
     if status:
         try:
             await status.delete()

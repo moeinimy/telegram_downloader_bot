@@ -73,6 +73,7 @@ class PlaylistMeta:
     id: str
     name: str
     owner: str
+    cover_url: str = ""
     tracks: list[TrackMeta] = field(default_factory=list)
     truncated: bool = False  # set when Spotify's embed capped the track list
 

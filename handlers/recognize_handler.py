@@ -111,6 +111,21 @@ async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not media:
         return
 
+    # The public Bot API refuses to hand a bot any file over 20MB - a normal
+    # phone video clears that easily, and the failure surfaces as an unhelpful
+    # "Not Found". Say what actually happened instead.
+    size = getattr(media, "file_size", 0) or 0
+    if not settings.bot_api_base_url and size > 20 * 1024 * 1024:
+        await msg.reply_text(
+            f"⚠️ این فایل {size / 1024 / 1024:.0f} مگابایته و تلگرام اجازه نمی‌ده "
+            "بات فایل‌های بزرگ‌تر از ۲۰ مگ رو بگیره.\n\n"
+            "دو راه داری:\n"
+            "• یه تیکه کوتاه‌تر از ویدیو بفرست\n"
+            "• یا Local Bot API رو فعال کن (تو سرور: botctl → گزینه ۹) تا این "
+            "محدودیت کلا برداشته بشه."
+        )
+        return
+
     status = await msg.reply_text("📥 در حال دریافت فایل…")
     out_dir = settings.download_dir / "recognize"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -120,7 +135,13 @@ async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         tg_file = await context.bot.get_file(media.file_id)
         saved = await tg_file.download_to_drive(custom_path=str(dest))
     except Exception as e:
-        await status.edit_text(f"❌ دریافت فایل ناموفق: {e}")
+        detail = str(e)
+        if "too big" in detail.lower() or "not found" in detail.lower():
+            detail += (
+                "\n\nاحتمالا فایل برای Bot API بزرگه. با فعال کردن Local Bot API "
+                "(botctl → گزینه ۹) حل می‌شه."
+            )
+        await status.edit_text(f"❌ دریافت فایل ناموفق: {detail}")
         return
 
     await status.delete()
