@@ -172,22 +172,43 @@ async def _fetch_to_disk(context, file_id: str, dest: Path) -> Path:
         raise
 
     file_path = getattr(tg_file, "file_path", "") or ""
+    src = _server_path(file_path)
 
-    # The Bot API server is always POSIX, so its paths start with "/" even if
-    # this process were running elsewhere.
-    is_server_path = file_path.startswith("/") or Path(file_path).is_absolute()
-    if settings.bot_api_base_url and file_path and is_server_path:
-        src = Path(file_path)
+    if src is not None:
         if src.exists():
             await asyncio.to_thread(shutil.copyfile, src, dest)
             return dest
         raise RuntimeError(
             "سرور Local Bot API فایل رو اینجا گذاشته:\n"
             f"{src}\n"
-            "ولی این مسیر برای بات قابل دیدن نیست (کانتینر داکر با volume "
-            "نام‌دار بالا اومده).\n\n"
-            "روی سرور یه بار «botctl → گزینه ۹» رو دوباره اجرا کن تا کانتینر "
-            "با مسیر مشترک ساخته بشه."
+            "ولی بات نمی‌تونه بخونتش (دسترسی فایل).\n\n"
+            "روی سرور این رو بزن:\n"
+            "botctl fixperms"
         )
 
     return Path(await tg_file.download_to_drive(custom_path=str(dest)))
+
+
+def _server_path(file_path: str) -> Path | None:
+    """
+    Recover the Bot API server's on-disk path for a file.
+
+    In --local mode getFile answers with an absolute path, but
+    python-telegram-bot only leaves it alone when it can stat it: if the file
+    is unreadable it rewrites the value into a download URL. The local server
+    does not serve files, so that URL 404s and arrives as "Not Found". Pull
+    the path back out of the URL so the real cause (permissions) can be
+    reported instead of Telegram's generic error.
+    """
+    if not settings.bot_api_base_url or not file_path:
+        return None
+
+    if file_path.startswith("/") or Path(file_path).is_absolute():
+        return Path(file_path)
+
+    if "://" in file_path:
+        for marker in ("/var/lib/telegram-bot-api/", "/var/lib/telegram-bot-api"):
+            idx = file_path.find(marker)
+            if idx != -1:
+                return Path(file_path[idx:])
+    return None

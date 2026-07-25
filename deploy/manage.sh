@@ -479,6 +479,31 @@ do_instagram() {
     ok "ذخیره شد - استوری حالا فعاله"
 }
 
+_botapi_grant_read() {
+    # The server writes new media with its own umask, so a one-off chmod only
+    # fixes files that already exist - the next video is unreadable again and
+    # python-telegram-bot falls back to an HTTP fetch the local server answers
+    # with 404 ("Not Found"). A DEFAULT ACL is inherited by files created
+    # later, which is what actually makes this stick.
+    local data_dir="/var/lib/telegram-bot-api"
+    [[ -d "$data_dir" ]] || return 0
+
+    command -v setfacl &>/dev/null || {
+        info "نصب پکیج acl..."
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq acl &>/dev/null
+    }
+
+    if command -v setfacl &>/dev/null; then
+        setfacl -R  -m "u:$BOT_USER:rX" "$data_dir" 2>/dev/null
+        setfacl -R -d -m "u:$BOT_USER:rX" "$data_dir" 2>/dev/null
+        ok "دسترسی خواندن برای $BOT_USER تنظیم شد (شامل فایل‌های آینده)"
+    else
+        warn "setfacl نصب نشد - فقط فایل‌های فعلی خوندنی می‌شن"
+    fi
+    chmod -R a+rX "$data_dir" 2>/dev/null
+}
+
+
 _botapi_run() {
     # One place that knows how to start the container correctly.
     # It must run as ROOT: the image's entrypoint chowns the data directory to
@@ -503,9 +528,8 @@ _botapi_run() {
     for i in $(seq 1 12); do
         sleep 2
         if curl -s -m 3 -o /dev/null "http://127.0.0.1:8081/"; then
-            # Ownership belongs to the server; the bot only needs to read.
-            chmod -R a+rX "$data_dir" 2>/dev/null
             ok "سرور بالا اومد"
+            _botapi_grant_read
             return 0
         fi
     done
@@ -559,9 +583,7 @@ do_fixperms() {
     # bot only needs read access, so widen the mode instead.
     # Do NOT chown here: the image's entrypoint owns that decision and runs
     # as root to make it. Taking ownership away is what killed the container.
-    chmod -R a+rX "$data_dir"
-    chmod 755 "$data_dir"
-    ok "دسترسی خواندن اصلاح شد"
+    _botapi_grant_read
 
     if command -v docker &>/dev/null; then
         if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^telegram-bot-api$'; then
