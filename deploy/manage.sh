@@ -392,6 +392,15 @@ do_logs() {
     journalctl -u "$SERVICE_NAME" -f -n 40
 }
 
+do_reclog() {
+    echo; info "=== لاگ تشخیص آهنگ (آخرین تلاش‌ها) ==="; echo
+    journalctl -u "$SERVICE_NAME" --no-pager -n 500 \
+        | grep -iE "recognize:|Shazam|get_file" | tail -40
+    echo
+    info "اگه خالیه: یه ویدیو به بات بفرست و دوباره این رو بزن."
+}
+
+
 do_errors() {
     echo; info "=== ۴۰ خطای آخر ==="; echo
     journalctl -u "$SERVICE_NAME" --no-pager -n 400 \
@@ -799,7 +808,8 @@ menu() {
     echo " 14) تشخیص مشکل Local Bot API"
     echo " 15) اصلاح دسترسی فایل‌های Bot API"
     echo " 16) تعمیر کانتینر Bot API (بدون وارد کردن کلید)"
-    echo " 17) نصب مجدد از صفر (پاک کردن همه چی)"
+    echo " 17) لاگ تشخیص آهنگ"
+    echo " 18) نصب مجدد از صفر (پاک کردن همه چی)"
     echo "  0) خروج"
     echo
 }
@@ -812,6 +822,7 @@ case "${1:-}" in
     diag)    do_diag;    exit 0 ;;
     fixperms) do_fixperms; exit $? ;;
     botapi-repair) do_botapi_repair; exit $? ;;
+    reclog)  do_reclog;  exit 0 ;;
     update)  do_update;  exit $? ;;
     restart) systemctl restart "$SERVICE_NAME"; exit $? ;;
     status)  do_status;  exit 0 ;;
@@ -842,7 +853,8 @@ while true; do
         14) do_diag; pause ;;
         15) do_fixperms; pause ;;
         16) do_botapi_repair; pause ;;
-        17) do_reset; pause ;;
+        17) do_reclog; pause ;;
+        18) do_reset; pause ;;
         0)  echo; exit 0 ;;
         *)  err "گزینه نامعتبر"; sleep 1 ;;
     esac

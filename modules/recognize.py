@@ -28,17 +28,31 @@ class RecognizedSong:
         return f"{self.artist} {self.title}".strip()
 
 
-async def _recognize_once(path: Path) -> RecognizedSong | None:
-    from shazamio import Shazam
+_shazam = None
 
-    shazam = Shazam()
+
+def _client():
+    """One Shazam client for the process: a fresh instance per window opened a
+    new HTTP session each time, which is both slower and more likely to trip
+    rate limiting."""
+    global _shazam
+    if _shazam is None:
+        from shazamio import Shazam
+
+        _shazam = Shazam()
+    return _shazam
+
+
+async def _recognize_once(path: Path) -> RecognizedSong | None:
+    shazam = _client()
     try:
-        out = await shazam.recognize(str(path))
-    except AttributeError:
-        # older shazamio versions used recognize_song()
-        out = await shazam.recognize_song(str(path))
+        if hasattr(shazam, "recognize"):
+            out = await shazam.recognize(str(path))
+        else:
+            # older shazamio versions used recognize_song()
+            out = await shazam.recognize_song(str(path))
     except Exception as e:
-        log.warning("Shazam recognition error: %s", e)
+        log.warning("Shazam error on %s: %s: %s", path.name, type(e).__name__, e)
         return None
 
     track = (out or {}).get("track") or {}
@@ -67,23 +81,38 @@ def _media_duration(path: Path) -> float:
 
 
 def _extract_window(src: Path, offset: int, seconds: int, dest: Path) -> Path | None:
-    """Cut a mono 16kHz wav window - the format Shazam fingerprints best."""
+    """
+    Cut one window of audio for fingerprinting.
+
+    Kept at 44.1kHz mono MP3 rather than a 16kHz WAV: the decoder shazamio
+    uses is happiest with ordinary compressed audio, and downsampling before
+    it does its own resampling only throws away detail the fingerprint needs.
+    """
     import subprocess
 
     try:
-        subprocess.run(
+        proc = subprocess.run(
             [
                 "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
                 "-ss", str(offset), "-t", str(seconds), "-i", str(src),
-                "-vn", "-ac", "1", "-ar", "16000", str(dest),
+                "-vn", "-ac", "1", "-ar", "44100", "-b:a", "128k", str(dest),
             ],
             capture_output=True, timeout=120,
         )
+        if proc.returncode != 0:
+            log.warning(
+                "ffmpeg window @%ds failed: %s",
+                offset, proc.stderr.decode("utf-8", "replace")[:200],
+            )
+            return None
     except Exception as e:
         log.warning("window extraction failed at %ds: %s", offset, e)
         return None
-    # A window past the end of the file produces a near-empty wav.
-    return dest if dest.exists() and dest.stat().st_size > 8000 else None
+
+    # A window past the end of the file produces a near-empty file.
+    if dest.exists() and dest.stat().st_size > 4000:
+        return dest
+    return None
 
 
 async def recognize_candidates(path: Path) -> list[tuple[RecognizedSong, int]]:
@@ -104,7 +133,9 @@ async def recognize_candidates(path: Path) -> list[tuple[RecognizedSong, int]]:
     else:
         span = max(duration - window, 0)
         # Skip the very start (intros, talking) and spread across the file.
-        offsets = sorted({int(span * f) for f in (0.05, 0.22, 0.4, 0.58, 0.76, 0.92)})
+        # Four windows, not more: each is a Shazam request, and firing a long
+        # burst risks being rate limited into recognising nothing at all.
+        offsets = sorted({int(span * f) for f in (0.08, 0.35, 0.62, 0.88)})
 
     tmp_dir = path.parent
     votes: dict[tuple[str, str], int] = {}
@@ -113,25 +144,26 @@ async def recognize_candidates(path: Path) -> list[tuple[RecognizedSong, int]]:
     def _key(s: RecognizedSong) -> tuple[str, str]:
         return (s.artist.lower().strip(), s.title.lower().strip())
 
-    for i, off in enumerate(offsets):
-        clip = tmp_dir / f"{path.stem}_w{i}.wav"
-        made = await asyncio.to_thread(_extract_window, path, off, window, clip)
+    log.info(
+        "recognize: %s (%.0fs) - sampling %d windows at %s",
+        path.name, duration, len(offsets), offsets,
+    )
 
+    for i, off in enumerate(offsets):
+        clip = tmp_dir / f"{path.stem}_w{i}.mp3"
+        made = await asyncio.to_thread(_extract_window, path, off, window, clip)
         if made is None:
-            # Past the end of the file, or ffmpeg could not read it. On the
-            # very first window fall back to handing Shazam the whole file.
-            if i == 0:
-                song = await _recognize_once(path)
-                if song:
-                    return [(song, 1)]
             continue
 
+        if i:
+            await asyncio.sleep(0.4)  # don't machine-gun the Shazam endpoint
         try:
             song = await _recognize_once(made)
         finally:
             clip.unlink(missing_ok=True)
 
         if not song:
+            log.info("Shazam window @%ds: no match", off)
             continue
 
         k = _key(song)
@@ -143,8 +175,17 @@ async def recognize_candidates(path: Path) -> list[tuple[RecognizedSong, int]]:
         if votes[k] >= 2:
             break
 
-    ranked = sorted(votes.items(), key=lambda kv: kv[1], reverse=True)
-    return [(songs[k], n) for k, n in ranked]
+    if votes:
+        ranked = sorted(votes.items(), key=lambda kv: kv[1], reverse=True)
+        return [(songs[k], n) for k, n in ranked]
+
+    # Windowing must never do worse than the original behaviour: if every
+    # window came back empty (ffmpeg unavailable, an unreadable container, or
+    # music that only surfaces where we did not sample), hand Shazam the whole
+    # file exactly as before.
+    log.info("recognize: no window matched - retrying with the whole file")
+    song = await _recognize_once(path)
+    return [(song, 1)] if song else []
 
 
 async def recognize_file(path: Path) -> RecognizedSong | None:
