@@ -11,6 +11,9 @@ PROJECT_DIR="/opt/telegram_downloader_bot"
 SERVICE_NAME="tg-downloader-bot"
 BOT_USER="botuser"
 
+# Set by do_reset so do_install can put the user's files back after a wipe.
+RESTORE_DIR=""
+
 G="\033[0;32m"; R="\033[0;31m"; Y="\033[1;33m"; B="\033[0;36m"; N="\033[0m"
 
 ok()   { echo -e "${G}[OK]${N} $*"; }
@@ -195,14 +198,29 @@ do_install() {
         ok "کلون شد"
     fi
 
-    if [[ ! -f "$PROJECT_DIR/.env" ]]; then
-        cp "$PROJECT_DIR/.env.example" "$PROJECT_DIR/.env"
-        warn ".env ساخته شد ولی خالیه"
+    # After a reset the clone is empty of user files - put them back.
+    if [[ -n "$RESTORE_DIR" && -d "$RESTORE_DIR" ]]; then
+        cp "$RESTORE_DIR/.env" "$PROJECT_DIR/.env" 2>/dev/null && ok ".env برگردونده شد"
+        cp "$RESTORE_DIR"/*cookies*.txt "$PROJECT_DIR/" 2>/dev/null && ok "کوکی‌ها برگردونده شدن"
+    fi
+
+    [[ -f "$PROJECT_DIR/.env" ]] || cp "$PROJECT_DIR/.env.example" "$PROJECT_DIR/.env"
+
+    # The bot exits immediately without a token, so never finish an install
+    # with an empty one - that is the single most common "it won't start".
+    if ! grep -qE '^TELEGRAM_BOT_TOKEN=.+' "$PROJECT_DIR/.env"; then
         echo
-        read -rp "توکن بات تلگرام رو بزن (خالی = بعدا): " token
+        warn "توکن بات تو .env خالیه - بات بدون اون بالا نمیاد."
+        read -rp "توکن رو از @BotFather بگیر و اینجا بزن: " token
         if [[ -n "$token" ]]; then
-            sed -i "s|^TELEGRAM_BOT_TOKEN=.*|TELEGRAM_BOT_TOKEN=$token|" "$PROJECT_DIR/.env"
+            if grep -q '^TELEGRAM_BOT_TOKEN=' "$PROJECT_DIR/.env"; then
+                sed -i "s|^TELEGRAM_BOT_TOKEN=.*|TELEGRAM_BOT_TOKEN=$token|" "$PROJECT_DIR/.env"
+            else
+                echo "TELEGRAM_BOT_TOKEN=$token" >> "$PROJECT_DIR/.env"
+            fi
             ok "توکن ذخیره شد"
+        else
+            warn "خالی موند - بعدا با گزینه ۷ واردش کن"
         fi
     fi
 
@@ -219,11 +237,56 @@ do_install() {
 
     install_shortcut
     systemctl restart "$SERVICE_NAME"
-    sleep 2
+    sleep 3
     echo
-    systemctl --no-pager --lines=8 status "$SERVICE_NAME"
-    echo; ok "نصب تموم شد. از این به بعد فقط 'botctl' رو بزن."
-    warn "اگه 'botctl' رو پیدا نکرد، یه بار این رو بزن:  hash -r"
+    if systemctl is-active --quiet "$SERVICE_NAME"; then
+        ok "بات بالا اومد و داره کار می‌کنه"
+        echo; ok "نصب تموم شد. از این به بعد فقط 'botctl' رو بزن."
+        warn "اگه 'botctl' رو پیدا نکرد، یه بار این رو بزن:  hash -r"
+    else
+        err "بات بالا نیومد. خطای واقعی:"
+        echo
+        journalctl -u "$SERVICE_NAME" --no-pager -n 25
+    fi
+}
+
+
+# ---------------------------------------------------------
+# reset - wipe everything and reinstall from scratch
+# ---------------------------------------------------------
+
+do_reset() {
+    echo; warn "=== نصب مجدد از صفر ==="
+    warn "کل $PROJECT_DIR پاک می‌شه (کد، venv، دانلودها) و از نو کلون می‌شه."
+    warn ".env و کوکی‌ها بکاپ گرفته و برگردونده می‌شن."
+    echo
+    read -rp "برای ادامه بنویس yes: " a
+    if [[ "$a" != "yes" ]]; then
+        warn "لغو شد - هیچی پاک نشد"
+        return
+    fi
+
+    if [[ -d "$PROJECT_DIR" ]]; then
+        RESTORE_DIR="/root/bot-backup-$(date +%Y%m%d-%H%M%S)"
+        mkdir -p "$RESTORE_DIR"
+        cp "$PROJECT_DIR/.env" "$RESTORE_DIR/" 2>/dev/null
+        cp "$PROJECT_DIR"/*cookies*.txt "$RESTORE_DIR/" 2>/dev/null
+        ok "بکاپ گرفته شد: $RESTORE_DIR"
+    fi
+
+    info "توقف و حذف سرویس..."
+    systemctl stop "$SERVICE_NAME" 2>/dev/null
+    systemctl disable -q "$SERVICE_NAME" 2>/dev/null
+    rm -f "/etc/systemd/system/$SERVICE_NAME.service"
+    systemctl daemon-reload
+    systemctl reset-failed "$SERVICE_NAME" 2>/dev/null
+
+    info "پاک کردن $PROJECT_DIR ..."
+    rm -rf "$PROJECT_DIR"
+    ok "پاک شد"
+
+    # do_install now takes the clean-clone path and restores from RESTORE_DIR.
+    do_install
 }
 
 
@@ -446,6 +509,7 @@ menu() {
     echo "  9) فعال کردن آپلود ۲ گیگی"
     echo " 10) ست کردن کوکی اینستاگرام"
     echo " 11) توقف بات"
+    echo " 12) نصب مجدد از صفر (پاک کردن همه چی)"
     echo "  0) خروج"
     echo
 }
@@ -453,6 +517,7 @@ menu() {
 # Non-interactive shortcuts:  botctl install | update | restart | status | logs
 case "${1:-}" in
     install) do_install; exit $? ;;
+    reset)   do_reset;   exit $? ;;
     update)  do_update;  exit $? ;;
     restart) systemctl restart "$SERVICE_NAME"; exit $? ;;
     status)  do_status;  exit 0 ;;
@@ -478,6 +543,7 @@ while true; do
         9)  do_botapi; pause ;;
         10) do_instagram; pause ;;
         11) systemctl stop "$SERVICE_NAME"; ok "بات خاموش شد"; pause ;;
+        12) do_reset; pause ;;
         0)  echo; exit 0 ;;
         *)  err "گزینه نامعتبر"; sleep 1 ;;
     esac
