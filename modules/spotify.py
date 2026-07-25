@@ -19,6 +19,7 @@ Download:
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -39,6 +40,7 @@ class TrackMeta:
     duration_ms: int
     cover_url: str
     spotify_url: str  # source URL (spotify page, youtube watch, soundcloud permalink)
+    itunes_url: str = ""  # filled by _itunes_enrich when a match is confident
 
     @property
     def display(self) -> str:
@@ -148,26 +150,24 @@ def _entry_to_track(e: dict, prefix: str) -> TrackMeta | None:
     return meta
 
 
+def _search_one(search_url: str, prefix: str) -> list[TrackMeta]:
+    try:
+        return [t for t in (_entry_to_track(e, prefix) for e in _flat_entries(search_url)) if t]
+    except Exception as e:
+        log.warning("%s search failed: %s", prefix, e)
+        return []
+
+
 def _fallback_search_tracks(query: str, limit: int) -> list[TrackMeta]:
-    """Combined YouTube + SoundCloud search."""
+    """Combined YouTube + SoundCloud search, run concurrently - sequentially
+    this waited out two full yt-dlp round trips before showing anything."""
+    from concurrent.futures import ThreadPoolExecutor
+
     half = max(limit // 2, 4)
-    tracks: list[TrackMeta] = []
-
-    try:
-        for e in _flat_entries(f"ytsearch{half}:{query}"):
-            t = _entry_to_track(e, "yt")
-            if t:
-                tracks.append(t)
-    except Exception as e:
-        log.warning("YouTube search failed: %s", e)
-
-    try:
-        for e in _flat_entries(f"scsearch{half}:{query}"):
-            t = _entry_to_track(e, "sc")
-            if t:
-                tracks.append(t)
-    except Exception as e:
-        log.warning("SoundCloud search failed: %s", e)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        f_yt = pool.submit(_search_one, f"ytsearch{half}:{query}", "yt")
+        f_sc = pool.submit(_search_one, f"scsearch{half}:{query}", "sc")
+        tracks = f_yt.result() + f_sc.result()
 
     return tracks[:limit]
 
@@ -211,20 +211,74 @@ def probe_soundcloud_set(url: str, limit: int = 20) -> list[TrackMeta]:
 
 # ---------------- iTunes metadata enrichment ----------------
 
+_NOISE = (
+    "official music video", "official video", "official audio", "official lyric video",
+    "lyric video", "lyrics", "official", "audio only", "audio", "video", "hd", "hq",
+    "4k", "8k", "mv", "m/v", "visualizer", "explicit", "clean", "remaster",
+    "remastered", "music video", "full song", "with lyrics", "free download",
+)
+
+
+def _strip_noise(raw: str) -> str:
+    """Turn 'Artist - Song (Official Music Video) [4K] | Label' into 'Artist - Song'."""
+    s = raw
+
+    def _drop(m: re.Match) -> str:
+        inner = m.group(0).lower()
+        return "" if any(w in inner for w in _NOISE) else m.group(0)
+
+    s = re.sub(r"[\(\[][^()\[\]]*[\)\]]", _drop, s)
+    s = re.sub(r"\s*\|.*$", "", s)              # trailing "| Channel"
+    s = re.sub(r"\s*\bft\.?\b.*$", "", s, flags=re.I)   # "ft. Someone"
+    s = re.sub(r"\s*\bfeat\.?\b.*$", "", s, flags=re.I)
+    return re.sub(r"\s+", " ", s).strip(" -–—_·")
+
+
+def _norm(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", s.lower()).strip()
+
+
+def _overlap(a: str, b: str) -> float:
+    """Jaccard similarity over word tokens; 1.0 means identical wording."""
+    ta, tb = set(_norm(a).split()), set(_norm(b).split())
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / len(ta | tb)
+
+
+def _split_artist_title(s: str) -> tuple[str, str]:
+    for sep in (" - ", " – ", " — ", " _ "):
+        if sep in s:
+            left, right = s.split(sep, 1)
+            return left.strip(), right.strip()
+    return "", s.strip()
+
+
 def _itunes_enrich(meta: TrackMeta) -> None:
     """
-    For tracks sourced from YouTube/SoundCloud the 'metadata' is just the
-    video title + channel name and the cover is a video thumbnail. Look the
-    song up on the free iTunes Search API and, when the match is plausible,
-    replace name/artist/album/cover with the real ones (600x600 album art).
+    For YouTube/SoundCloud sources the 'metadata' is just a video title plus a
+    channel name, and the cover is a video thumbnail. Look the song up on the
+    keyless iTunes Search API and adopt the real name/artist/album/600x600 art.
+
+    Matching is deliberately strict. Accepting a result because the *artist*
+    matched (the previous behaviour) mislabels files: searching
+    "Drake - Something New" returns Drake's other songs, and the first one
+    would win - correct audio, wrong title and wrong cover. The song title
+    must match; duration or artist then confirms it.
     """
     import httpx
+
+    cleaned = _strip_noise(meta.name)
+    guess_artist, guess_title = _split_artist_title(cleaned)
+    term = cleaned or meta.name
+    if not term:
+        return
 
     try:
         r = httpx.get(
             "https://itunes.apple.com/search",
-            params={"term": meta.name, "media": "music", "entity": "song", "limit": 3},
-            timeout=10,
+            params={"term": term, "media": "music", "entity": "song", "limit": 8},
+            timeout=8,
         )
         r.raise_for_status()
         results = r.json().get("results") or []
@@ -232,25 +286,78 @@ def _itunes_enrich(meta: TrackMeta) -> None:
         log.warning("iTunes lookup failed: %s", e)
         return
 
-    haystack = meta.name.lower()
+    our_secs = meta.duration_ms / 1000 if meta.duration_ms else 0
+    title_hay = guess_title or cleaned
+    artist_hay = guess_artist or (meta.artists[0] if meta.artists else "")
+
+    best: tuple[float, dict] | None = None
     for it in results:
         track_name = (it.get("trackName") or "").strip()
         artist_name = (it.get("artistName") or "").strip()
         if not track_name:
             continue
-        # plausibility check: song title or artist must appear in the
-        # original video title, otherwise we risk mislabeling the file.
-        if track_name.lower() not in haystack and artist_name.lower() not in haystack:
+
+        n_track, n_hay = _norm(track_name), _norm(title_hay)
+        title_ok = (
+            n_track in n_hay
+            or n_hay in n_track
+            or _overlap(track_name, title_hay) >= 0.55
+        )
+        if not title_ok:
+            continue  # never rename on an artist match alone
+
+        their_secs = (it.get("trackTimeMillis") or 0) / 1000
+        if our_secs and their_secs:
+            delta = abs(our_secs - their_secs)
+            if delta > 25:
+                continue  # different cut: live, remix, extended, or wrong song
+            duration_score = 1.0 - min(delta, 25) / 25
+        else:
+            duration_score = 0.0
+
+        artist_score = max(
+            _overlap(artist_name, artist_hay),
+            1.0 if _norm(artist_name) and _norm(artist_name) in _norm(meta.name) else 0.0,
+        )
+
+        # Require corroboration beyond the title alone.
+        if duration_score == 0.0 and artist_score < 0.3:
             continue
 
-        meta.name = track_name
-        meta.artists = [artist_name] if artist_name else meta.artists
-        meta.album = it.get("collectionName") or meta.album
-        art = (it.get("artworkUrl100") or "").replace("100x100", "600x600")
-        if art:
-            meta.cover_url = art
-        log.info("iTunes enriched: %s", meta.display)
+        score = _overlap(track_name, title_hay) + duration_score + artist_score
+        if best is None or score > best[0]:
+            best = (score, it)
+
+    if best is None:
+        log.info("iTunes: no confident match for %r - keeping source metadata", meta.name)
         return
+
+    it = best[1]
+    meta.name = (it.get("trackName") or meta.name).strip()
+    if it.get("artistName"):
+        meta.artists = [it["artistName"].strip()]
+    meta.album = it.get("collectionName") or meta.album
+    art = (it.get("artworkUrl100") or "").replace("100x100", "600x600")
+    if art:
+        meta.cover_url = art
+    meta.itunes_url = it.get("trackViewUrl") or ""
+    log.info("iTunes enriched (score %.2f): %s", best[0], meta.display)
+
+
+def platform_links(meta: TrackMeta) -> dict[str, str]:
+    """Direct links we actually know for this track; the keyboard falls back
+    to per-platform search URLs for the rest."""
+    links: dict[str, str] = {}
+    url = meta.spotify_url or ""
+    if "open.spotify.com" in url:
+        links["spotify"] = url
+    elif "youtube.com" in url or "youtu.be" in url:
+        links["youtube"] = url
+    elif "soundcloud.com" in url:
+        links["soundcloud"] = url
+    if getattr(meta, "itunes_url", ""):
+        links["apple"] = meta.itunes_url
+    return links
 
 
 # ---------------- downloading ----------------

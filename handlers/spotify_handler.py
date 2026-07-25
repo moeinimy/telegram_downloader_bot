@@ -119,7 +119,30 @@ async def _send_tracklist(
 
 async def _send_and_download_track(msg, meta) -> None:
     from config import settings
+    from handlers.lyrics_handler import lyrics_button
+    from utils import file_cache
     from utils.helpers import prepare_telegram_thumb, safe_filename
+
+    cache_key = f"audio:{meta.id}"
+
+    # Fast path: Telegram already has these bytes. Re-sending the file_id is
+    # one API call - no download, no ffmpeg, no upload.
+    cached = file_cache.get(cache_key)
+    if cached:
+        try:
+            await msg.reply_audio(
+                audio=cached,
+                title=meta.name,
+                performer=", ".join(meta.artists),
+                duration=meta.duration_ms // 1000,
+                reply_markup=lyrics_button(
+                    ", ".join(meta.artists), meta.name, sp.platform_links(meta)
+                ),
+            )
+            return
+        except Exception as e:
+            log.info("cached file_id rejected (%s) - re-downloading", e)
+            file_cache.drop(cache_key)
 
     status = await msg.reply_text(f"⬇️ دانلود: *{meta.display}*", parse_mode="Markdown")
     try:
@@ -137,19 +160,21 @@ async def _send_and_download_track(msg, meta) -> None:
             settings.download_dir / "thumbs" / f"{safe_filename(meta.display)}.jpg",
         )
 
-    from handlers.lyrics_handler import lyrics_button
-
     await status.edit_text("📤 آپلود به تلگرام…")
     try:
         with path.open("rb") as fh:
-            await msg.reply_audio(
+            sent = await msg.reply_audio(
                 audio=fh,
                 title=meta.name,
                 performer=", ".join(meta.artists),
                 duration=meta.duration_ms // 1000,
                 thumbnail=thumb_path.open("rb") if thumb_path else None,
-                reply_markup=lyrics_button(", ".join(meta.artists), meta.name),
+                reply_markup=lyrics_button(
+                    ", ".join(meta.artists), meta.name, sp.platform_links(meta)
+                ),
             )
+        if sent and sent.audio:
+            file_cache.put(cache_key, sent.audio.file_id)
         await status.delete()
     except Exception as e:
         log.exception("spotify upload failed")

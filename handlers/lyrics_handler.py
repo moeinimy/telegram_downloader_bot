@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from urllib.parse import quote_plus
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
@@ -23,12 +24,45 @@ log = logging.getLogger(__name__)
 _cache: dict[str, tuple[str, str]] = {}
 
 
-def lyrics_button(artist: str, title: str) -> InlineKeyboardMarkup:
-    """Build the inline keyboard attached to sent audio files."""
+def lyrics_button(
+    artist: str, title: str, links: dict[str, str] | None = None
+) -> InlineKeyboardMarkup:
+    """
+    Keyboard attached to every audio file: lyrics plus a link to the song on
+    each major platform. `links` supplies real URLs where we know them; the
+    rest fall back to that platform's search page, which always resolves.
+    """
     key = hashlib.md5(f"{artist}|{title}".encode("utf-8")).hexdigest()[:12]
     _cache[key] = (artist, title)
+
+    q = quote_plus(f"{artist} {title}".strip())
+    links = links or {}
+
     return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("📜 متن آهنگ", callback_data=f"lyr:{key}")]]
+        [
+            [InlineKeyboardButton("📜 متن آهنگ", callback_data=f"lyr:{key}")],
+            [
+                InlineKeyboardButton(
+                    "🟢 Spotify",
+                    url=links.get("spotify") or f"https://open.spotify.com/search/{q}",
+                ),
+                InlineKeyboardButton(
+                    "🔴 YouTube",
+                    url=links.get("youtube")
+                    or f"https://www.youtube.com/results?search_query={q}",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "🍎 Apple Music",
+                    url=links.get("apple") or f"https://music.apple.com/search?term={q}",
+                ),
+                InlineKeyboardButton(
+                    "🟠 SoundCloud",
+                    url=links.get("soundcloud") or f"https://soundcloud.com/search?q={q}",
+                ),
+            ],
+        ]
     )
 
 

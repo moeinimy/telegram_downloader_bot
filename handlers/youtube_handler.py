@@ -20,6 +20,7 @@ from telegram.ext import ContextTypes
 
 from config import settings
 from modules import youtube as yt
+from utils import file_cache
 from utils.helpers import file_too_big, fmt_duration, prepare_telegram_thumb
 from utils.progress import ProgressReporter
 from utils.url_router import RouteResult
@@ -87,6 +88,32 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await recognize_from_url(query.message, url)
         return
 
+    # Fast path: we already uploaded this exact video/quality once.
+    cache_key = f"{'audio' if choice == 'audio' else 'video'}:yt_{video_id}" + (
+        "" if choice == "audio" else f":{choice}"
+    )
+    cached = file_cache.get(cache_key)
+    if cached:
+        try:
+            if choice == "audio":
+                from handlers.lyrics_handler import lyrics_button
+
+                await query.message.reply_audio(
+                    audio=cached,
+                    title=info.title,
+                    performer=info.uploader,
+                    duration=info.duration,
+                    reply_markup=lyrics_button(info.uploader, info.title),
+                )
+            else:
+                await query.message.reply_video(
+                    video=cached, caption=info.title, supports_streaming=True
+                )
+            return
+        except Exception as e:
+            log.info("cached file_id rejected (%s) - re-downloading", e)
+            file_cache.drop(cache_key)
+
     status = await query.message.reply_text("⬇️ شروع دانلود…")
     reporter = ProgressReporter(message=status, loop=asyncio.get_running_loop())
 
@@ -122,7 +149,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             if choice == "audio":
                 from handlers.lyrics_handler import lyrics_button
 
-                await query.message.reply_audio(
+                sent = await query.message.reply_audio(
                     audio=fh,
                     title=info.title,
                     performer=info.uploader,
@@ -130,13 +157,17 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                     thumbnail=thumb_path.open("rb") if thumb_path else None,
                     reply_markup=lyrics_button(info.uploader, info.title),
                 )
+                if sent and sent.audio:
+                    file_cache.put(cache_key, sent.audio.file_id)
             else:
-                await query.message.reply_video(
+                sent = await query.message.reply_video(
                     video=fh,
                     caption=info.title,
                     supports_streaming=True,
                     thumbnail=thumb_path.open("rb") if thumb_path else None,
                 )
+                if sent and sent.video:
+                    file_cache.put(cache_key, sent.video.file_id)
         await status.delete()
     except Exception as e:
         log.exception("upload failed")
