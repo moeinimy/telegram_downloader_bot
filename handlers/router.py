@@ -28,6 +28,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     text = msg.text.strip()
+
+    try:
+        # A pending "which range of the playlist?" prompt claims this message
+        # before it is treated as a search query.
+        if await spotify_handler.handle_range_reply(update, context, text):
+            return
+    except Exception as e:
+        log.exception("range reply failed")
+        await msg.reply_text(f"❌ خطا: {e}")
+        return
+
     result = route(text)
 
     try:

@@ -59,6 +59,42 @@ async def handle_url(
         )
 
 
+# ---------- custom range ----------
+
+async def handle_range_reply(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, text: str
+) -> bool:
+    """Consume '500-600' after the custom-range button. Returns True when the
+    message was a range and has been handled."""
+    import re
+
+    pending = context.user_data.get("awaiting_range")
+    if not pending:
+        return False
+
+    m = re.fullmatch(r"\s*(\d*)\s*[-–—تا]+\s*(\d*)\s*", text)
+    if not m or not (m.group(1) or m.group(2)):
+        await update.effective_message.reply_text(
+            "فرمت درست نیست. مثل `500-600` بنویس یا برای لغو /start بزن.",
+            parse_mode="Markdown",
+        )
+        return True
+
+    context.user_data.pop("awaiting_range", None)
+    kind, rid = pending
+    container = await _load_container(kind, rid)
+    total = len(container.tracks)
+
+    start = int(m.group(1)) if m.group(1) else 1
+    end = int(m.group(2)) if m.group(2) else total
+    start = max(1, min(start, total))
+    end = max(start, min(end, total))
+
+    await update.effective_message.reply_text(f"⬇️ ترک {start} تا {end}")
+    await _download_range(update.effective_message, container, start - 1, end - start + 1)
+    return True
+
+
 # ---------- free-text search ----------
 
 async def handle_search(
@@ -194,8 +230,11 @@ def _range_buttons(kind: str, rid: str, total: int) -> list[list[InlineKeyboardB
     ])
     rows.append([
         InlineKeyboardButton(
+            "🔢 محدوده دلخواه", callback_data=f"sp:plask:{kind}:{rid}"
+        ),
+        InlineKeyboardButton(
             f"⬇️ همه ({total})", callback_data=f"sp:pldl:{kind}:{rid}:0:{total}"
-        )
+        ),
     ])
     return rows
 
@@ -211,21 +250,39 @@ def _page_keyboard(kind: str, rid: str, container, offset: int) -> InlineKeyboar
         for i, t in enumerate(page)
     ]
 
+    last_start = max(0, ((total - 1) // _PAGE) * _PAGE)
+
     nav: list[InlineKeyboardButton] = []
     if offset > 0:
         nav.append(InlineKeyboardButton(
-            "◀️ قبلی", callback_data=f"sp:plpg:{kind}:{rid}:{max(0, offset - _PAGE)}"
+            "◀️", callback_data=f"sp:plpg:{kind}:{rid}:{max(0, offset - _PAGE)}"
         ))
-    last_start = max(0, ((total - 1) // _PAGE) * _PAGE)
     nav.append(InlineKeyboardButton(
         f"{offset // _PAGE + 1}/{last_start // _PAGE + 1}", callback_data="sp:noop"
     ))
     if offset + _PAGE < total:
         nav.append(InlineKeyboardButton(
-            "بعدی ▶️", callback_data=f"sp:plpg:{kind}:{rid}:{offset + _PAGE}"
+            "▶️", callback_data=f"sp:plpg:{kind}:{rid}:{offset + _PAGE}"
         ))
     if len(nav) > 1:
         rows.append(nav)
+
+    # Stepping ten pages at a time: a 4000-track playlist is 400 pages, and
+    # walking it one page per tap is not navigation.
+    if total > _PAGE * 5:
+        jump = [
+            InlineKeyboardButton("⏮", callback_data=f"sp:plpg:{kind}:{rid}:0"),
+            InlineKeyboardButton(
+                "⏪ ۱۰ صفحه",
+                callback_data=f"sp:plpg:{kind}:{rid}:{max(0, offset - _PAGE * 10)}",
+            ),
+            InlineKeyboardButton(
+                "۱۰ صفحه ⏩",
+                callback_data=f"sp:plpg:{kind}:{rid}:{min(last_start, offset + _PAGE * 10)}",
+            ),
+            InlineKeyboardButton("⏭", callback_data=f"sp:plpg:{kind}:{rid}:{last_start}"),
+        ]
+        rows.append(jump)
 
     rows += _range_buttons(kind, rid, total)
     return InlineKeyboardMarkup(rows)
@@ -551,6 +608,21 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             )
         except Exception as e:
             log.info("page edit failed: %s", e)
+        return
+
+    if data.startswith("sp:plask:"):
+        _, _, kind, rid = data.split(":", 3)
+        container = await _load_container(kind, rid)
+        total = len(container.tracks)
+        context.user_data["awaiting_range"] = (kind, rid)
+        await query.message.reply_text(
+            f"🔢 محدوده رو بنویس (بین ۱ تا {total}).\n\n"
+            "مثال:\n"
+            "`500-600`  یعنی ترک ۵۰۰ تا ۶۰۰\n"
+            "`3000-`    یعنی از ۳۰۰۰ تا آخر\n"
+            "`-50`      یعنی ۵۰ تای اول",
+            parse_mode="Markdown",
+        )
         return
 
     if data.startswith("sp:pldl:"):

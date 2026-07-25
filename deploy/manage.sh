@@ -392,6 +392,39 @@ do_logs() {
     journalctl -u "$SERVICE_NAME" -f -n 40
 }
 
+do_spotify() {
+    echo; info "=== کلید اسپاتیفای (فقط برای پلی‌لیست‌های بزرگ) ==="
+    warn "بدون کلید، اسپاتیفای فقط ۱۰۰ ترک اول رو می‌ده."
+    warn "با کلید، پلی‌لیست‌های چند هزارتایی کامل خونده می‌شن."
+    echo
+    info "۱) برو developer.spotify.com/dashboard و وارد شو"
+    info "۲) Create app بزن (اسم و توضیح دلخواه، Redirect URI: http://localhost)"
+    info "۳) Client ID و Client Secret رو کپی کن"
+    echo
+    read -rp "Client ID: " cid
+    read -rp "Client Secret: " csec
+    if [[ -z "$cid" || -z "$csec" ]]; then
+        warn "خالی بود، لغو شد"
+        return
+    fi
+
+    local f="$PROJECT_DIR/.env"
+    for pair in "SPOTIFY_CLIENT_ID=$cid" "SPOTIFY_CLIENT_SECRET=$csec"; do
+        local k="${pair%%=*}"
+        if grep -q "^$k=" "$f"; then
+            sed -i "s|^$k=.*|$pair|" "$f"
+        else
+            echo "$pair" >> "$f"
+        fi
+    done
+    systemctl restart "$SERVICE_NAME"
+    sleep 2
+    systemctl is-active --quiet "$SERVICE_NAME" \
+        && ok "ذخیره شد - حالا پلی‌لیست‌های بزرگ کامل خونده می‌شن" \
+        || err "بات بالا نیومد - گزینه ۶ رو ببین"
+}
+
+
 do_reclog() {
     echo; info "=== لاگ تشخیص آهنگ (آخرین تلاش‌ها) ==="; echo
     journalctl -u "$SERVICE_NAME" --no-pager -n 500 \
@@ -809,7 +842,8 @@ menu() {
     echo " 15) اصلاح دسترسی فایل‌های Bot API"
     echo " 16) تعمیر کانتینر Bot API (بدون وارد کردن کلید)"
     echo " 17) لاگ تشخیص آهنگ"
-    echo " 18) نصب مجدد از صفر (پاک کردن همه چی)"
+    echo " 18) کلید اسپاتیفای (پلی‌لیست بزرگ)"
+    echo " 19) نصب مجدد از صفر (پاک کردن همه چی)"
     echo "  0) خروج"
     echo
 }
@@ -823,6 +857,7 @@ case "${1:-}" in
     fixperms) do_fixperms; exit $? ;;
     botapi-repair) do_botapi_repair; exit $? ;;
     reclog)  do_reclog;  exit 0 ;;
+    spotify) do_spotify; exit $? ;;
     update)  do_update;  exit $? ;;
     restart) systemctl restart "$SERVICE_NAME"; exit $? ;;
     status)  do_status;  exit 0 ;;
@@ -854,7 +889,8 @@ while true; do
         15) do_fixperms; pause ;;
         16) do_botapi_repair; pause ;;
         17) do_reclog; pause ;;
-        18) do_reset; pause ;;
+        18) do_spotify; pause ;;
+        19) do_reset; pause ;;
         0)  echo; exit 0 ;;
         *)  err "گزینه نامعتبر"; sleep 1 ;;
     esac

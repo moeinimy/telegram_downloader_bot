@@ -106,13 +106,30 @@ def get_track_meta(track_id: str) -> TrackMeta:
 
 @run_in_thread
 def get_album_tracks(album_id: str) -> AlbumMeta:
+    from modules import spotify_api
     from modules.spotify_scraper import fetch_album
+
+    if spotify_api.available():
+        try:
+            return spotify_api.fetch_album(album_id)
+        except Exception as e:
+            log.warning("Spotify API album failed (%s) - using embed page", e)
     return fetch_album(album_id)
 
 
 @run_in_thread
 def get_playlist_tracks(playlist_id: str) -> PlaylistMeta:
+    """The embed page caps out around 100 tracks, so use the Web API when
+    credentials are configured - that is the only way to reach a playlist
+    with thousands of entries."""
+    from modules import spotify_api
     from modules.spotify_scraper import fetch_playlist
+
+    if spotify_api.available():
+        try:
+            return spotify_api.fetch_playlist(playlist_id)
+        except Exception as e:
+            log.warning("Spotify API playlist failed (%s) - using embed page", e)
     return fetch_playlist(playlist_id)
 
 

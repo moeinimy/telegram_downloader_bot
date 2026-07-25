@@ -33,6 +33,13 @@ class Settings:
     # Telegram (the only required setting)
     telegram_token: str
 
+    # Spotify (optional). Only needed for playlists larger than ~100 tracks:
+    # the keyless embed page never returns more than that. Normal user
+    # playlists read fine with client credentials; Spotify's own editorial
+    # playlists are blocked for new free apps since late 2024.
+    spotify_client_id: str
+    spotify_client_secret: str
+
     # Instagram (optional). Browser session cookies from a throwaway account
     # unlock stories + photo carousels. Without them the bot still handles
     # reels and video posts anonymously.
@@ -99,6 +106,8 @@ def _cookies_path() -> str:
 
 settings = Settings(
     telegram_token=_get("TELEGRAM_BOT_TOKEN", required=True),
+    spotify_client_id=_get("SPOTIFY_CLIENT_ID"),
+    spotify_client_secret=_get("SPOTIFY_CLIENT_SECRET"),
     instagram_username=_get("INSTAGRAM_USERNAME"),
     ig_sessionid=_get("IG_SESSIONID"),
     ig_csrftoken=_get("IG_CSRFTOKEN"),
