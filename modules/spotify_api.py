@@ -79,30 +79,33 @@ def fetch_playlist(playlist_id: str):
 
     head = _get(
         f"https://api.spotify.com/v1/playlists/{playlist_id}",
-        {"fields": "name,owner(display_name),images,tracks(total)"},
+        # Nested values use dot notation. "tracks(total)" is not valid fields
+        # syntax: Spotify silently omitted it, total came back 0, and the
+        # paging loop never ran - an empty playlist from a 4000-track list.
+        {"fields": "name,owner.display_name,images,tracks.total"},
     )
     images = head.get("images") or []
     total = ((head.get("tracks") or {}).get("total")) or 0
 
     tracks: list[TrackMeta] = []
     offset = 0
-    while offset < min(total, MAX_TRACKS):
+    # Driven by what the API actually returns rather than by `total`, so a
+    # missing or wrong count cannot silently produce an empty playlist.
+    while offset < MAX_TRACKS:
         page = _get(
             f"https://api.spotify.com/v1/playlists/{playlist_id}/tracks",
-            {
-                "limit": 100,
-                "offset": offset,
-                "fields": "items(track(id,name,duration_ms,artists(name),"
-                          "album(name,images)))",
-            },
+            {"limit": 100, "offset": offset},
         )
         items = page.get("items") or []
         if not items:
             break
+        total = page.get("total") or total
+
         for it in items:
             t = it.get("track") or {}
-            if not t.get("id"):
-                continue  # local files and removed tracks
+            # Local files, removed tracks and podcast episodes have no usable id.
+            if not t.get("id") or t.get("type") not in (None, "track"):
+                continue
             album = t.get("album") or {}
             art = (album.get("images") or [{}])[0].get("url", "")
             tracks.append(
@@ -116,9 +119,15 @@ def fetch_playlist(playlist_id: str):
                     spotify_url=f"https://open.spotify.com/track/{t['id']}",
                 )
             )
-        offset += len(items)
 
-    log.info("Spotify API: playlist %s -> %d/%d tracks", playlist_id, len(tracks), total)
+        offset += len(items)
+        if offset >= total > 0:
+            break
+
+    log.info("Spotify API: playlist %s -> %d usable of %d", playlist_id, len(tracks), total)
+    if not tracks:
+        raise RuntimeError("Spotify API returned no tracks")
+
     return PlaylistMeta(
         id=playlist_id,
         name=head.get("name") or "Playlist",
@@ -139,7 +148,8 @@ def fetch_album(album_id: str):
 
     tracks: list[TrackMeta] = []
     offset = 0
-    while True:
+    total = 0
+    while offset < MAX_TRACKS:
         page = _get(
             f"https://api.spotify.com/v1/albums/{album_id}/tracks",
             {"limit": 50, "offset": offset},
@@ -147,6 +157,7 @@ def fetch_album(album_id: str):
         items = page.get("items") or []
         if not items:
             break
+        total = page.get("total") or total
         for t in items:
             if not t.get("id"):
                 continue
@@ -162,8 +173,11 @@ def fetch_album(album_id: str):
                 )
             )
         offset += len(items)
-        if offset >= (page.get("total") or 0):
+        if offset >= total > 0:
             break
+
+    if not tracks:
+        raise RuntimeError("Spotify API returned no album tracks")
 
     return AlbumMeta(
         id=album_id,
