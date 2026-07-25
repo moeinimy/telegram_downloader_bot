@@ -76,21 +76,21 @@ async def handle_search(
     update: Update, context: ContextTypes.DEFAULT_TYPE, query: str
 ) -> None:
     msg = update.effective_message
-    status = await msg.reply_text(f"🔎 سرچ اسپاتیفای برای: *{query}*", parse_mode="Markdown")
 
-    # heuristic: if no spaces and a single word, also try artist top-tracks
+    # No "searching..." placeholder: the metadata APIs answer in a few hundred
+    # milliseconds, so sending and then deleting a status message cost more
+    # round trips than the search itself.
     tracks = await sp.search_tracks(query, limit=10)
     if not tracks:
-        await status.edit_text("نتیجه‌ای پیدا نکردم.")
+        await msg.reply_text("نتیجه‌ای پیدا نکردم.")
         return
 
-    await status.delete()
     await _send_tracklist(msg, title=f"نتایج «{query}»", tracks=tracks, bulk_callback=None)
 
 
 # ---------- helpers ----------
 
-def _truncate(s: str, n: int = 40) -> str:
+def _truncate(s: str, n: int = 44) -> str:
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
@@ -102,14 +102,22 @@ def _source_icon(track_id: str) -> str:
     return "🎵"
 
 
+def _button_label(t) -> str:
+    """'Artist — Song · 3:24'. Duration disambiguates the remixes and live
+    cuts that otherwise look like identical entries."""
+    from utils.helpers import fmt_duration
+
+    label = _truncate(f"{_source_icon(t.id)} {t.display}")
+    if t.duration_ms:
+        label += f" · {fmt_duration(t.duration_ms // 1000)}"
+    return label
+
+
 async def _send_tracklist(
     msg, *, title: str, tracks, bulk_callback: str | None
 ) -> None:
     rows = [
-        [InlineKeyboardButton(
-            _truncate(f"{_source_icon(t.id)} {t.display}"),
-            callback_data=f"sp:trk:{t.id}",
-        )]
+        [InlineKeyboardButton(_button_label(t), callback_data=f"sp:trk:{t.id}")]
         for t in tracks
     ]
     if bulk_callback:

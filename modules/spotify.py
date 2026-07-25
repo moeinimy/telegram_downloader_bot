@@ -8,8 +8,12 @@ Metadata:
                            600x600 album art before downloading.
 
 Search (free text):
-  - YouTube    (ytsearch via yt-dlp)  -> ids prefixed "yt_"
-  - SoundCloud (scsearch via yt-dlp)  -> ids prefixed "sc_"
+  - iTunes  -> ids prefixed "it_"   } keyless JSON APIs, ~200ms, real song
+  - Deezer  -> ids prefixed "dz_"   } titles/artists/album art
+  - yt-dlp ytsearch/scsearch is the fallback only ("yt_" / "sc_"): it costs a
+    full extraction pass per query and reports channel names as artists.
+  Results from both APIs are interleaved, then ranked by query match, each
+  API's own ordering, and Deezer's popularity so the original beats covers.
 
 Download:
   - yt-dlp bestaudio -> 320kbps MP3 through the YouTube module's client-fallback
@@ -41,6 +45,9 @@ class TrackMeta:
     cover_url: str
     spotify_url: str  # source URL (spotify page, youtube watch, soundcloud permalink)
     itunes_url: str = ""  # filled by _itunes_enrich when a match is confident
+    # Search-ranking signals (unused outside _music_api_search).
+    src_rank: int = 0       # position in the source's own result list
+    popularity: float = 0.0  # 0..1, from Deezer's rank; 0 when unknown
 
     @property
     def display(self) -> str:
@@ -77,10 +84,12 @@ _yt_cache: dict[str, TrackMeta] = {}
 
 @run_in_thread
 def get_track_meta(track_id: str) -> TrackMeta:
-    if track_id.startswith(("yt_", "sc_")):
+    if track_id.startswith(("yt_", "sc_", "it_", "dz_")):
         cached = _yt_cache.get(track_id)
         if cached:
             return cached
+        if track_id.startswith(("it_", "dz_")):
+            return _lookup_metadata_track(track_id)
         if track_id.startswith("yt_"):
             return _probe_source_track_sync(
                 f"https://www.youtube.com/watch?v={track_id[3:]}", "yt"
@@ -112,9 +121,210 @@ def get_artist_top_tracks(artist_id: str, market: str = "US") -> list[TrackMeta]
 
 @run_in_thread
 def search_tracks(query: str, limit: int = 10) -> list[TrackMeta]:
-    """Spotify has no keyless search endpoint, so free text is resolved
-    against YouTube + SoundCloud."""
+    """
+    Free-text search.
+
+    Music metadata APIs (iTunes + Deezer) are queried first: they are plain
+    keyless JSON endpoints that answer in ~200ms with the real song title,
+    artist, album and cover art. yt-dlp's ytsearch/scsearch needs a full
+    extraction pass per query (5-15s) and returns raw video titles with
+    channel names as the "artist", so it is only the fallback now.
+    """
+    tracks = _music_api_search(query, limit)
+    if tracks:
+        return tracks
+    log.info("music APIs returned nothing for %r - falling back to yt-dlp", query)
     return _fallback_search_tracks(query, limit)
+
+
+# ---------------- fast keyless music metadata search ----------------
+
+def _itunes_search(query: str, limit: int) -> list[TrackMeta]:
+    from utils import http
+
+    r = http.get(
+        "https://itunes.apple.com/search",
+        params={"term": query, "media": "music", "entity": "song", "limit": limit},
+        timeout=6,
+    )
+    r.raise_for_status()
+    out = []
+    for idx, it in enumerate(r.json().get("results") or []):
+        tid, name = it.get("trackId"), (it.get("trackName") or "").strip()
+        if not tid or not name:
+            continue
+        out.append(
+            TrackMeta(
+                src_rank=idx,
+                id=f"it_{tid}",
+                name=name,
+                artists=[(it.get("artistName") or "").strip() or "Unknown"],
+                album=it.get("collectionName") or "",
+                duration_ms=int(it.get("trackTimeMillis") or 0),
+                cover_url=(it.get("artworkUrl100") or "").replace("100x100", "600x600"),
+                spotify_url=it.get("trackViewUrl") or "",
+                itunes_url=it.get("trackViewUrl") or "",
+            )
+        )
+    return out
+
+
+def _deezer_search(query: str, limit: int) -> list[TrackMeta]:
+    from utils import http
+
+    r = http.get(
+        "https://api.deezer.com/search",
+        params={"q": query, "limit": limit},
+        timeout=6,
+    )
+    r.raise_for_status()
+    out = []
+    for idx, d in enumerate(r.json().get("data") or []):
+        did, title = d.get("id"), (d.get("title") or "").strip()
+        if not did or not title:
+            continue
+        album = d.get("album") or {}
+        out.append(
+            TrackMeta(
+                src_rank=idx,
+                # Deezer's rank is a play-count proxy (0..~1M); it is the one
+                # signal that separates the real hit from a soundalike cover.
+                popularity=min((d.get("rank") or 0) / 800_000, 1.0),
+                id=f"dz_{did}",
+                name=title,
+                artists=[((d.get("artist") or {}).get("name") or "").strip() or "Unknown"],
+                album=album.get("title") or "",
+                duration_ms=int((d.get("duration") or 0) * 1000),
+                cover_url=album.get("cover_xl") or album.get("cover_big") or "",
+                spotify_url=d.get("link") or "",
+            )
+        )
+    return out
+
+
+def _dedupe_key(t: TrackMeta) -> str:
+    return f"{_norm(t.artists[0] if t.artists else '')}|{_norm(t.name)}"
+
+
+# Recent queries -> results. Re-typing the same search (or tapping through a
+# list twice) should not pay for the network again.
+_search_cache: dict[str, tuple[float, list[TrackMeta]]] = {}
+_SEARCH_TTL = 600.0
+
+
+def _music_api_search(query: str, limit: int) -> list[TrackMeta]:
+    """iTunes + Deezer in parallel, interleaved by rank and de-duplicated."""
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+    from itertools import zip_longest
+
+    key = f"{query.strip().lower()}|{limit}"
+    hit = _search_cache.get(key)
+    if hit and time.monotonic() - hit[0] < _SEARCH_TTL:
+        return hit[1]
+
+    def _safe(fn, label):
+        try:
+            return fn(query, limit)
+        except Exception as e:
+            log.warning("%s search failed: %s", label, e)
+            return []
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        f_it = pool.submit(_safe, _itunes_search, "iTunes")
+        f_dz = pool.submit(_safe, _deezer_search, "Deezer")
+        itunes, deezer = f_it.result(), f_dz.result()
+
+    # Interleave so both catalogues are represented: concatenating let iTunes
+    # fill every slot and Deezer-only tracks never showed up.
+    candidates = [
+        t
+        for pair in zip_longest(itunes, deezer)
+        for t in pair
+        if t is not None
+    ]
+
+    # Then rank across both sources by how well each matches what was typed,
+    # so "still here drake" puts Drake's track above another artist's song
+    # that happens to share the title.
+    def _relevance(t: TrackMeta) -> float:
+        artist = t.artists[0] if t.artists else ""
+        both = f"{artist} {t.name}"
+        score = _overlap(query, both)
+        if _norm(query) in _norm(both):
+            score += 0.5
+        # Each API already ranked its own results; keep that as a signal.
+        score += 0.5 / (1 + t.src_rank)
+        # Popularity breaks the tie between the original and the covers that
+        # share its exact title.
+        score += 0.6 * t.popularity
+        return score
+
+    candidates.sort(key=_relevance, reverse=True)
+
+    seen: set[str] = set()
+    out: list[TrackMeta] = []
+    for t in candidates:
+        k = _dedupe_key(t)
+        if k in seen:
+            continue
+        seen.add(k)
+        _yt_cache[t.id] = t
+        out.append(t)
+        if len(out) >= limit:
+            break
+
+    if out:
+        _search_cache[key] = (time.monotonic(), out)
+        if len(_search_cache) > 200:
+            oldest = min(_search_cache, key=lambda k: _search_cache[k][0])
+            _search_cache.pop(oldest, None)
+    return out
+
+
+def _lookup_metadata_track(track_id: str) -> TrackMeta:
+    """Re-fetch an it_/dz_ track by id so inline buttons keep working after a
+    restart, instead of answering 'search expired'."""
+    from utils import http
+
+    raw = track_id[3:]
+    if track_id.startswith("it_"):
+        r = http.get("https://itunes.apple.com/lookup", params={"id": raw})
+        r.raise_for_status()
+        results = r.json().get("results") or []
+        if results:
+            it = results[0]
+            meta = TrackMeta(
+                id=track_id,
+                name=(it.get("trackName") or "Unknown").strip(),
+                artists=[(it.get("artistName") or "Unknown").strip()],
+                album=it.get("collectionName") or "",
+                duration_ms=int(it.get("trackTimeMillis") or 0),
+                cover_url=(it.get("artworkUrl100") or "").replace("100x100", "600x600"),
+                spotify_url=it.get("trackViewUrl") or "",
+                itunes_url=it.get("trackViewUrl") or "",
+            )
+            _yt_cache[track_id] = meta
+            return meta
+    else:
+        r = http.get(f"https://api.deezer.com/track/{raw}")
+        r.raise_for_status()
+        d = r.json()
+        if d.get("id"):
+            album = d.get("album") or {}
+            meta = TrackMeta(
+                id=track_id,
+                name=(d.get("title") or "Unknown").strip(),
+                artists=[((d.get("artist") or {}).get("name") or "Unknown").strip()],
+                album=album.get("title") or "",
+                duration_ms=int((d.get("duration") or 0) * 1000),
+                cover_url=album.get("cover_xl") or album.get("cover_big") or "",
+                spotify_url=d.get("link") or "",
+            )
+            _yt_cache[track_id] = meta
+            return meta
+
+    raise RuntimeError("این آهنگ رو دیگه پیدا نکردم؛ دوباره سرچ کن.")
 
 
 # ---------------- yt-dlp based search / probing ----------------
@@ -266,7 +476,7 @@ def _itunes_enrich(meta: TrackMeta) -> None:
     would win - correct audio, wrong title and wrong cover. The song title
     must match; duration or artist then confirms it.
     """
-    import httpx
+    from utils import http
 
     cleaned = _strip_noise(meta.name)
     guess_artist, guess_title = _split_artist_title(cleaned)
@@ -275,10 +485,9 @@ def _itunes_enrich(meta: TrackMeta) -> None:
         return
 
     try:
-        r = httpx.get(
+        r = http.get(
             "https://itunes.apple.com/search",
             params={"term": term, "media": "music", "entity": "song", "limit": 8},
-            timeout=8,
         )
         r.raise_for_status()
         results = r.json().get("results") or []
@@ -355,6 +564,8 @@ def platform_links(meta: TrackMeta) -> dict[str, str]:
         links["youtube"] = url
     elif "soundcloud.com" in url:
         links["soundcloud"] = url
+    elif "deezer.com" in url:
+        links["deezer"] = url
     if getattr(meta, "itunes_url", ""):
         links["apple"] = meta.itunes_url
     return links
@@ -387,6 +598,8 @@ def download_track(meta: TrackMeta) -> Path:
     elif meta.id.startswith("yt_"):
         target = f"https://www.youtube.com/watch?v={meta.id[3:]}"
     else:
+        # Spotify / iTunes / Deezer entries carry metadata only - the audio
+        # itself still has to be located on YouTube.
         target = f"ytsearch1:{meta.search_query} audio"
 
     extra = {
@@ -429,9 +642,9 @@ def _embed_cover_and_tags(path: Path, meta: TrackMeta) -> None:
             tags.add(TALB(encoding=3, text=meta.album))
 
         if meta.cover_url:
-            import httpx
+            from utils import http
 
-            r = httpx.get(meta.cover_url, timeout=20, follow_redirects=True)
+            r = http.get(meta.cover_url)
             r.raise_for_status()
             mime = r.headers.get("content-type", "image/jpeg").split(";")[0]
             tags.delall("APIC")
