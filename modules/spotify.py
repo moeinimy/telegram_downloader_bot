@@ -22,6 +22,7 @@ Download:
 
 from __future__ import annotations
 
+import glob
 import logging
 import re
 from dataclasses import dataclass, field
@@ -73,6 +74,7 @@ class PlaylistMeta:
     name: str
     owner: str
     tracks: list[TrackMeta] = field(default_factory=list)
+    truncated: bool = False  # set when Spotify's embed capped the track list
 
 
 # Cache for non-Spotify results ("yt_*" / "sc_*") so inline-button callbacks
@@ -584,6 +586,45 @@ def _itunes_enrich(meta: TrackMeta) -> None:
     log.info("iTunes enriched (score %.2f): %s", best[0], meta.display)
 
 
+@run_in_thread
+def fill_cover(meta: TrackMeta) -> None:
+    """Async wrapper so handlers can fetch artwork without blocking the loop."""
+    ensure_cover(meta)
+
+
+def ensure_cover(meta: TrackMeta) -> None:
+    """
+    Fill in artwork the source could not supply.
+
+    Spotify's embed track lists carry no per-track image, so playlist entries
+    arrive with an empty cover. One keyless catalogue lookup by artist+title
+    gets the real album art (and album name) - far cheaper than fetching each
+    track's own embed page.
+    """
+    if meta.cover_url:
+        return
+    artist = meta.artists[0] if meta.artists else ""
+    try:
+        hits = _music_api_search(f"{artist} {meta.name}".strip(), 5)
+    except Exception as e:
+        log.warning("cover lookup failed for %s: %s", meta.display, e)
+        return
+
+    our = meta.duration_ms / 1000 if meta.duration_ms else 0
+    for h in hits:
+        if _overlap(h.name, meta.name) < 0.5:
+            continue
+        their = h.duration_ms / 1000 if h.duration_ms else 0
+        if our and their and abs(our - their) > 25:
+            continue
+        if h.cover_url:
+            meta.cover_url = h.cover_url
+            meta.album = meta.album or h.album
+            if not meta.itunes_url and h.itunes_url:
+                meta.itunes_url = h.itunes_url
+            return
+
+
 def platform_links(meta: TrackMeta) -> dict[str, str]:
     """Direct links we actually know for this track; the keyboard falls back
     to per-platform search URLs for the rest."""
@@ -616,14 +657,15 @@ def download_track(meta: TrackMeta) -> Path:
     # Fix metadata + cover before computing the filename.
     if meta.id.startswith(("yt_", "sc_")):
         _itunes_enrich(meta)
+    ensure_cover(meta)
 
     out_dir = settings.download_dir / "spotify"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     base = out_dir / safe_filename(meta.display)
-    for ext in (".m4a", ".mp3"):
-        if base.with_suffix(ext).exists():
-            return base.with_suffix(ext)
+    existing = _find_output(base)
+    if existing is not None:
+        return existing
 
     if meta.id.startswith(("yt_", "sc_")) and meta.spotify_url.startswith("http"):
         target = meta.spotify_url
@@ -635,34 +677,66 @@ def download_track(meta: TrackMeta) -> Path:
         target = f"ytsearch1:{meta.search_query} audio"
 
     extra = {
-        # Prefer a ready-made AAC stream. ExtractAudio can then remux it with
-        # `-acodec copy` instead of re-encoding: transcoding every track to
-        # 320k mp3 cost several seconds of CPU per song AND added a second
-        # lossy pass on top of an already-compressed source.
-        "format": "bestaudio[ext=m4a]/bestaudio/best",
-        "outtmpl": str(base.with_suffix(".%(ext)s")),
+        # Highest-bitrate audio available. When it is already AAC, ExtractAudio
+        # remuxes with `-acodec copy` (instant, lossless); otherwise it encodes
+        # at 320k. Forcing mp3 for everything used to burn seconds of CPU per
+        # track and added a second lossy pass on an already-compressed source.
+        "format": "bestaudio/best",
+        "format_sort": ["abr"],
+        "outtmpl": str(base) + ".%(ext)s",
         "postprocessors": [
             {
                 "key": "FFmpegExtractAudio",
                 "preferredcodec": "m4a",
-                "preferredquality": "0",
+                "preferredquality": "320",
             },
             {"key": "FFmpegMetadata"},
         ],
     }
-    ytdlp_run(extra, lambda ydl: ydl.download([target]))
 
-    out_path = None
-    for ext in (".m4a", ".mp3", ".opus", ".ogg", ".webm"):
-        cand = base.with_suffix(ext)
-        if cand.exists():
-            out_path = cand
-            break
+    try:
+        ytdlp_run(extra, lambda ydl: ydl.download([target]))
+    except Exception as e:
+        # A bare "artist title audio" query finds nothing for obscure tracks;
+        # the plain title often does.
+        if not target.startswith("ytsearch"):
+            raise
+        log.info("search download failed (%s) - retrying without 'audio'", e)
+        ytdlp_run(extra, lambda ydl: ydl.download([f"ytsearch1:{meta.search_query}"]))
+
+    out_path = _find_output(base)
     if out_path is None:
-        raise RuntimeError(f"دانلود فایلی تولید نکرد: {meta.display}")
+        raise RuntimeError(
+            f"فایل صوتی برای «{meta.display}» پیدا نشد (رو یوتیوب نبود)."
+        )
 
     _embed_cover_and_tags(out_path, meta)
     return out_path
+
+
+_AUDIO_EXTS = {".m4a", ".mp3", ".opus", ".ogg", ".oga", ".webm", ".aac", ".mp4", ".flac", ".wav"}
+
+
+def _find_output(base: Path) -> Path | None:
+    """Locate whatever yt-dlp actually wrote.
+
+    Guessing a fixed extension list was fragile: the postprocessor's output
+    extension depends on the source codec, and a miss surfaced to the user as
+    'the download produced no file' even though the audio was on disk.
+    """
+    candidates = [
+        p
+        for p in base.parent.glob(f"{glob.escape(base.name)}.*")
+        if p.is_file() and p.suffix.lower() in _AUDIO_EXTS
+    ]
+    if not candidates:
+        return None
+    # Prefer a finished audio file over the raw container yt-dlp downloaded first.
+    for ext in (".m4a", ".mp3", ".opus", ".flac"):
+        for p in candidates:
+            if p.suffix.lower() == ext:
+                return p
+    return max(candidates, key=lambda p: p.stat().st_size)
 
 
 def _fetch_cover(url: str) -> tuple[bytes, str] | None:

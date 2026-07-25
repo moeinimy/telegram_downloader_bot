@@ -127,7 +127,15 @@ def _track_id_from_uri(uri: str) -> str:
 
 
 def _tracklist_to_metas(entity: dict, fallback_cover: str, album_name: str = ""):
-    """Convert an embed trackList into TrackMeta objects."""
+    """
+    Convert an embed trackList into TrackMeta objects.
+
+    The embed's per-track entries carry only title/subtitle/duration/uri - no
+    artwork. `fallback_cover` is therefore correct for an album (every track
+    really does share one cover) but wrong for a playlist, where it would stamp
+    the playlist's image onto every song. Playlists pass "" and the real cover
+    is looked up per track at download time (modules.spotify.ensure_cover).
+    """
     from modules.spotify import TrackMeta  # avoid circular import at module load
 
     metas = []
@@ -186,13 +194,19 @@ def fetch_playlist(playlist_id: str):
     from modules.spotify import PlaylistMeta
 
     entity = _fetch_entity("playlist", playlist_id)
-    cover = _cover(entity)
-    return PlaylistMeta(
+    # Deliberately no fallback cover: every track would otherwise show the
+    # playlist artwork instead of its own album art.
+    tracks = _tracklist_to_metas(entity, "")
+    pl = PlaylistMeta(
         id=playlist_id,
         name=entity.get("name") or "Playlist",
         owner=entity.get("subtitle") or "Spotify",
-        tracks=_tracklist_to_metas(entity, cover),
+        tracks=tracks,
     )
+    # The keyless embed page serves at most 100 entries; tell the caller so it
+    # can say so rather than silently presenting a truncated playlist.
+    pl.truncated = len(tracks) >= 100
+    return pl
 
 
 def fetch_artist_top(artist_id: str):

@@ -236,30 +236,73 @@ async def _send_container_menu(msg, kind: str, rid: str) -> None:
     if not total:
         await msg.reply_text("این لیست ترکی نداره.")
         return
+    header = f"{_container_title(kind, container)}\n🎵 {total} ترک"
+    if getattr(container, "truncated", False):
+        header += (
+            "\n⚠️ اسپاتیفای بدون اکانت فقط ۱۰۰ ترک اول رو می‌ده؛ بقیه در دسترس نیست."
+        )
     await msg.reply_text(
-        f"{_container_title(kind, container)}\n🎵 {total} ترک",
-        reply_markup=_page_keyboard(kind, rid, container, 0),
+        header, reply_markup=_page_keyboard(kind, rid, container, 0)
     )
 
 
+# Tracks fetched at once. Downloads are network- and ffmpeg-bound, so running
+# a few in parallel hides most of the wait; uploads still go out in playlist
+# order. Higher values mostly just annoy YouTube.
+_PARALLEL_DOWNLOADS = 4
+
+
 async def _download_range(msg, container, offset: int, count: int) -> None:
+    import asyncio
+
+    from utils import file_cache
+
     tracks = container.tracks[offset : offset + count]
     if not tracks:
         await msg.reply_text("چیزی تو این محدوده نیست.")
         return
 
     status = await msg.reply_text(f"⬇️ شروع دانلود {len(tracks)} ترک…")
+    sem = asyncio.Semaphore(_PARALLEL_DOWNLOADS)
+
+    async def fetch(meta):
+        """Download only - uploading happens in order in the loop below."""
+        if file_cache.get(f"audio:{meta.id}"):
+            return None  # already on Telegram; nothing to fetch
+        async with sem:
+            try:
+                return await sp.download_track(meta)
+            except Exception as e:
+                return e
+
+    jobs = [asyncio.create_task(fetch(t)) for t in tracks]
+
     done = failed = 0
-    for i, t in enumerate(tracks, 1):
-        if await _send_and_download_track(msg, t):
-            done += 1
-        else:
+    for i, (meta, job) in enumerate(zip(tracks, jobs), 1):
+        result = await job
+        try:
+            if isinstance(result, Exception):
+                failed += 1
+                await msg.reply_text(f"⚠️ رد شد: {meta.display} — {result}")
+            elif result is None:
+                cached = file_cache.get(f"audio:{meta.id}")
+                ok = await _send_cached(msg, meta, cached) if cached else False
+                done += ok
+                failed += not ok
+            else:
+                ok = await _upload_track(msg, meta, result)
+                done += ok
+                failed += not ok
+        except Exception as e:
             failed += 1
+            log.warning("send failed for %s: %s", meta.display, e)
+
         # Editing on every track would burn the rate limit on long playlists.
         if i % 3 == 0 or i == len(tracks):
             try:
                 await status.edit_text(
-                    f"⬇️ {i}/{len(tracks)} — ✅ {done}" + (f" · ❌ {failed}" if failed else "")
+                    f"⬇️ {i}/{len(tracks)} — ✅ {done}"
+                    + (f" · ❌ {failed}" if failed else "")
                 )
             except Exception:
                 pass
@@ -273,42 +316,39 @@ async def _download_range(msg, container, offset: int, count: int) -> None:
         pass
 
 
-async def _send_and_download_track(msg, meta) -> bool:
+async def _send_cover(msg, meta) -> None:
+    """Cover art as its own message, full resolution, with the platform links
+    beneath it. Telegram compresses a photo far less than the 320x320 thumbnail
+    the audio file is allowed to carry."""
+    if not meta.cover_url:
+        return
+    from handlers.lyrics_handler import platform_keyboard
+
+    try:
+        await msg.reply_photo(
+            photo=meta.cover_url,
+            caption=f"🎵 *{meta.name}*\n👤 {', '.join(meta.artists)}"
+            + (f"\n💿 {meta.album}" if meta.album else ""),
+            parse_mode="Markdown",
+            reply_markup=platform_keyboard(
+                ", ".join(meta.artists), meta.name, sp.platform_links(meta)
+            ),
+        )
+    except Exception as e:
+        log.info("cover send failed for %s: %s", meta.display, e)
+
+
+async def _upload_track(msg, meta, path, *, with_cover: bool = True) -> bool:
+    """Send the cover message and then the audio itself."""
     from config import settings
     from handlers.lyrics_handler import lyrics_button
     from utils import file_cache
     from utils.helpers import prepare_telegram_thumb, safe_filename
 
     cache_key = f"audio:{meta.id}"
+    if with_cover:
+        await _send_cover(msg, meta)
 
-    # Fast path: Telegram already has these bytes. Re-sending the file_id is
-    # one API call - no download, no ffmpeg, no upload.
-    cached = file_cache.get(cache_key)
-    if cached:
-        try:
-            await msg.reply_audio(
-                audio=cached,
-                title=meta.name,
-                performer=", ".join(meta.artists),
-                duration=meta.duration_ms // 1000,
-                reply_markup=lyrics_button(
-                    ", ".join(meta.artists), meta.name, sp.platform_links(meta)
-                ),
-            )
-            return True
-        except Exception as e:
-            log.info("cached file_id rejected (%s) - re-downloading", e)
-            file_cache.drop(cache_key)
-
-    status = await msg.reply_text(f"⬇️ دانلود: *{meta.display}*", parse_mode="Markdown")
-    try:
-        path = await sp.download_track(meta)
-    except Exception as e:
-        await status.edit_text(f"❌ {e}")
-        return False
-
-    # iOS/Desktop clients only show thumbnails passed via the API parameter,
-    # not the ID3 art embedded inside the file.
     thumb_path = None
     if meta.cover_url:
         thumb_path = await prepare_telegram_thumb(
@@ -316,7 +356,6 @@ async def _send_and_download_track(msg, meta) -> bool:
             settings.download_dir / "thumbs" / f"{safe_filename(meta.display)}.jpg",
         )
 
-    await status.edit_text("📤 آپلود به تلگرام…")
     try:
         with path.open("rb") as fh:
             sent = await msg.reply_audio(
@@ -325,18 +364,76 @@ async def _send_and_download_track(msg, meta) -> bool:
                 performer=", ".join(meta.artists),
                 duration=meta.duration_ms // 1000,
                 thumbnail=thumb_path.open("rb") if thumb_path else None,
-                reply_markup=lyrics_button(
-                    ", ".join(meta.artists), meta.name, sp.platform_links(meta)
-                ),
+                reply_markup=lyrics_button(", ".join(meta.artists), meta.name),
             )
         if sent and sent.audio:
             file_cache.put(cache_key, sent.audio.file_id)
-        await status.delete()
         return True
     except Exception as e:
-        log.exception("spotify upload failed")
-        await status.edit_text(f"❌ آپلود ناموفق: {e}")
+        log.exception("audio upload failed")
+        await msg.reply_text(f"❌ آپلود ناموفق: {meta.display} — {e}")
         return False
+
+
+async def _send_cached(msg, meta, file_id: str) -> bool:
+    from handlers.lyrics_handler import lyrics_button
+
+    await _send_cover(msg, meta)
+    await msg.reply_audio(
+        audio=file_id,
+        title=meta.name,
+        performer=", ".join(meta.artists),
+        duration=meta.duration_ms // 1000,
+        reply_markup=lyrics_button(", ".join(meta.artists), meta.name),
+    )
+    return True
+
+
+async def _send_and_download_track(msg, meta, *, quiet: bool = False) -> bool:
+    from utils import file_cache
+
+    cache_key = f"audio:{meta.id}"
+
+    # Fast path: Telegram already has these bytes. Re-sending the file_id is
+    # one API call - no download, no ffmpeg, no upload.
+    cached = file_cache.get(cache_key)
+    if cached:
+        try:
+            await sp.fill_cover(meta)
+            return await _send_cached(msg, meta, cached)
+        except Exception as e:
+            log.info("cached file_id rejected (%s) - re-downloading", e)
+            file_cache.drop(cache_key)
+
+    # Show the cover (and its platform links) straight away. The metadata is
+    # already in hand, so the user gets something within a few hundred ms
+    # instead of staring at a progress line for the whole download.
+    await sp.fill_cover(meta)
+    await _send_cover(msg, meta)
+
+    status = None
+    if not quiet:
+        status = await msg.reply_text(
+            f"⬇️ دانلود: *{meta.display}*", parse_mode="Markdown"
+        )
+    try:
+        path = await sp.download_track(meta)
+    except Exception as e:
+        if status:
+            await status.edit_text(f"❌ {e}")
+        else:
+            await msg.reply_text(f"❌ {e}")
+        return False
+
+    if status:
+        await status.edit_text("📤 آپلود به تلگرام…")
+    ok = await _upload_track(msg, meta, path, with_cover=False)
+    if status:
+        try:
+            await status.delete()
+        except Exception:
+            pass
+    return ok
 
 
 # ---------- callbacks ----------

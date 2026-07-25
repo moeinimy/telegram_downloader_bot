@@ -27,20 +27,27 @@ _cache: dict[str, tuple[str, str]] = {}
 def lyrics_button(
     artist: str, title: str, links: dict[str, str] | None = None
 ) -> InlineKeyboardMarkup:
-    """
-    Keyboard attached to every audio file: lyrics plus a link to the song on
-    each major platform. `links` supplies real URLs where we know them; the
-    rest fall back to that platform's search page, which always resolves.
-    """
+    """Lyrics-only keyboard, attached to the audio file itself.
+
+    `links` is accepted and ignored so older call sites keep working; platform
+    links now live under the cover image (see platform_keyboard)."""
     key = hashlib.md5(f"{artist}|{title}".encode("utf-8")).hexdigest()[:12]
     _cache[key] = (artist, title)
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("📜 متن آهنگ", callback_data=f"lyr:{key}")]]
+    )
 
+
+def platform_keyboard(
+    artist: str, title: str, links: dict[str, str] | None = None
+) -> InlineKeyboardMarkup:
+    """Links to the song on each major service, shown under the cover art.
+    Real URLs are used where the source gave us one; the rest fall back to
+    that platform's search page, which always resolves to something."""
     q = quote_plus(f"{artist} {title}".strip())
     links = links or {}
-
     return InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton("📜 متن آهنگ", callback_data=f"lyr:{key}")],
             [
                 InlineKeyboardButton(
                     "🟢 Spotify",

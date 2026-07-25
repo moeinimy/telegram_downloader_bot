@@ -86,12 +86,18 @@ def _base_opts(client: str = "") -> dict:
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
+        "noprogress": True,
         # Hung connections must not freeze a worker thread forever.
         "socket_timeout": 30,
         "retries": 3,
         # YouTube requires a JS runtime (deno) + remote challenge-solver
         # scripts; allow yt-dlp to fetch the EJS solver from GitHub.
         "remote_components": ["ejs:github"],
+        # Persist that solver (and signature caches) between runs instead of
+        # re-fetching them on every single extraction.
+        "cachedir": str(settings.download_dir / ".ytdlp-cache"),
+        # Fragmented streams dominate the download time; fetch pieces at once.
+        "concurrent_fragment_downloads": 4,
     }
     if client:
         opts["extractor_args"] = {"youtube": {"player_client": [client]}}
