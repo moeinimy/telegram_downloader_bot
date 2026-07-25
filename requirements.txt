@@ -1,24 +1,24 @@
 # Telegram Bot Framework
 python-telegram-bot[ext]==21.6
 
-# Async / utility
+# Config + HTTP client (httpx is used directly and also by PTB)
 python-dotenv==1.0.1
-aiofiles==24.1.0
-aiohttp==3.10.10
 httpx==0.27.2
 
 # YouTube / SoundCloud / Instagram extraction (keep latest; sites break often)
 yt-dlp
 
-# Instagram stories + photo carousels (only used when session cookies are set)
-instaloader==4.13.1
+# Instagram stories + photo carousels (only used when session cookies are set).
+# Not pinned exactly: old point releases get pulled from PyPI regularly.
+instaloader>=4.14.2
 
-# Music recognition (Shazam)
+# Music recognition (Shazam). Pulls its own aiofiles/aiohttp/numpy/pydantic -
+# do NOT pin those here or the resolver conflicts.
 shazamio
 
 # Audio / image processing (metadata, album art, mp3 tags)
 mutagen==1.47.0
 Pillow==10.4.0
 
-# ffmpeg-python wrapper (you must also install ffmpeg binary on system PATH)
-ffmpeg-python==0.2.0
+# NOTE: ffmpeg is required as a SYSTEM binary (apt install ffmpeg), not a
+# Python package. yt-dlp calls it directly.
