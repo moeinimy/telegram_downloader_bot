@@ -34,6 +34,22 @@ from handlers import (
 log = logging.getLogger("main")
 
 
+def _local_api_reachable(base: str, timeout: float = 3.0) -> bool:
+    """A TCP connect is enough: the server answers 404 on / but that still
+    proves it is listening."""
+    import socket
+    from urllib.parse import urlparse
+
+    parsed = urlparse(base)
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
 def build_app() -> Application:
     builder = (
         Application.builder()
@@ -54,12 +70,22 @@ def build_app() -> Application:
     # 50MB upload cap of the public api.telegram.org to 2GB.
     if settings.bot_api_base_url:
         base = settings.bot_api_base_url.rstrip("/")
-        builder = (
-            builder.base_url(f"{base}/bot")
-            .base_file_url(f"{base}/file/bot")
-            .local_mode(True)
-        )
-        log.info("Using local Bot API server at %s", base)
+        if _local_api_reachable(base):
+            builder = (
+                builder.base_url(f"{base}/bot")
+                .base_file_url(f"{base}/file/bot")
+                .local_mode(True)
+            )
+            log.info("Using local Bot API server at %s", base)
+        else:
+            # Falling back keeps the bot answering. Refusing to start left it
+            # in a crash loop whenever the container was down, which took out
+            # every feature over an optional upgrade.
+            log.error(
+                "BOT_API_BASE_URL=%s is not reachable - falling back to the "
+                "public Bot API (50MB limit). Fix with: botctl diag",
+                base,
+            )
 
     app = builder.build()
 

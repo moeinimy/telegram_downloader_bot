@@ -444,25 +444,40 @@ do_botapi() {
     local data_dir="/var/lib/telegram-bot-api"
     mkdir -p "$data_dir"
 
-    # Run the server AS the bot user. The media it writes lands two levels
-    # down in per-token directories; created as root they are unreadable to
-    # the bot, python-telegram-bot then quietly falls back to fetching them
-    # over HTTP, and the local server answers that with 404 - surfacing as a
-    # bare "Not Found" no matter the file size.
-    local uid gid
-    uid=$(id -u "$BOT_USER") ; gid=$(id -g "$BOT_USER")
-    chown -R "$uid:$gid" "$data_dir"
+    # The image drops privileges to its own uid, so the data dir has to belong
+    # to THAT user - forcing it to the bot user made the server unable to write
+    # and the container died on start. The bot only needs to READ, which the
+    # chmod below grants without touching ownership.
+    local img_uid
+    img_uid=$(_botapi_uid)
+    info "کاربر داخلی ایمیج: $img_uid"
+    chown -R "$img_uid:$img_uid" "$data_dir" 2>/dev/null
     chmod 755 "$data_dir"
 
     docker rm -f telegram-bot-api 2>/dev/null
     docker run -d --name telegram-bot-api --restart always \
-        --user "$uid:$gid" \
         -p 127.0.0.1:8081:8081 \
         -e TELEGRAM_API_ID="$api_id" \
         -e TELEGRAM_API_HASH="$api_hash" \
         -v "$data_dir:$data_dir" \
         aiogram/telegram-bot-api:latest --local --dir="$data_dir" \
         || { err "docker بالا نیومد"; return; }
+
+    info "صبر برای بالا اومدن سرور..."
+    local up=0 i
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        sleep 2
+        if curl -s -m 3 -o /dev/null "http://127.0.0.1:8081/"; then up=1; break; fi
+    done
+    if [[ "$up" -ne 1 ]]; then
+        err "سرور جواب نمی‌ده. لاگ کانتینر:"
+        docker logs --tail 20 telegram-bot-api 2>&1 | sed 's/^/    /'
+        return 1
+    fi
+    ok "سرور بالا اومد"
+
+    # Readable by the bot; ownership stays with the server.
+    chmod -R a+rX "$data_dir" 2>/dev/null
 
     if grep -q '^BOT_API_BASE_URL=' "$PROJECT_DIR/.env"; then
         sed -i 's|^BOT_API_BASE_URL=.*|BOT_API_BASE_URL=http://127.0.0.1:8081|' "$PROJECT_DIR/.env"
@@ -500,6 +515,14 @@ do_instagram() {
     ok "ذخیره شد - استوری حالا فعاله"
 }
 
+_botapi_uid() {
+    # The uid the image runs as. Detected rather than assumed so a future
+    # image change cannot silently break write access again.
+    docker run --rm --entrypoint id aiogram/telegram-bot-api:latest -u 2>/dev/null \
+        | tr -d '\r\n' | grep -E '^[0-9]+$' || echo 101
+}
+
+
 do_fixperms() {
     echo; info "=== اصلاح دسترسی فایل‌های Local Bot API ==="
     local data_dir="/var/lib/telegram-bot-api"
@@ -507,24 +530,33 @@ do_fixperms() {
         err "$data_dir وجود نداره - اول گزینه ۹ رو بزن"
         return 1
     fi
-    local uid gid
-    uid=$(id -u "$BOT_USER") ; gid=$(id -g "$BOT_USER")
 
-    chown -R "$uid:$gid" "$data_dir"
-    chmod -R u+rwX,go+rX "$data_dir"
-    ok "مالکیت و دسترسی اصلاح شد"
+    # Ownership must stay with the server's own uid: taking it away stops the
+    # container writing and it exits, which takes the bot down with it. The
+    # bot only needs read access, so widen the mode instead.
+    local img_uid
+    img_uid=$(_botapi_uid)
+    info "برگرداندن مالکیت به کاربر سرور ($img_uid)..."
+    chown -R "$img_uid:$img_uid" "$data_dir" 2>/dev/null
+    chmod -R a+rX "$data_dir"
+    chmod 755 "$data_dir"
+    ok "دسترسی اصلاح شد"
 
-    # Existing files are fixed above, but the running container keeps writing
-    # as root unless it is restarted under the bot user.
-    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^telegram-bot-api$'; then
-        if ! docker inspect telegram-bot-api --format '{{.Config.User}}' 2>/dev/null \
-             | grep -q "$uid"; then
-            warn "کانتینر هنوز با کاربر root اجرا می‌شه؛ فایل‌های جدید دوباره مشکل‌دار می‌شن."
-            warn "برای اصلاح دائمی گزینه ۹ رو دوباره اجرا کن."
+    if command -v docker &>/dev/null; then
+        if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^telegram-bot-api$'; then
+            warn "کانتینر بالا نیست - استارتش می‌کنم..."
+            docker start telegram-bot-api 2>/dev/null \
+                && ok "کانتینر استارت شد" \
+                || err "استارت نشد - گزینه ۹ رو دوباره اجرا کن"
+            sleep 3
         fi
     fi
+
     systemctl restart "$SERVICE_NAME"
-    ok "بات ریستارت شد"
+    sleep 3
+    systemctl is-active --quiet "$SERVICE_NAME" \
+        && ok "بات بالا اومد" \
+        || err "بات بالا نیومد - گزینه ۶ (خطاهای اخیر) رو ببین"
 }
 
 
