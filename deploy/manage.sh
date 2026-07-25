@@ -29,8 +29,32 @@ pause() { echo; read -rp "Enter برای برگشت به منو..." _; }
 
 ensure_packages() {
     info "نصب پکیج‌های سیستم..."
-    apt-get update -qq
-    apt-get install -y -qq python3 python3-venv python3-pip ffmpeg git unzip curl ca-certificates
+    export DEBIAN_FRONTEND=noninteractive
+
+    # A previously interrupted apt/dpkg run leaves the package DB half-configured
+    # and blocks every future install. Repair it before doing anything.
+    if ! dpkg --configure -a 2>/dev/null; then
+        warn "ترمیم dpkg..."
+        dpkg --configure -a || true
+    fi
+
+    apt-get update -qq || { err "apt update نشد - اینترنت سرور رو چک کن"; return 1; }
+
+    # python3-venv is versioned on some releases (python3.10-venv etc.); install
+    # the exact one that matches the running interpreter, plus the generic name.
+    local pyver
+    pyver=$(python3 -c 'import sys;print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null)
+    apt-get install -y -qq \
+        python3 python3-pip python3-venv "python${pyver}-venv" \
+        ffmpeg git unzip curl ca-certificates 2>/dev/null \
+      || apt-get install -y python3 python3-pip python3-venv ffmpeg git unzip curl ca-certificates \
+      || { err "نصب پکیج‌ها شکست خورد"; return 1; }
+
+    # Verify venv actually works now, otherwise stop before we build a broken one.
+    if ! python3 -c 'import ensurepip, venv' 2>/dev/null; then
+        err "ماژول venv هنوز کار نمی‌کنه. دستی بزن:  apt install -y python${pyver}-venv"
+        return 1
+    fi
     ok "پکیج‌ها نصب شدن"
 }
 
@@ -57,11 +81,22 @@ ensure_user() {
 ensure_venv() {
     if [[ ! -x "$PROJECT_DIR/.venv/bin/python" ]]; then
         info "ساخت venv..."
-        sudo -u "$BOT_USER" python3 -m venv "$PROJECT_DIR/.venv"
+        # A half-created .venv (e.g. from a failed python3-venv) must be wiped
+        # first or python refuses to recreate it.
+        rm -rf "$PROJECT_DIR/.venv"
+        if ! sudo -u "$BOT_USER" python3 -m venv "$PROJECT_DIR/.venv"; then
+            err "ساخت venv شکست خورد - python3-venv نصب نیست"
+            return 1
+        fi
+    fi
+    if [[ ! -x "$PROJECT_DIR/.venv/bin/pip" ]]; then
+        err "venv خرابه (pip نیست). پوشه .venv رو پاک کن و دوباره نصب بزن."
+        return 1
     fi
     info "نصب/آپدیت پکیج‌های پایتون..."
     sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/pip" install -q --upgrade pip
-    sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/pip" install -q -r "$PROJECT_DIR/requirements.txt"
+    sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/pip" install -q -r "$PROJECT_DIR/requirements.txt" \
+        || { err "نصب پکیج‌های پایتون شکست خورد"; return 1; }
     ok "پکیج‌های پایتون آماده‌ن"
 }
 
@@ -154,7 +189,7 @@ do_install() {
     fi
 
     fix_perms
-    ensure_venv
+    ensure_venv || { err "نصب متوقف شد - venv آماده نشد. خطای بالا رو ببین."; return 1; }
     ensure_service
 
     info "چک سینتکس..."
@@ -164,12 +199,13 @@ do_install() {
     fi
     ok "سینتکس سالمه"
 
+    install_shortcut
     systemctl restart "$SERVICE_NAME"
     sleep 2
-    install_shortcut
     echo
     systemctl --no-pager --lines=8 status "$SERVICE_NAME"
-    echo; ok "نصب تموم شد. از این به بعد فقط گزینه ۲ رو بزن."
+    echo; ok "نصب تموم شد. از این به بعد فقط 'botctl' رو بزن."
+    warn "اگه 'botctl' رو پیدا نکرد، یه بار این رو بزن:  hash -r"
 }
 
 
