@@ -441,43 +441,7 @@ do_botapi() {
     # rather than a download URL. With a named docker volume that path exists
     # only inside the container, so the bot could not open it and every media
     # download failed with "Not Found". Bind-mount the same path on the host.
-    local data_dir="/var/lib/telegram-bot-api"
-    mkdir -p "$data_dir"
-
-    # The image drops privileges to its own uid, so the data dir has to belong
-    # to THAT user - forcing it to the bot user made the server unable to write
-    # and the container died on start. The bot only needs to READ, which the
-    # chmod below grants without touching ownership.
-    local img_uid
-    img_uid=$(_botapi_uid)
-    info "کاربر داخلی ایمیج: $img_uid"
-    chown -R "$img_uid:$img_uid" "$data_dir" 2>/dev/null
-    chmod 755 "$data_dir"
-
-    docker rm -f telegram-bot-api 2>/dev/null
-    docker run -d --name telegram-bot-api --restart always \
-        -p 127.0.0.1:8081:8081 \
-        -e TELEGRAM_API_ID="$api_id" \
-        -e TELEGRAM_API_HASH="$api_hash" \
-        -v "$data_dir:$data_dir" \
-        aiogram/telegram-bot-api:latest --local --dir="$data_dir" \
-        || { err "docker بالا نیومد"; return; }
-
-    info "صبر برای بالا اومدن سرور..."
-    local up=0 i
-    for i in 1 2 3 4 5 6 7 8 9 10; do
-        sleep 2
-        if curl -s -m 3 -o /dev/null "http://127.0.0.1:8081/"; then up=1; break; fi
-    done
-    if [[ "$up" -ne 1 ]]; then
-        err "سرور جواب نمی‌ده. لاگ کانتینر:"
-        docker logs --tail 20 telegram-bot-api 2>&1 | sed 's/^/    /'
-        return 1
-    fi
-    ok "سرور بالا اومد"
-
-    # Readable by the bot; ownership stays with the server.
-    chmod -R a+rX "$data_dir" 2>/dev/null
+    _botapi_run "$api_id" "$api_hash" || return 1
 
     if grep -q '^BOT_API_BASE_URL=' "$PROJECT_DIR/.env"; then
         sed -i 's|^BOT_API_BASE_URL=.*|BOT_API_BASE_URL=http://127.0.0.1:8081|' "$PROJECT_DIR/.env"
@@ -515,11 +479,70 @@ do_instagram() {
     ok "ذخیره شد - استوری حالا فعاله"
 }
 
-_botapi_uid() {
-    # The uid the image runs as. Detected rather than assumed so a future
-    # image change cannot silently break write access again.
-    docker run --rm --entrypoint id aiogram/telegram-bot-api:latest -u 2>/dev/null \
-        | tr -d '\r\n' | grep -E '^[0-9]+$' || echo 101
+_botapi_run() {
+    # One place that knows how to start the container correctly.
+    # It must run as ROOT: the image's entrypoint chowns the data directory to
+    # its own internal user before dropping privileges. Pinning --user made
+    # that chown fail with "Operation not permitted" and the container died in
+    # a restart loop.
+    local api_id="$1" api_hash="$2" data_dir="/var/lib/telegram-bot-api"
+
+    mkdir -p "$data_dir"
+    docker rm -f telegram-bot-api &>/dev/null
+
+    docker run -d --name telegram-bot-api --restart always \
+        -p 127.0.0.1:8081:8081 \
+        -e TELEGRAM_API_ID="$api_id" \
+        -e TELEGRAM_API_HASH="$api_hash" \
+        -v "$data_dir:$data_dir" \
+        aiogram/telegram-bot-api:latest --local --dir="$data_dir" \
+        || { err "docker بالا نیومد"; return 1; }
+
+    info "صبر برای بالا اومدن سرور..."
+    local i
+    for i in $(seq 1 12); do
+        sleep 2
+        if curl -s -m 3 -o /dev/null "http://127.0.0.1:8081/"; then
+            # Ownership belongs to the server; the bot only needs to read.
+            chmod -R a+rX "$data_dir" 2>/dev/null
+            ok "سرور بالا اومد"
+            return 0
+        fi
+    done
+
+    err "سرور جواب نمی‌ده. لاگ کانتینر:"
+    docker logs --tail 25 telegram-bot-api 2>&1 | sed 's/^/    /'
+    return 1
+}
+
+
+do_botapi_repair() {
+    echo; info "=== تعمیر کانتینر Local Bot API ==="
+    if ! docker inspect telegram-bot-api &>/dev/null; then
+        err "کانتینری وجود نداره - گزینه ۹ رو بزن"
+        return 1
+    fi
+
+    # Reuse the credentials already in the container so they need not be
+    # typed again just to rebuild it.
+    local api_id api_hash env_dump
+    env_dump=$(docker inspect telegram-bot-api --format '{{range .Config.Env}}{{println .}}{{end}}')
+    api_id=$(echo "$env_dump"   | grep '^TELEGRAM_API_ID='   | cut -d= -f2-)
+    api_hash=$(echo "$env_dump" | grep '^TELEGRAM_API_HASH=' | cut -d= -f2-)
+
+    if [[ -z "$api_id" || -z "$api_hash" ]]; then
+        err "API ID/HASH تو کانتینر نبود - گزینه ۹ رو بزن و دستی واردشون کن"
+        return 1
+    fi
+    ok "کلیدها از کانتینر قبلی خونده شد (API ID: $api_id)"
+
+    _botapi_run "$api_id" "$api_hash" || return 1
+
+    systemctl restart "$SERVICE_NAME"
+    sleep 3
+    systemctl is-active --quiet "$SERVICE_NAME" \
+        && ok "بات بالا اومد" \
+        || { err "بات بالا نیومد:"; journalctl -u "$SERVICE_NAME" --no-pager -n 15; }
 }
 
 
@@ -534,13 +557,11 @@ do_fixperms() {
     # Ownership must stay with the server's own uid: taking it away stops the
     # container writing and it exits, which takes the bot down with it. The
     # bot only needs read access, so widen the mode instead.
-    local img_uid
-    img_uid=$(_botapi_uid)
-    info "برگرداندن مالکیت به کاربر سرور ($img_uid)..."
-    chown -R "$img_uid:$img_uid" "$data_dir" 2>/dev/null
+    # Do NOT chown here: the image's entrypoint owns that decision and runs
+    # as root to make it. Taking ownership away is what killed the container.
     chmod -R a+rX "$data_dir"
     chmod 755 "$data_dir"
-    ok "دسترسی اصلاح شد"
+    ok "دسترسی خواندن اصلاح شد"
 
     if command -v docker &>/dev/null; then
         if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^telegram-bot-api$'; then
@@ -728,7 +749,8 @@ menu() {
     echo " 13) فرمت فایل صوتی (m4a / mp3 / flac)"
     echo " 14) تشخیص مشکل Local Bot API"
     echo " 15) اصلاح دسترسی فایل‌های Bot API"
-    echo " 16) نصب مجدد از صفر (پاک کردن همه چی)"
+    echo " 16) تعمیر کانتینر Bot API (بدون وارد کردن کلید)"
+    echo " 17) نصب مجدد از صفر (پاک کردن همه چی)"
     echo "  0) خروج"
     echo
 }
@@ -740,6 +762,7 @@ case "${1:-}" in
     clearcache) do_clearcache; exit $? ;;
     diag)    do_diag;    exit 0 ;;
     fixperms) do_fixperms; exit $? ;;
+    botapi-repair) do_botapi_repair; exit $? ;;
     update)  do_update;  exit $? ;;
     restart) systemctl restart "$SERVICE_NAME"; exit $? ;;
     status)  do_status;  exit 0 ;;
@@ -769,7 +792,8 @@ while true; do
         13) do_audioformat; pause ;;
         14) do_diag; pause ;;
         15) do_fixperms; pause ;;
-        16) do_reset; pause ;;
+        16) do_botapi_repair; pause ;;
+        17) do_reset; pause ;;
         0)  echo; exit 0 ;;
         *)  err "گزینه نامعتبر"; sleep 1 ;;
     esac
