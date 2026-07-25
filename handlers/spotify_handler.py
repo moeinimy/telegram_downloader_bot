@@ -29,6 +29,7 @@ from telegram.ext import ContextTypes
 
 from modules import spotify as sp
 from modules import stats
+from utils.i18n import t
 from utils.url_router import RouteResult, SpotifyKind
 
 log = logging.getLogger(__name__)
@@ -75,7 +76,8 @@ async def handle_range_reply(
     m = re.fullmatch(r"\s*(\d*)\s*[-–—تا]+\s*(\d*)\s*", text)
     if not m or not (m.group(1) or m.group(2)):
         await update.effective_message.reply_text(
-            "فرمت درست نیست. مثل `500-600` بنویس یا برای لغو /start بزن.",
+            t(update.effective_message.chat_id,
+              "فرمت درست نیست. مثل `500-600` بنویس یا برای لغو /start بزن."),
             parse_mode="Markdown",
         )
         return True
@@ -90,7 +92,8 @@ async def handle_range_reply(
     start = max(1, min(start, total))
     end = max(start, min(end, total))
 
-    await update.effective_message.reply_text(f"⬇️ ترک {start} تا {end}")
+    await update.effective_message.reply_text(
+        t(update.effective_message.chat_id, "⬇️ ترک {start} تا {end}").format(start=start, end=end))
     await _download_range(update.effective_message, container, start - 1, end - start + 1)
     return True
 
@@ -111,16 +114,16 @@ async def handle_search(
         # search rather than making the user press a button for it.
         tracks = await sp.deep_search(query, limit=10)
         if not tracks:
-            await msg.reply_text("نتیجه‌ای پیدا نکردم.")
+            await msg.reply_text(t(msg.chat_id, "نتیجه‌ای پیدا نکردم."))
             return
         await _send_tracklist(
-            msg, title=f"نتایج «{query}»", tracks=tracks, bulk_callback=None
+            msg, title=t(msg.chat_id, "نتایج «{q}»").format(q=query), tracks=tracks, bulk_callback=None
         )
         return
 
     await _send_tracklist(
         msg,
-        title=f"نتایج «{query}»",
+        title=t(msg.chat_id, "نتایج «{q}»").format(q=query),
         tracks=tracks,
         bulk_callback=None,
         deep_query=query,
@@ -154,14 +157,16 @@ def _source_icon(track_id: str) -> str:
     return "🎵"
 
 
-def _button_label(t) -> str:
+def _button_label(track) -> str:
     """'Artist — Song · 3:24'. Duration disambiguates the remixes and live
-    cuts that otherwise look like identical entries."""
+    cuts that otherwise look like identical entries.
+
+    Note the parameter is not called `t`: that is the translation function."""
     from utils.helpers import fmt_duration
 
-    label = _truncate(f"{_source_icon(t.id)} {t.display}")
-    if t.duration_ms:
-        label += f" · {fmt_duration(t.duration_ms // 1000)}"
+    label = _truncate(f"{_source_icon(track.id)} {track.display}")
+    if track.duration_ms:
+        label += f" · {fmt_duration(track.duration_ms // 1000)}"
     return label
 
 
@@ -169,15 +174,15 @@ async def _send_tracklist(
     msg, *, title: str, tracks, bulk_callback: str | None, deep_query: str | None = None
 ) -> None:
     rows = [
-        [InlineKeyboardButton(_button_label(t), callback_data=f"sp:trk:{t.id}")]
-        for t in tracks
+        [InlineKeyboardButton(_button_label(tr), callback_data=f"sp:trk:{tr.id}")]
+        for tr in tracks
     ]
     if bulk_callback:
         rows.append([InlineKeyboardButton("⬇️ دانلود همه", callback_data=bulk_callback)])
     if deep_query:
         key = _remember_query(deep_query)
         rows.append(
-            [InlineKeyboardButton("🔎 نتایج بیشتر (یوتیوب و ساندکلاد)",
+            [InlineKeyboardButton(t(msg.chat_id, "🔎 نتایج بیشتر (یوتیوب و ساندکلاد)"),
                                   callback_data=f"sp:more:{key}")]
         )
     await msg.reply_text(title, reply_markup=InlineKeyboardMarkup(rows))
@@ -245,9 +250,9 @@ def _page_keyboard(kind: str, rid: str, container, offset: int) -> InlineKeyboar
 
     rows = [
         [InlineKeyboardButton(
-            f"{offset + i + 1}. {_button_label(t)}", callback_data=f"sp:trk:{t.id}"
+            f"{offset + i + 1}. {_button_label(tr)}", callback_data=f"sp:trk:{tr.id}"
         )]
-        for i, t in enumerate(page)
+        for i, tr in enumerate(page)
     ]
 
     last_start = max(0, ((total - 1) // _PAGE) * _PAGE)
@@ -292,7 +297,7 @@ async def _send_container_menu(msg, kind: str, rid: str) -> None:
     container = await _load_container(kind, rid)
     total = len(container.tracks)
     if not total:
-        await msg.reply_text("این لیست ترکی نداره.")
+        await msg.reply_text(t(msg.chat_id, "این لیست ترکی نداره."))
         return
     header = f"{_container_title(kind, container)}\n🎵 {total} ترک"
     if getattr(container, "truncated", False):
@@ -327,7 +332,7 @@ async def _download_range(msg, container, offset: int, count: int) -> None:
 
     tracks = container.tracks[offset : offset + count]
     if not tracks:
-        await msg.reply_text("چیزی تو این محدوده نیست.")
+        await msg.reply_text(t(msg.chat_id, "چیزی تو این محدوده نیست."))
         return
 
     chat_id = msg.chat_id
@@ -345,7 +350,7 @@ async def _download_range(msg, container, offset: int, count: int) -> None:
             log.info("batch cover failed: %s", e)
 
     status = await msg.reply_text(
-        f"⬇️ شروع دانلود {len(tracks)} ترک…",
+        t(chat_id, "⬇️ شروع دانلود {n} ترک…").format(n=len(tracks)),
         reply_markup=InlineKeyboardMarkup(
             [[InlineKeyboardButton("⏹ توقف", callback_data="sp:stop")]]
         ),
@@ -377,7 +382,7 @@ async def _download_range(msg, container, offset: int, count: int) -> None:
         try:
             if isinstance(result, Exception):
                 failed += 1
-                await msg.reply_text(f"⚠️ رد شد: {meta.display} — {result}")
+                await msg.reply_text(t(chat_id, "⚠️ رد شد: {name} — {err}").format(name=meta.display, err=result))
             elif result is None:
                 cached = file_cache.get(f"audio:{meta.id}")
                 ok = (
@@ -409,9 +414,10 @@ async def _download_range(msg, container, offset: int, count: int) -> None:
                 pass
 
     _cancelled.discard(chat_id)
-    summary = ("⏹ متوقف شد — " if stopped else "") + f"✅ {done} ترک فرستاده شد"
+    summary = (t(chat_id, "⏹ متوقف شد — ") if stopped else "")
+    summary += t(chat_id, "✅ {n} ترک فرستاده شد").format(n=done)
     if failed:
-        summary += f" · {failed} تا ناموفق"
+        summary += t(chat_id, " · {n} تا ناموفق").format(n=failed)
     try:
         await status.edit_text(summary)
     except Exception:
@@ -486,7 +492,7 @@ async def _upload_track(msg, meta, path, *, with_cover: bool = True) -> bool:
         return True
     except Exception as e:
         log.exception("audio upload failed")
-        await msg.reply_text(f"❌ آپلود ناموفق: {meta.display} — {e}")
+        await msg.reply_text(t(msg.chat_id, "❌ آپلود ناموفق: {name} — {err}").format(name=meta.display, err=e))
         return False
 
 
@@ -526,7 +532,7 @@ async def _send_and_download_track(msg, meta, *, quiet: bool = False) -> bool:
     # A separate status message plus its edits and deletion cost three extra
     # round trips per track, which is most of the wait on a cached song.
     await sp.fill_cover(meta)
-    cover_msg = await _send_cover(msg, meta, status="⬇️ در حال دانلود…")
+    cover_msg = await _send_cover(msg, meta, status=t(msg.chat_id, "⬇️ در حال دانلود…"))
 
     status = None
     if cover_msg is None and not quiet:
@@ -573,14 +579,14 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if data == "sp:stop":
         _cancelled.add(query.message.chat_id)
         try:
-            await query.answer("متوقف شد — ترک‌های در حال دانلود تموم می‌شن.")
+            await query.answer(t(query.message.chat_id, "متوقف شد — ترک‌های در حال دانلود تموم می‌شن."))
         except Exception:
             pass
         return
 
     if data.startswith("sp:sim:"):
         track_id = data.split(":", 2)[2]
-        status = await query.message.reply_text("🎧 دنبال آهنگ‌های شبیه می‌گردم…")
+        status = await query.message.reply_text(t(query.message.chat_id, "🎧 دنبال آهنگ‌های شبیه می‌گردم…"))
         try:
             meta = await sp.get_track_meta(track_id)
             tracks = await sp.similar_tracks(meta, limit=8)
@@ -588,12 +594,12 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             await status.edit_text(f"❌ {e}")
             return
         if not tracks:
-            await status.edit_text("چیزی شبیه این پیدا نکردم.")
+            await status.edit_text(t(query.message.chat_id, "چیزی شبیه این پیدا نکردم."))
             return
         await status.delete()
         await _send_tracklist(
             query.message,
-            title=f"🎧 شبیه «{meta.display}»",
+            title=t(query.message.chat_id, "🎧 شبیه «{name}»").format(name=meta.display),
             tracks=tracks,
             bulk_callback=None,
         )
@@ -635,10 +641,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         key = data.split(":", 2)[2]
         search_query = _query_cache.get(key)
         if not search_query:
-            await query.message.reply_text("⌛ سشن منقضی شده. دوباره سرچ کن.")
+            await query.message.reply_text(t(query.message.chat_id, "⌛ سشن منقضی شده. دوباره سرچ کن."))
             return
         status = await query.message.reply_text(
-            "🔎 دنبال ریمیکس‌ها و نسخه‌های دیگه می‌گردم… (چند ثانیه طول می‌کشه)"
+            t(query.message.chat_id, "🔎 دنبال ریمیکس‌ها و نسخه‌های دیگه می‌گردم… (چند ثانیه طول می‌کشه)")
         )
         try:
             tracks = await sp.deep_search(search_query, limit=12)
@@ -646,12 +652,12 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             await status.edit_text(f"❌ {e}")
             return
         if not tracks:
-            await status.edit_text("چیز بیشتری پیدا نکردم.")
+            await status.edit_text(t(query.message.chat_id, "چیز بیشتری پیدا نکردم."))
             return
         await status.delete()
         await _send_tracklist(
             query.message,
-            title=f"🔎 نتایج بیشتر «{search_query}»",
+            title=t(query.message.chat_id, "🔎 نتایج بیشتر «{q}»").format(q=search_query),
             tracks=tracks,
             bulk_callback=None,
         )

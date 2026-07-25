@@ -49,6 +49,7 @@ def _panel_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("👥 لیست کاربران", callback_data="adm:users:0")],
+            [InlineKeyboardButton("📣 ارسال همگانی", callback_data="adm:bchelp")],
             [InlineKeyboardButton("🔄 بروزرسانی", callback_data="adm:home")],
         ]
     )
@@ -174,6 +175,22 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     data = query.data
+    if data.startswith("adm:bc:"):
+        await _run_broadcast(query, context, data.split(":", 2)[2])
+        return
+    if data == "adm:bccancel":
+        await query.edit_message_text("لغو شد.")
+        return
+
+    if data == "adm:bchelp":
+        await query.message.reply_text(
+            "📣 *ارسال همگانی*\n\n"
+            "• `/broadcast متن پیام`\n"
+            "• یا روی یه پیام ریپلای کن و `/broadcast` بزن",
+            parse_mode="Markdown",
+        )
+        return
+
     if data == "adm:home":
         text, kb = _summary_text(), _panel_keyboard()
     elif data.startswith("adm:users:"):
@@ -188,6 +205,97 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     except Exception as e:
         # "message is not modified" on a refresh with no new data
         log.debug("admin panel edit skipped: %s", e)
+
+
+# ---------------- broadcast ----------------
+
+async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/broadcast <text>, or reply to a message with /broadcast to send that."""
+    if not _is_admin(update):
+        return
+
+    msg = update.effective_message
+    text = " ".join(context.args) if context.args else ""
+    source = msg.reply_to_message
+
+    if not text and not source:
+        await msg.reply_text(
+            "📣 *ارسال همگانی*\n\n"
+            "دو راه:\n"
+            "• `/broadcast متن پیام`\n"
+            "• یا روی یه پیام (حتی عکس/فایل) ریپلای کن و `/broadcast` بزن\n\n"
+            "قبل از ارسال، پیش‌نمایش و تایید می‌گیرم.",
+            parse_mode="Markdown",
+        )
+        return
+
+    key = str(update.effective_user.id)
+    _pending_broadcast[key] = (
+        source.message_id if source else None,
+        source.chat_id if source else None,
+        text,
+    )
+    total = stats.user_count()
+    preview = text or "(همون پیامی که ریپلای کردی)"
+    await msg.reply_text(
+        f"📣 برای *{total}* کاربر ارسال بشه؟\n\n{preview[:500]}",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(
+            [[
+                InlineKeyboardButton("✅ بفرست", callback_data=f"adm:bc:{key}"),
+                InlineKeyboardButton("❌ لغو", callback_data="adm:bccancel"),
+            ]]
+        ),
+    )
+
+
+_pending_broadcast: dict[str, tuple[int | None, int | None, str]] = {}
+
+
+async def _run_broadcast(query, context, key: str) -> None:
+    import asyncio
+
+    pending = _pending_broadcast.pop(key, None)
+    if not pending:
+        await query.edit_message_text("⌛ منقضی شد. دوباره /broadcast بزن.")
+        return
+
+    src_msg_id, src_chat_id, text = pending
+    user_ids = [row[0] for row in stats.list_users(limit=100000, offset=0)]
+    status = await query.message.reply_text(f"📣 ارسال به {len(user_ids)} کاربر…")
+
+    sent = blocked = failed = 0
+    for i, uid in enumerate(user_ids, 1):
+        try:
+            if src_msg_id and src_chat_id:
+                await context.bot.copy_message(
+                    chat_id=uid, from_chat_id=src_chat_id, message_id=src_msg_id
+                )
+            else:
+                await context.bot.send_message(chat_id=uid, text=text)
+            sent += 1
+        except Exception as e:
+            detail = str(e).lower()
+            if "blocked" in detail or "deactivated" in detail or "not found" in detail:
+                blocked += 1
+            else:
+                failed += 1
+                log.info("broadcast to %s failed: %s", uid, e)
+
+        # Telegram allows roughly 30 messages/second; stay well under it or
+        # the whole run gets throttled.
+        await asyncio.sleep(0.05)
+        if i % 25 == 0:
+            try:
+                await status.edit_text(
+                    f"📣 {i}/{len(user_ids)} — ✅ {sent} · 🚫 {blocked} · ⚠️ {failed}"
+                )
+            except Exception:
+                pass
+
+    await status.edit_text(
+        f"📣 تموم شد\n✅ رسید: {sent}\n🚫 بلاک کرده/حذف شده: {blocked}\n⚠️ خطا: {failed}"
+    )
 
 
 async def track_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

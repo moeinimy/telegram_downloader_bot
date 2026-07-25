@@ -70,6 +70,10 @@ class Settings:
     # Telegram user ids allowed to open the admin panel. Empty = disabled.
     admin_ids: frozenset[int]
 
+    # Channel users must join before the bot answers, e.g. "@mychannel".
+    # The bot has to be an admin of it. Empty = no gate.
+    required_channel: str
+
     # Logging
     log_level: str
 
@@ -90,6 +94,16 @@ def _admin_ids() -> frozenset[int]:
         except ValueError:
             logging.getLogger(__name__).warning("ADMIN_IDS: ignoring %r", chunk)
     return frozenset(out)
+
+
+def _channel_name() -> str:
+    """Accept @name, a t.me link or a bare name; store it as @name."""
+    raw = _get("REQUIRED_CHANNEL").strip()
+    if not raw:
+        return ""
+    raw = raw.replace("https://t.me/", "").replace("http://t.me/", "").replace("t.me/", "")
+    raw = raw.strip("/ ")
+    return raw if raw.startswith(("@", "-100")) else f"@{raw}"
 
 
 def _cookies_path() -> str:
@@ -118,6 +132,7 @@ settings = Settings(
     yt_cookies_file=_cookies_path(),
     audio_format=(_get("AUDIO_FORMAT", "m4a").lower() or "m4a"),
     admin_ids=_admin_ids(),
+    required_channel=_channel_name(),
     log_level=_get("LOG_LEVEL", "INFO"),
 )
 

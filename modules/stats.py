@@ -57,7 +57,39 @@ def init() -> None:
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_dl_ts ON downloads(ts)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_dl_user ON downloads(user_id)")
+            # Added after the first release; ALTER is the migration.
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(users)")}
+            if "lang" not in cols:
+                conn.execute("ALTER TABLE users ADD COLUMN lang TEXT")
         _ready = True
+
+
+def get_lang(user_id: int) -> str | None:
+    try:
+        init()
+        with _lock, _connect() as conn:
+            row = conn.execute(
+                "SELECT lang FROM users WHERE user_id=?", (user_id,)
+            ).fetchone()
+        return row[0] if row and row[0] else None
+    except Exception as e:
+        log.warning("stats get_lang failed: %s", e)
+        return None
+
+
+def set_lang(user_id: int, lang: str) -> None:
+    try:
+        init()
+        now = int(time.time())
+        with _lock, _connect() as conn:
+            conn.execute(
+                """INSERT INTO users (user_id, first_seen, last_seen, actions, lang)
+                   VALUES (?, ?, ?, 0, ?)
+                   ON CONFLICT(user_id) DO UPDATE SET lang = excluded.lang""",
+                (user_id, now, now, lang),
+            )
+    except Exception as e:
+        log.warning("stats set_lang failed: %s", e)
 
 
 def touch_user(user_id: int, username: str | None, first_name: str | None) -> None:

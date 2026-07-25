@@ -22,6 +22,7 @@ from telegram.ext import (
 from config import settings, setup_logging
 from handlers import (
     admin,
+    gate,
     instagram_handler,
     lyrics_handler,
     recognize_handler,
@@ -109,11 +110,19 @@ def build_app() -> Application:
     # keeps the usage table current without touching each flow.
     app.add_handler(TypeHandler(Update, admin.track_update), group=-1)
 
+    # Sponsor-channel lock, if configured. Group -1 so it runs before any
+    # feature handler and can stop the update.
+    if settings.required_channel:
+        app.add_handler(TypeHandler(Update, gate.guard), group=-1)
+        log.info("Channel lock active: %s", settings.required_channel)
+
     # Commands
     app.add_handler(CommandHandler("start", start.start_cmd))
     app.add_handler(CommandHandler("help", start.help_cmd))
     app.add_handler(CommandHandler(["admin", "stats"], admin.admin_cmd))
     app.add_handler(CommandHandler(["id", "whoami"], admin.whoami_cmd))
+    app.add_handler(CommandHandler(["lang", "language"], start.lang_cmd))
+    app.add_handler(CommandHandler("broadcast", admin.broadcast_cmd))
 
     # Any video/audio the user sends or forwards -> identify its music.
     # Document.* covers files sent "as file" (no compression), which arrive as
@@ -142,6 +151,8 @@ def build_app() -> Application:
     app.add_handler(CallbackQueryHandler(lyrics_handler.on_callback, pattern=r"^lyr:"))
     app.add_handler(CallbackQueryHandler(admin.on_callback, pattern=r"^adm:"))
     app.add_handler(CallbackQueryHandler(recognize_handler.on_pick, pattern=r"^rec:"))
+    app.add_handler(CallbackQueryHandler(start.on_lang_callback, pattern=r"^lang:"))
+    app.add_handler(CallbackQueryHandler(gate.on_check, pattern=r"^gate:"))
 
     # Global error log
     app.add_error_handler(_on_error)
@@ -152,8 +163,11 @@ async def _on_error(update: object, context) -> None:
     log.exception("Unhandled exception", exc_info=context.error)
     if isinstance(update, Update) and update.effective_message:
         try:
+            from utils.i18n import t
+
             await update.effective_message.reply_text(
-                "💥 یه خطای غیرمنتظره پیش اومد. دوباره امتحان کن."
+                t(update.effective_chat.id,
+                  "💥 یه خطای غیرمنتظره پیش اومد. دوباره امتحان کن.")
             )
         except Exception:
             pass

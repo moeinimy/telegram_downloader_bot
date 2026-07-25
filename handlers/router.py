@@ -15,6 +15,7 @@ import logging
 from telegram import Update
 from telegram.ext import ContextTypes
 
+from utils.i18n import t
 from utils.url_router import Platform, route
 
 from . import instagram_handler, soundcloud_handler, spotify_handler, youtube_handler
@@ -36,7 +37,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             return
     except Exception as e:
         log.exception("range reply failed")
-        await msg.reply_text(f"❌ خطا: {e}")
+        await msg.reply_text(t(msg.chat_id, "❌ خطا: {err}").format(err=e))
         return
 
     result = route(text)
@@ -56,7 +57,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         elif result.platform == Platform.SOUNDCLOUD:
             await soundcloud_handler.handle_url(update, context, result)
         else:
-            await msg.reply_text("🤔 لینک رو نشناختم. یوتوب / اینستا / اسپاتیفای ساپورت میشه.")
+            await msg.reply_text(t(msg.chat_id, "🤔 لینک رو نشناختم. یوتوب / اینستا / اسپاتیفای ساپورت میشه."))
     except Exception as e:
         log.exception("handle_text failed")
-        await msg.reply_text(f"❌ خطا: {e}")
+        await msg.reply_text(t(msg.chat_id, "❌ خطا: {err}").format(err=e))

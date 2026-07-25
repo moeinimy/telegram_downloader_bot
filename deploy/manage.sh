@@ -430,6 +430,31 @@ do_spotify() {
 }
 
 
+do_channel() {
+    echo; info "=== کانال اجباری (قفل عضویت) ==="
+    warn "کاربر تا تو این کانال عضو نشه، بات جواب نمی‌ده."
+    warn "مهم: بات باید ادمین اون کانال باشه وگرنه عضویت رو نمی‌تونه چک کنه."
+    echo
+    info "برای غیرفعال کردن، خالی بذار و Enter بزن."
+    read -rp "آیدی کانال (@name یا لینک): " ch
+
+    local f="$PROJECT_DIR/.env"
+    if grep -q '^REQUIRED_CHANNEL=' "$f"; then
+        sed -i "s|^REQUIRED_CHANNEL=.*|REQUIRED_CHANNEL=$ch|" "$f"
+    else
+        echo "REQUIRED_CHANNEL=$ch" >> "$f"
+    fi
+    systemctl restart "$SERVICE_NAME"
+    sleep 2
+    if [[ -z "$ch" ]]; then
+        ok "قفل کانال غیرفعال شد"
+    else
+        ok "قفل روی $ch فعال شد"
+        warn "یادت نره بات رو تو اون کانال ادمین کنی."
+    fi
+}
+
+
 do_reclog() {
     echo; info "=== لاگ تشخیص آهنگ (آخرین تلاش‌ها) ==="; echo
     journalctl -u "$SERVICE_NAME" --no-pager -n 500 \
@@ -848,7 +873,8 @@ menu() {
     echo " 16) تعمیر کانتینر Bot API (بدون وارد کردن کلید)"
     echo " 17) لاگ تشخیص آهنگ"
     echo " 18) کلید اسپاتیفای (پلی‌لیست بزرگ)"
-    echo " 19) نصب مجدد از صفر (پاک کردن همه چی)"
+    echo " 19) کانال اجباری (قفل عضویت)"
+    echo " 20) نصب مجدد از صفر (پاک کردن همه چی)"
     echo "  0) خروج"
     echo
 }
@@ -863,6 +889,7 @@ case "${1:-}" in
     botapi-repair) do_botapi_repair; exit $? ;;
     reclog)  do_reclog;  exit 0 ;;
     spotify) do_spotify; exit $? ;;
+    channel) do_channel; exit $? ;;
     update)  do_update;  exit $? ;;
     restart) systemctl restart "$SERVICE_NAME"; exit $? ;;
     status)  do_status;  exit 0 ;;
@@ -895,7 +922,8 @@ while true; do
         16) do_botapi_repair; pause ;;
         17) do_reclog; pause ;;
         18) do_spotify; pause ;;
-        19) do_reset; pause ;;
+        19) do_channel; pause ;;
+        20) do_reset; pause ;;
         0)  echo; exit 0 ;;
         *)  err "گزینه نامعتبر"; sleep 1 ;;
     esac
