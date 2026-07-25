@@ -490,6 +490,62 @@ do_instagram() {
     ok "ذخیره شد - استوری حالا فعاله"
 }
 
+do_diag() {
+    echo; info "=== تشخیص مشکل Local Bot API ==="; echo
+
+    info ".env:"
+    grep -E '^(BOT_API_BASE_URL|MAX_UPLOAD_MB|ADMIN_IDS|AUDIO_FORMAT)=' \
+        "$PROJECT_DIR/.env" 2>/dev/null | sed 's/^/    /' || echo "    (چیزی ست نشده)"
+    echo
+
+    if ! command -v docker &>/dev/null; then
+        err "docker نصب نیست - Local Bot API فعال نیست"
+        return
+    fi
+
+    info "کانتینر:"
+    docker ps --filter name=telegram-bot-api \
+        --format '    {{.Names}}  {{.Status}}  {{.Ports}}' 2>/dev/null
+    if ! docker ps --format '{{.Names}}' | grep -q '^telegram-bot-api$'; then
+        err "کانتینر telegram-bot-api بالا نیست"
+        docker ps -a --filter name=telegram-bot-api --format '    (متوقف) {{.Status}}'
+        return
+    fi
+
+    echo
+    info "نوع mount (باید bind باشه، نه volume):"
+    docker inspect telegram-bot-api \
+        --format '    {{range .Mounts}}{{.Type}}  {{.Source}} -> {{.Destination}}{{println}}{{end}}' 2>/dev/null
+    if docker inspect telegram-bot-api --format '{{range .Mounts}}{{.Type}}{{end}}' 2>/dev/null \
+        | grep -q volume; then
+        err "mount از نوع volume ـه - بات نمی‌تونه فایل‌ها رو ببینه!"
+        warn "گزینه ۹ رو دوباره اجرا کن تا با bind mount ساخته بشه."
+    else
+        ok "mount درسته"
+    fi
+
+    echo
+    info "دسترسی خوندن برای کاربر $BOT_USER:"
+    if [[ -d /var/lib/telegram-bot-api ]]; then
+        ls -ld /var/lib/telegram-bot-api | sed 's/^/    /'
+        if sudo -u "$BOT_USER" test -r /var/lib/telegram-bot-api; then
+            ok "خوندنی هست"
+        else
+            err "خوندنی نیست - بزن: chmod -R a+rX /var/lib/telegram-bot-api"
+        fi
+        echo
+        info "چند فایل اخیر:"
+        find /var/lib/telegram-bot-api -type f -printf '    %s bytes  %p\n' 2>/dev/null | tail -3
+    else
+        err "/var/lib/telegram-bot-api روی هاست وجود نداره -> mount اشتباهه"
+    fi
+
+    echo
+    info "پاسخ سرور محلی:"
+    curl -s -m 5 -o /dev/null -w '    HTTP %{http_code}\n' http://127.0.0.1:8081/ || err "جواب نداد"
+}
+
+
 do_clearcache() {
     echo; info "=== پاک کردن کش بات ==="
     warn "این‌ها پاک می‌شن:"
@@ -581,7 +637,8 @@ menu() {
     echo " 11) توقف بات"
     echo " 12) پاک کردن کش (کاور/فایل‌های قدیمی)"
     echo " 13) فرمت فایل صوتی (m4a / mp3 / flac)"
-    echo " 14) نصب مجدد از صفر (پاک کردن همه چی)"
+    echo " 14) تشخیص مشکل Local Bot API"
+    echo " 15) نصب مجدد از صفر (پاک کردن همه چی)"
     echo "  0) خروج"
     echo
 }
@@ -591,6 +648,7 @@ case "${1:-}" in
     install) do_install; exit $? ;;
     reset)   do_reset;   exit $? ;;
     clearcache) do_clearcache; exit $? ;;
+    diag)    do_diag;    exit 0 ;;
     update)  do_update;  exit $? ;;
     restart) systemctl restart "$SERVICE_NAME"; exit $? ;;
     status)  do_status;  exit 0 ;;
@@ -618,7 +676,8 @@ while true; do
         11) systemctl stop "$SERVICE_NAME"; ok "بات خاموش شد"; pause ;;
         12) do_clearcache; pause ;;
         13) do_audioformat; pause ;;
-        14) do_reset; pause ;;
+        14) do_diag; pause ;;
+        15) do_reset; pause ;;
         0)  echo; exit 0 ;;
         *)  err "گزینه نامعتبر"; sleep 1 ;;
     esac

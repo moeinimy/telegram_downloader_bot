@@ -28,6 +28,7 @@ from telegram import (
 from telegram.ext import ContextTypes
 
 from modules import spotify as sp
+from modules import stats
 from utils.url_router import RouteResult, SpotifyKind
 
 log = logging.getLogger(__name__)
@@ -424,6 +425,7 @@ async def _upload_track(msg, meta, path, *, with_cover: bool = True) -> bool:
             )
         if sent and sent.audio:
             file_cache.put(cache_key, sent.audio.file_id)
+        stats.record_download(msg.chat_id, "music", meta.display)
         return True
     except Exception as e:
         log.exception("audio upload failed")
@@ -443,6 +445,7 @@ async def _send_cached(msg, meta, file_id: str, *, with_cover: bool = True) -> b
         duration=meta.duration_ms // 1000,
         reply_markup=lyrics_button(", ".join(meta.artists), meta.name, track_id=meta.id),
     )
+    stats.record_download(msg.chat_id, "music-cached", meta.display)
     return True
 
 

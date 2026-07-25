@@ -15,11 +15,13 @@ from telegram.ext import (
     CallbackQueryHandler,
     CommandHandler,
     MessageHandler,
+    TypeHandler,
     filters,
 )
 
 from config import settings, setup_logging
 from handlers import (
+    admin,
     instagram_handler,
     lyrics_handler,
     recognize_handler,
@@ -61,9 +63,15 @@ def build_app() -> Application:
 
     app = builder.build()
 
+    # Runs before everything else (group -1) and never blocks other handlers;
+    # keeps the usage table current without touching each flow.
+    app.add_handler(TypeHandler(Update, admin.track_update), group=-1)
+
     # Commands
     app.add_handler(CommandHandler("start", start.start_cmd))
     app.add_handler(CommandHandler("help", start.help_cmd))
+    app.add_handler(CommandHandler(["admin", "stats"], admin.admin_cmd))
+    app.add_handler(CommandHandler(["id", "whoami"], admin.whoami_cmd))
 
     # Any video/audio the user sends or forwards -> identify its music.
     # Document.* covers files sent "as file" (no compression), which arrive as
@@ -90,6 +98,7 @@ def build_app() -> Application:
     app.add_handler(CallbackQueryHandler(instagram_handler.on_callback, pattern=r"^ig:"))
     app.add_handler(CallbackQueryHandler(spotify_handler.on_callback, pattern=r"^sp:"))
     app.add_handler(CallbackQueryHandler(lyrics_handler.on_callback, pattern=r"^lyr:"))
+    app.add_handler(CallbackQueryHandler(admin.on_callback, pattern=r"^adm:"))
 
     # Global error log
     app.add_error_handler(_on_error)

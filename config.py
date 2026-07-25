@@ -60,12 +60,29 @@ class Settings:
     # detail - it is a lossless container around lossy content.
     audio_format: str
 
+    # Telegram user ids allowed to open the admin panel. Empty = disabled.
+    admin_ids: frozenset[int]
+
     # Logging
     log_level: str
 
     @property
     def has_instagram_session(self) -> bool:
         return bool(self.ig_sessionid and self.instagram_username)
+
+
+def _admin_ids() -> frozenset[int]:
+    """Parse ADMIN_IDS ("123,456"). Anything unparseable is dropped with a
+    warning rather than crashing the bot on startup."""
+    out = set()
+    for chunk in _get("ADMIN_IDS").replace(" ", "").split(","):
+        if not chunk:
+            continue
+        try:
+            out.add(int(chunk))
+        except ValueError:
+            logging.getLogger(__name__).warning("ADMIN_IDS: ignoring %r", chunk)
+    return frozenset(out)
 
 
 def _cookies_path() -> str:
@@ -91,6 +108,7 @@ settings = Settings(
     max_upload_mb=int(_get("MAX_UPLOAD_MB", "50") or 50),
     yt_cookies_file=_cookies_path(),
     audio_format=(_get("AUDIO_FORMAT", "m4a").lower() or "m4a"),
+    admin_ids=_admin_ids(),
     log_level=_get("LOG_LEVEL", "INFO"),
 )
 

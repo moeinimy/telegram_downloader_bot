@@ -19,6 +19,7 @@ from telegram import (
 from telegram.ext import ContextTypes
 
 from config import settings
+from modules import stats
 from modules import youtube as yt
 from utils import file_cache
 from utils.helpers import file_too_big, fmt_duration, prepare_telegram_thumb
@@ -159,6 +160,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 )
                 if sent and sent.audio:
                     file_cache.put(cache_key, sent.audio.file_id)
+                stats.record_download(query.message.chat_id, "yt-audio", info.title)
             else:
                 sent = await query.message.reply_video(
                     video=fh,
@@ -168,6 +170,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 )
                 if sent and sent.video:
                     file_cache.put(cache_key, sent.video.file_id)
+                stats.record_download(query.message.chat_id, "yt-video", info.title)
         await status.delete()
     except Exception as e:
         log.exception("upload failed")
