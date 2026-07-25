@@ -25,13 +25,15 @@ from config import settings
 from handlers.spotify_handler import _send_and_download_track
 from modules import recognize as rec
 from modules import spotify as sp
+from utils.i18n import t
+from utils.limits import BoundedDict
 
 log = logging.getLogger(__name__)
 
 
 async def recognize_from_url(msg, url: str) -> None:
     """Sample up to two chunks of the video; songs often start mid-video."""
-    status = await msg.reply_text("🎧 در حال گوش دادن به ویدیو و پیدا کردن آهنگ…")
+    status = await msg.reply_text(t(msg.chat_id, "🎧 در حال گوش دادن به ویدیو و پیدا کردن آهنگ…"))
 
     candidates: list = []
     for offset in (0, 60):
@@ -39,7 +41,7 @@ async def recognize_from_url(msg, url: str) -> None:
             snippet = await rec.fetch_audio_snippet(url, seconds=90, offset=offset)
         except Exception as e:
             if offset == 0:
-                await status.edit_text(f"❌ نتونستم صدای ویدیو رو بگیرم: {e}")
+                await status.edit_text(t(msg.chat_id, "❌ نتونستم صدای ویدیو رو بگیرم: {err}").format(err=e))
                 return
             break  # second chunk unavailable (video too short)
 
@@ -51,13 +53,13 @@ async def recognize_from_url(msg, url: str) -> None:
         if candidates:
             break
         if offset == 0:
-            await status.edit_text("🎧 اول ویدیو جواب نداد، وسطش رو گوش می‌دم…")
+            await status.edit_text(t(msg.chat_id, "🎧 اول ویدیو جواب نداد، وسطش رو گوش می‌دم…"))
 
     await _handle_candidates(msg, status, candidates)
 
 
 async def recognize_from_file(msg, path: Path, cleanup: bool = False) -> None:
-    status = await msg.reply_text("🎧 در حال پیدا کردن آهنگ…")
+    status = await msg.reply_text(t(msg.chat_id, "🎧 در حال پیدا کردن آهنگ…"))
     await _recognize_and_send(msg, status, path, cleanup=cleanup)
 
 
@@ -65,7 +67,7 @@ async def _recognize_and_send(msg, status, audio_path: Path, *, cleanup: bool) -
     try:
         candidates = await rec.recognize_candidates(audio_path)
     except Exception as e:
-        await status.edit_text(f"❌ خطا در تشخیص آهنگ: {e}")
+        await status.edit_text(t(msg.chat_id, "❌ خطا در تشخیص آهنگ: {err}").format(err=e))
         return
     finally:
         if cleanup:
@@ -78,15 +80,16 @@ async def _recognize_and_send(msg, status, audio_path: Path, *, cleanup: bool) -
 
 
 # Ambiguous results, keyed by a short hash so they fit in callback data.
-_pending: dict[str, list] = {}
+_pending = BoundedDict(200)
 
 
 async def _handle_candidates(msg, status, candidates: list) -> None:
     if not candidates:
         await status.edit_text(
-            "😕 آهنگی تشخیص ندادم.\n\n"
-            "معمولا یعنی صدای موزیک زیر حرف/افکت گم شده یا تیکه خیلی کوتاهه. "
-            "یه بخش بلندتر که موزیکش واضح‌تره بفرست، یا اسم آهنگ رو تایپ کن."
+            t(msg.chat_id,
+              "😕 آهنگی تشخیص ندادم.\n\n"
+              "معمولا یعنی صدای موزیک زیر حرف/افکت گم شده یا تیکه خیلی کوتاهه. "
+              "یه بخش بلندتر که موزیکش واضح‌تره بفرست، یا اسم آهنگ رو تایپ کن.")
         )
         return
 
@@ -103,8 +106,6 @@ async def _handle_candidates(msg, status, candidates: list) -> None:
 
     key = hashlib.md5(f"{id(candidates)}{top_song.query}".encode()).hexdigest()[:12]
     _pending[key] = [s for s, _ in candidates]
-    if len(_pending) > 100:
-        _pending.pop(next(iter(_pending)), None)
 
     rows = [
         [InlineKeyboardButton(f"🎵 {s.artist} — {s.title}"[:60],
@@ -149,7 +150,7 @@ async def on_pick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     options = _pending.get(key)
     if not options:
-        await query.message.reply_text("⌛ سشن منقضی شده. دوباره ویدیو رو بفرست.")
+        await query.message.reply_text(t(query.message.chat_id, "⌛ سشن منقضی شده. دوباره ویدیو رو بفرست."))
         return
     try:
         song = options[int(idx)]
@@ -189,7 +190,7 @@ async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    status = await msg.reply_text("📥 در حال دریافت فایل…")
+    status = await msg.reply_text(t(msg.chat_id, "📥 در حال دریافت فایل…"))
     out_dir = settings.download_dir / "recognize"
     out_dir.mkdir(parents=True, exist_ok=True)
     dest = out_dir / f"upload_{media.file_unique_id}"
@@ -197,7 +198,7 @@ async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         saved = await _fetch_to_disk(context, media.file_id, dest)
     except Exception as e:
-        await status.edit_text(f"❌ دریافت فایل ناموفق: {e}")
+        await status.edit_text(t(msg.chat_id, "❌ دریافت فایل ناموفق: {err}").format(err=e))
         return
 
     await status.delete()

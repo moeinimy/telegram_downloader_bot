@@ -193,7 +193,7 @@ def _make_outtmpl(info: VideoInfo) -> str:
     return str(settings.download_dir / f"{info.id}_{name}.%(ext)s")
 
 
-@run_in_thread
+@run_in_thread(heavy=True)
 def download_video(
     url: str,
     info: VideoInfo,
@@ -214,7 +214,7 @@ def download_video(
     return ytdlp_run(extra, _run)
 
 
-@run_in_thread
+@run_in_thread(heavy=True)
 def download_audio(
     url: str,
     info: VideoInfo,

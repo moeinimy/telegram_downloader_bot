@@ -41,7 +41,7 @@ async def handle_url(
         await _profile_menu(msg, username=route.resource_id, context=context)
         return
 
-    status = await msg.reply_text("⬇️ در حال دانلود از اینستاگرام…")
+    status = await msg.reply_text(t(msg.chat_id, "⬇️ در حال دانلود از اینستاگرام…"))
 
     try:
         if kind in (InstagramKind.POST, InstagramKind.REEL, InstagramKind.IGTV):
@@ -49,7 +49,7 @@ async def handle_url(
         elif kind == InstagramKind.STORY:
             files = await ig.fetch_story(route.resource_id)
         else:
-            await status.edit_text("🤔 نوع لینک اینستا رو نشناختم.")
+            await status.edit_text(t(msg.chat_id, "🤔 نوع لینک اینستا رو نشناختم."))
             return
     except Exception as e:
         await status.edit_text(f"❌ خطا: {e}")
@@ -63,9 +63,9 @@ async def handle_url(
     if video:
         context.chat_data.setdefault("ig_rec", {})[route.resource_id] = str(video)
         kb = InlineKeyboardMarkup(
-            [[InlineKeyboardButton("🎧 پیدا کردن آهنگ این ویدیو", callback_data=f"ig:rec:{route.resource_id}")]]
+            [[InlineKeyboardButton(t(msg.chat_id, "🎧 پیدا کردن آهنگ این ویدیو"), callback_data=f"ig:rec:{route.resource_id}")]]
         )
-        await msg.reply_text("آهنگ این ویدیو رو برات پیدا کنم؟", reply_markup=kb)
+        await msg.reply_text(t(msg.chat_id, "آهنگ این ویدیو رو برات پیدا کنم؟"), reply_markup=kb)
 
 
 async def _profile_menu(msg, username: str, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -73,8 +73,8 @@ async def _profile_menu(msg, username: str, context: ContextTypes.DEFAULT_TYPE) 
     kb = InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("📸 عکس پروفایل", callback_data=f"ig:pp:{username}"),
-                InlineKeyboardButton("📖 استوری‌ها", callback_data=f"ig:story:{username}"),
+                InlineKeyboardButton(t(msg.chat_id, "📸 عکس پروفایل"), callback_data=f"ig:pp:{username}"),
+                InlineKeyboardButton(t(msg.chat_id, "📖 استوری‌ها"), callback_data=f"ig:story:{username}"),
             ]
         ]
     )
@@ -93,12 +93,12 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         shortcode = username  # third segment is the shortcode here
         path_str = context.chat_data.get("ig_rec", {}).get(shortcode)
         if not path_str or not Path(path_str).exists():
-            await query.message.reply_text("⌛ فایل ویدیو دیگه موجود نیست. دوباره لینک رو بفرست.")
+            await query.message.reply_text(t(query.message.chat_id, "⌛ فایل ویدیو دیگه موجود نیست. دوباره لینک رو بفرست."))
             return
         await recognize_from_file(query.message, Path(path_str))
         return
 
-    status = await query.message.reply_text("⬇️ گرفتن از اینستا…")
+    status = await query.message.reply_text(t(query.message.chat_id, "⬇️ گرفتن از اینستا…"))
     try:
         if action == "pp":
             path = await ig.fetch_profile_pic(username)
@@ -107,7 +107,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             files = await ig.fetch_story(username)
             await _send_media(query.message, files)
         else:
-            await status.edit_text("اکشن نامعتبر.")
+            await status.edit_text(t(query.message.chat_id, "اکشن نامعتبر."))
             return
     except Exception as e:
         await status.edit_text(f"❌ {e}")

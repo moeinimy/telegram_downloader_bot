@@ -137,7 +137,7 @@ def _loader_instance():
 
 # ---------------- public API ----------------
 
-@run_in_thread
+@run_in_thread(heavy=True)
 def fetch_post(shortcode: str) -> list[Path]:
     """Single post / reel / carousel — returns all media files in order."""
     target = settings.download_dir / "instagram" / shortcode
@@ -193,7 +193,7 @@ def fetch_profile_pic(username: str) -> Path:
         raise _friendly_error(e) from e
 
 
-@run_in_thread
+@run_in_thread(heavy=True)
 def fetch_story(username: str) -> list[Path]:
     """Requires a logged-in session. Downloads ALL active story items."""
     if not settings.has_instagram_session:

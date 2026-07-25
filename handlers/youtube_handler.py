@@ -21,6 +21,7 @@ from telegram.ext import ContextTypes
 from config import settings
 from modules import stats
 from modules import youtube as yt
+from utils.i18n import t
 from utils import file_cache
 from utils.helpers import file_too_big, fmt_duration, prepare_telegram_thumb
 from utils.progress import ProgressReporter
@@ -33,12 +34,12 @@ async def handle_url(
     update: Update, context: ContextTypes.DEFAULT_TYPE, route: RouteResult
 ) -> None:
     msg = update.effective_message
-    status = await msg.reply_text("🔎 در حال گرفتن اطلاعات ویدیو…")
+    status = await msg.reply_text(t(msg.chat_id, "🔎 در حال گرفتن اطلاعات ویدیو…"))
 
     try:
         info = await yt.probe_video(route.url)
     except Exception as e:
-        await status.edit_text(f"❌ نتونستم اطلاعات ویدیو رو بگیرم: {e}")
+        await status.edit_text(t(msg.chat_id, "❌ نتونستم اطلاعات ویدیو رو بگیرم: {err}").format(err=e))
         return
 
     # stash for later
@@ -53,8 +54,8 @@ async def handle_url(
             row = []
     if row:
         kb_rows.append(row)
-    kb_rows.append([InlineKeyboardButton("🎵 Audio (MP3)", callback_data=f"yt:{info.id}:audio")])
-    kb_rows.append([InlineKeyboardButton("🎧 پیدا کردن آهنگ ویدیو (Shazam)", callback_data=f"yt:{info.id}:shazam")])
+    kb_rows.append([InlineKeyboardButton(t(msg.chat_id, "🎵 Audio (MP3)"), callback_data=f"yt:{info.id}:audio")])
+    kb_rows.append([InlineKeyboardButton(t(msg.chat_id, "🎧 پیدا کردن آهنگ ویدیو (Shazam)"), callback_data=f"yt:{info.id}:shazam")])
 
     caption = (
         f"*{info.title}*\n"
@@ -78,7 +79,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     state = context.chat_data.get("yt", {}).get(video_id)
     if not state:
-        await query.message.reply_text("⌛ سشن منقضی شده. دوباره لینک رو بفرست.")
+        await query.message.reply_text(t(query.message.chat_id, "⌛ سشن منقضی شده. دوباره لینک رو بفرست."))
         return
 
     info = state["info"]
@@ -104,7 +105,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                     title=info.title,
                     performer=info.uploader,
                     duration=info.duration,
-                    reply_markup=lyrics_button(info.uploader, info.title),
+                    reply_markup=lyrics_button(
+                        info.uploader, info.title, chat_id=query.message.chat_id),
                 )
             else:
                 await query.message.reply_video(
@@ -115,7 +117,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             log.info("cached file_id rejected (%s) - re-downloading", e)
             file_cache.drop(cache_key)
 
-    status = await query.message.reply_text("⬇️ شروع دانلود…")
+    status = await query.message.reply_text(t(query.message.chat_id, "⬇️ شروع دانلود…"))
     reporter = ProgressReporter(message=status, loop=asyncio.get_running_loop())
 
     try:
@@ -125,14 +127,16 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             path = await yt.download_video(url, info, quality=choice, progress_hook=reporter.hook)
     except Exception as e:
         log.exception("yt download failed")
-        await status.edit_text(f"❌ دانلود ناموفق: {e}")
+        await status.edit_text(t(query.message.chat_id, "❌ دانلود ناموفق: {err}").format(err=e))
         return
 
     if file_too_big(path, settings.max_upload_mb):
         size_mb = path.stat().st_size / (1024 * 1024)
         await status.edit_text(
-            f"⚠️ فایل {size_mb:.0f}MB شد که از حد مجاز تلگرام ({settings.max_upload_mb}MB) "
-            "بزرگ‌تره. یه کیفیت پایین‌تر انتخاب کن."
+            t(query.message.chat_id,
+              "⚠️ فایل {size}MB شد که از حد مجاز تلگرام ({limit}MB) بزرگ‌تره. "
+              "یه کیفیت پایین‌تر انتخاب کن.").format(
+                  size=f"{size_mb:.0f}", limit=settings.max_upload_mb)
         )
         path.unlink(missing_ok=True)
         return
@@ -144,7 +148,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             info.thumbnail, settings.download_dir / "thumbs" / f"{info.id}.jpg"
         )
 
-    await status.edit_text("📤 در حال آپلود…")
+    await status.edit_text(t(query.message.chat_id, "📤 در حال آپلود…"))
     try:
         with path.open("rb") as fh:
             if choice == "audio":
@@ -156,7 +160,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                     performer=info.uploader,
                     duration=info.duration,
                     thumbnail=thumb_path.open("rb") if thumb_path else None,
-                    reply_markup=lyrics_button(info.uploader, info.title),
+                    reply_markup=lyrics_button(
+                        info.uploader, info.title, chat_id=query.message.chat_id),
                 )
                 if sent and sent.audio:
                     file_cache.put(cache_key, sent.audio.file_id)
@@ -174,6 +179,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await status.delete()
     except Exception as e:
         log.exception("upload failed")
-        await status.edit_text(f"❌ آپلود ناموفق: {e}")
+        await status.edit_text(t(query.message.chat_id, "❌ آپلود ناموفق: {err}").format(err=e))
     finally:
         path.unlink(missing_ok=True)

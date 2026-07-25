@@ -20,12 +20,13 @@ from telegram.ext import ApplicationHandlerStop, ContextTypes
 
 from config import settings
 from utils import i18n
+from utils.limits import BoundedDict
 
 log = logging.getLogger(__name__)
 
 # Membership is stable enough that re-asking Telegram on every single update
 # is wasteful; remember a pass for a few minutes.
-_ok_until: dict[int, float] = {}
+_ok_until = BoundedDict(5000)
 _TTL = 300.0
 
 _JOINED = ("member", "administrator", "creator", "owner")

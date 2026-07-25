@@ -216,7 +216,7 @@ async def recognize_file(path: Path) -> RecognizedSong | None:
     return candidates[0][0] if candidates else None
 
 
-@run_in_thread
+@run_in_thread(heavy=True)
 def fetch_audio_snippet(url: str, seconds: int = 45, offset: int = 0) -> Path:
     """
     Download a short audio snippet [offset, offset+seconds] from a video URL

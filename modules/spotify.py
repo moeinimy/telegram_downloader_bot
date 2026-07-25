@@ -30,6 +30,7 @@ from pathlib import Path
 
 from config import settings
 from utils.helpers import run_in_thread, safe_filename
+from utils.limits import BoundedDict
 
 log = logging.getLogger(__name__)
 
@@ -80,7 +81,9 @@ class PlaylistMeta:
 
 # Cache for non-Spotify results ("yt_*" / "sc_*") so inline-button callbacks
 # can resolve them later without re-searching.
-_yt_cache: dict[str, TrackMeta] = {}
+# Bounded: this used to keep every track from every search for the life of
+# the process. Buttons older than the window re-resolve by id instead.
+_yt_cache = BoundedDict(3000)
 
 
 # ---------------- meta loaders (Spotify embed, keyless) ----------------
@@ -228,7 +231,7 @@ def _dedupe_key(t: TrackMeta) -> str:
 
 # Recent queries -> results. Re-typing the same search (or tapping through a
 # list twice) should not pay for the network again.
-_search_cache: dict[str, tuple[float, list[TrackMeta]]] = {}
+_search_cache = BoundedDict(200)
 _SEARCH_TTL = 600.0
 
 
@@ -296,9 +299,6 @@ def _music_api_search(query: str, limit: int) -> list[TrackMeta]:
 
     if out:
         _search_cache[key] = (time.monotonic(), out)
-        if len(_search_cache) > 200:
-            oldest = min(_search_cache, key=lambda k: _search_cache[k][0])
-            _search_cache.pop(oldest, None)
     return out
 
 
@@ -775,7 +775,7 @@ def platform_links(meta: TrackMeta) -> dict[str, str]:
 
 # ---------------- downloading ----------------
 
-@run_in_thread
+@run_in_thread(heavy=True)
 def download_track(meta: TrackMeta) -> Path:
     """
     Download best-quality audio (320kbps MP3) and embed album art + ID3

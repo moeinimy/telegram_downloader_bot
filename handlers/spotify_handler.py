@@ -30,6 +30,7 @@ from telegram.ext import ContextTypes
 from modules import spotify as sp
 from modules import stats
 from utils.i18n import t
+from utils.limits import BoundedDict
 from utils.url_router import RouteResult, SpotifyKind
 
 log = logging.getLogger(__name__)
@@ -134,7 +135,7 @@ async def handle_search(
 
 # Callback data is capped at 64 bytes, so the deep-search query is kept here
 # and referenced by a short hash.
-_query_cache: dict[str, str] = {}
+_query_cache = BoundedDict(200)
 
 
 def _remember_query(query: str) -> str:
@@ -178,7 +179,7 @@ async def _send_tracklist(
         for tr in tracks
     ]
     if bulk_callback:
-        rows.append([InlineKeyboardButton("⬇️ دانلود همه", callback_data=bulk_callback)])
+        rows.append([InlineKeyboardButton(t(msg.chat_id, "⬇️ دانلود همه"), callback_data=bulk_callback)])
     if deep_query:
         key = _remember_query(deep_query)
         rows.append(
@@ -191,7 +192,8 @@ async def _send_tracklist(
 # ---------- album / playlist browsing ----------
 
 _PAGE = 10
-_container_cache: dict[str, object] = {}
+# Playlists can hold thousands of tracks each; keep only a few.
+_container_cache = BoundedDict(20)
 
 
 async def _load_container(kind: str, rid: str):
@@ -203,8 +205,6 @@ async def _load_container(kind: str, rid: str):
             sp.get_album_tracks(rid) if kind == "al" else sp.get_playlist_tracks(rid)
         )
         _container_cache[key] = container
-        if len(_container_cache) > 50:
-            _container_cache.pop(next(iter(_container_cache)), None)
     return container
 
 
@@ -214,7 +214,7 @@ def _container_title(kind: str, c) -> str:
     return f"📜 {c.name} (by {c.owner})"
 
 
-def _range_buttons(kind: str, rid: str, total: int) -> list[list[InlineKeyboardButton]]:
+def _range_buttons(chat_id: int, kind: str, rid: str, total: int) -> list[list[InlineKeyboardButton]]:
     """Bulk-download shortcuts. Only offer sizes the container actually has."""
     rows: list[list[InlineKeyboardButton]] = []
     presets = [n for n in (10, 30, 50, 100) if n < total]
@@ -223,28 +223,32 @@ def _range_buttons(kind: str, rid: str, total: int) -> list[list[InlineKeyboardB
         return [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
 
     rows += chunk([
-        InlineKeyboardButton(f"⬇️ {n} تای اول", callback_data=f"sp:pldl:{kind}:{rid}:0:{n}")
+        InlineKeyboardButton(
+            t(chat_id, "⬇️ {n} تای اول").format(n=n),
+            callback_data=f"sp:pldl:{kind}:{rid}:0:{n}",
+        )
         for n in presets
     ])
     rows += chunk([
         InlineKeyboardButton(
-            f"⬇️ {n} تای آخر",
+            t(chat_id, "⬇️ {n} تای آخر").format(n=n),
             callback_data=f"sp:pldl:{kind}:{rid}:{max(0, total - n)}:{n}",
         )
         for n in presets
     ])
     rows.append([
         InlineKeyboardButton(
-            "🔢 محدوده دلخواه", callback_data=f"sp:plask:{kind}:{rid}"
+            t(chat_id, "🔢 محدوده دلخواه"), callback_data=f"sp:plask:{kind}:{rid}"
         ),
         InlineKeyboardButton(
-            f"⬇️ همه ({total})", callback_data=f"sp:pldl:{kind}:{rid}:0:{total}"
+            t(chat_id, "⬇️ همه ({n})").format(n=total),
+            callback_data=f"sp:pldl:{kind}:{rid}:0:{total}",
         ),
     ])
     return rows
 
 
-def _page_keyboard(kind: str, rid: str, container, offset: int) -> InlineKeyboardMarkup:
+def _page_keyboard(chat_id: int, kind: str, rid: str, container, offset: int) -> InlineKeyboardMarkup:
     total = len(container.tracks)
     page = container.tracks[offset : offset + _PAGE]
 
@@ -278,18 +282,18 @@ def _page_keyboard(kind: str, rid: str, container, offset: int) -> InlineKeyboar
         jump = [
             InlineKeyboardButton("⏮", callback_data=f"sp:plpg:{kind}:{rid}:0"),
             InlineKeyboardButton(
-                "⏪ ۱۰ صفحه",
+                t(chat_id, "⏪ ۱۰ صفحه"),
                 callback_data=f"sp:plpg:{kind}:{rid}:{max(0, offset - _PAGE * 10)}",
             ),
             InlineKeyboardButton(
-                "۱۰ صفحه ⏩",
+                t(chat_id, "۱۰ صفحه ⏩"),
                 callback_data=f"sp:plpg:{kind}:{rid}:{min(last_start, offset + _PAGE * 10)}",
             ),
             InlineKeyboardButton("⏭", callback_data=f"sp:plpg:{kind}:{rid}:{last_start}"),
         ]
         rows.append(jump)
 
-    rows += _range_buttons(kind, rid, total)
+    rows += _range_buttons(chat_id, kind, rid, total)
     return InlineKeyboardMarkup(rows)
 
 
@@ -305,7 +309,7 @@ async def _send_container_menu(msg, kind: str, rid: str) -> None:
             "\n⚠️ اسپاتیفای بدون اکانت فقط ۱۰۰ ترک اول رو می‌ده؛ بقیه در دسترس نیست."
         )
 
-    keyboard = _page_keyboard(kind, rid, container, 0)
+    keyboard = _page_keyboard(msg.chat_id, kind, rid, container, 0)
     cover = getattr(container, "cover_url", "")
     if cover:
         try:
@@ -319,7 +323,10 @@ async def _send_container_menu(msg, kind: str, rid: str) -> None:
 # Tracks fetched at once. Downloads are network- and ffmpeg-bound, so running
 # a few in parallel hides most of the wait; uploads still go out in playlist
 # order. Higher values mostly just annoy YouTube.
-_PARALLEL_DOWNLOADS = 4
+# How many tracks are prepared ahead of the one being uploaded. The real
+# concurrency cap is global (utils.limits); this only bounds how many tasks
+# exist at once.
+_PREFETCH = 6
 
 # Chats that pressed "stop" mid-batch.
 _cancelled: set[int] = set()
@@ -327,8 +334,10 @@ _cancelled: set[int] = set()
 
 async def _download_range(msg, container, offset: int, count: int) -> None:
     import asyncio
+    from pathlib import Path
 
-    from utils import file_cache
+    from config import settings
+    from utils import file_cache, limits
 
     tracks = container.tracks[offset : offset + count]
     if not tracks:
@@ -336,6 +345,11 @@ async def _download_range(msg, container, offset: int, count: int) -> None:
         return
 
     chat_id = msg.chat_id
+    if not limits.start_batch(chat_id):
+        await msg.reply_text(
+            t(chat_id, "⏳ یه دانلود گروهی دیگه از تو در حال اجراست. صبر کن تموم شه یا ⏹ توقف رو بزن.")
+        )
+        return
     _cancelled.discard(chat_id)
 
     # One cover for the whole batch. Sending artwork per track turned a
@@ -349,71 +363,97 @@ async def _download_range(msg, container, offset: int, count: int) -> None:
         except Exception as e:
             log.info("batch cover failed: %s", e)
 
+    stop_kb = InlineKeyboardMarkup(
+        [[InlineKeyboardButton(t(chat_id, "⏹ توقف"), callback_data="sp:stop")]]
+    )
     status = await msg.reply_text(
         t(chat_id, "⬇️ شروع دانلود {n} ترک…").format(n=len(tracks)),
-        reply_markup=InlineKeyboardMarkup(
-            [[InlineKeyboardButton("⏹ توقف", callback_data="sp:stop")]]
-        ),
+        reply_markup=stop_kb,
     )
-    sem = asyncio.Semaphore(_PARALLEL_DOWNLOADS)
 
     async def fetch(meta):
-        """Download only - uploading happens in order in the loop below."""
+        """Download only - uploading happens in order in the loop below.
+        The slot is global, so all users share one download budget."""
         if file_cache.get(f"audio:{meta.id}"):
             return None  # already on Telegram; nothing to fetch
-        async with sem:
-            try:
+        try:
+            async with limits.download_slot(chat_id):
                 return await sp.download_track(meta)
-            except Exception as e:
-                return e
-
-    jobs = [asyncio.create_task(fetch(t)) for t in tracks]
+        except Exception as e:
+            return e
 
     done = failed = 0
     stopped = False
-    for i, (meta, job) in enumerate(zip(tracks, jobs), 1):
+    i = 0
+
+    # Work through the playlist in windows instead of creating a task per
+    # track: a 4000-track request used to spawn 4000 coroutines up front, all
+    # of them holding metadata, before a single byte was downloaded.
+    for start in range(0, len(tracks), _PREFETCH):
         if chat_id in _cancelled:
             stopped = True
-            for pending in jobs[i - 1 :]:
-                pending.cancel()
             break
 
-        result = await job
-        try:
-            if isinstance(result, Exception):
-                failed += 1
-                await msg.reply_text(t(chat_id, "⚠️ رد شد: {name} — {err}").format(name=meta.display, err=result))
-            elif result is None:
-                cached = file_cache.get(f"audio:{meta.id}")
-                ok = (
-                    await _send_cached(msg, meta, cached, with_cover=False)
-                    if cached
-                    else False
-                )
-                done += ok
-                failed += not ok
-            else:
-                ok = await _upload_track(msg, meta, result, with_cover=False)
-                done += ok
-                failed += not ok
-        except Exception as e:
-            failed += 1
-            log.warning("send failed for %s: %s", meta.display, e)
+        window = tracks[start : start + _PREFETCH]
+        jobs = [asyncio.create_task(fetch(m)) for m in window]
 
-        # Editing on every track would burn the rate limit on long playlists.
-        if i % 3 == 0 or i == len(tracks):
+        for meta, job in zip(window, jobs):
+            i += 1
+            if chat_id in _cancelled:
+                stopped = True
+                for pending in jobs:
+                    pending.cancel()
+                break
+
+            result = await job
+            path = result if isinstance(result, Path) else None
             try:
-                await status.edit_text(
-                    f"⬇️ {i}/{len(tracks)} — ✅ {done}"
-                    + (f" · ❌ {failed}" if failed else ""),
-                    reply_markup=InlineKeyboardMarkup(
-                        [[InlineKeyboardButton("⏹ توقف", callback_data="sp:stop")]]
-                    ),
-                )
-            except Exception:
-                pass
+                if isinstance(result, Exception):
+                    failed += 1
+                    await msg.reply_text(
+                        t(chat_id, "⚠️ رد شد: {name} — {err}").format(
+                            name=meta.display, err=result
+                        )
+                    )
+                elif result is None:
+                    cached = file_cache.get(f"audio:{meta.id}")
+                    ok = (
+                        await _send_cached(msg, meta, cached, with_cover=False)
+                        if cached
+                        else False
+                    )
+                    done += ok
+                    failed += not ok
+                else:
+                    ok = await _upload_track(msg, meta, result, with_cover=False)
+                    done += ok
+                    failed += not ok
+            except Exception as e:
+                failed += 1
+                log.warning("send failed for %s: %s", meta.display, e)
+            finally:
+                # Telegram now holds the file and its id is cached, so the
+                # local copy is dead weight - and 4000 of them is tens of GB.
+                if path is not None:
+                    path.unlink(missing_ok=True)
 
+            # Editing on every track would burn the rate limit on long playlists.
+            if i % 5 == 0 or i == len(tracks):
+                try:
+                    await status.edit_text(
+                        f"⬇️ {i}/{len(tracks)} — ✅ {done}"
+                        + (f" · ❌ {failed}" if failed else ""),
+                        reply_markup=stop_kb,
+                    )
+                except Exception:
+                    pass
+
+        if stopped:
+            break
+
+    limits.sweep_downloads(settings.download_dir)
     _cancelled.discard(chat_id)
+    limits.end_batch(chat_id)
     summary = (t(chat_id, "⏹ متوقف شد — ") if stopped else "")
     summary += t(chat_id, "✅ {n} ترک فرستاده شد").format(n=done)
     if failed:
@@ -448,7 +488,8 @@ async def _send_cover(msg, meta, status: str = ""):
             caption=_cover_caption(meta, status),
             parse_mode="Markdown",
             reply_markup=platform_keyboard(
-                ", ".join(meta.artists), meta.name, sp.platform_links(meta)
+                ", ".join(meta.artists), meta.name, sp.platform_links(meta),
+                chat_id=msg.chat_id,
             ),
         )
     except Exception as e:
@@ -506,7 +547,9 @@ async def _send_cached(msg, meta, file_id: str, *, with_cover: bool = True) -> b
         title=meta.name,
         performer=", ".join(meta.artists),
         duration=meta.duration_ms // 1000,
-        reply_markup=lyrics_button(", ".join(meta.artists), meta.name, track_id=meta.id),
+        reply_markup=lyrics_button(
+                    ", ".join(meta.artists), meta.name,
+                    track_id=meta.id, chat_id=msg.chat_id),
     )
     stats.record_download(msg.chat_id, "music-cached", meta.display)
     return True
@@ -610,7 +653,9 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         container = await _load_container(kind, rid)
         try:
             await query.edit_message_reply_markup(
-                reply_markup=_page_keyboard(kind, rid, container, int(offset))
+                reply_markup=_page_keyboard(
+                    query.message.chat_id, kind, rid, container, int(offset)
+                )
             )
         except Exception as e:
             log.info("page edit failed: %s", e)

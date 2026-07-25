@@ -16,10 +16,24 @@ from telegram.ext import ContextTypes
 
 from config import settings
 from modules import stats
+from utils.limits import BoundedDict
 
 log = logging.getLogger(__name__)
 
 _PAGE = 8
+
+def _md(text: str) -> str:
+    """Escape Telegram's legacy Markdown.
+
+    A username like `moein_imy` has an odd number of underscores, which makes
+    Telegram reject the whole message - and the failure was swallowed, so the
+    user-list button simply appeared to do nothing.
+    """
+    out = str(text or "")
+    for ch in ("_", "*", "`", "["):
+        out = out.replace(ch, "\\" + ch)
+    return out
+
 
 _KIND_LABELS = {
     "music": "🎵 موزیک",
@@ -82,7 +96,7 @@ def _summary_text() -> str:
 
     lines += ["", "*پرتکرارترین‌ها:*"]
     lines += (
-        [f"   {i}. {t[:38]} ({c})" for i, (t, c) in enumerate(d["top_tracks"], 1)]
+        [f"   {i}. {_md(title[:38])} ({c})" for i, (title, c) in enumerate(d["top_tracks"], 1)]
         if d["top_tracks"]
         else ["   — هنوز چیزی نیست"]
     )
@@ -101,9 +115,12 @@ def _users_view(offset: int) -> tuple[str, InlineKeyboardMarkup]:
     buttons: list[list[InlineKeyboardButton]] = []
     for uid, uname, fname, last, actions, dls in rows:
         handle = f"@{uname}" if uname else (fname or "بدون نام")
-        lines.append(f"`{uid}` — {handle}\n   ⬇️ {dls} · ⚡ {actions} · 🕐 {_ago(last)}")
+        lines.append(
+            f"`{uid}` — {_md(handle)}\n   ⬇️ {dls} · ⚡ {actions} · 🕐 {_ago(last)}"
+        )
+        # Button labels are plain text, so they must NOT be escaped.
         buttons.append(
-            [InlineKeyboardButton(f"{handle} ({dls})", callback_data=f"adm:u:{uid}")]
+            [InlineKeyboardButton(f"{handle} ({dls})"[:60], callback_data=f"adm:u:{uid}")]
         )
 
     nav = []
@@ -130,9 +147,9 @@ def _user_detail_view(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
 
     (uid, uname, fname, first, last, actions), recent, total = found
     lines = [
-        f"👤 *{fname or 'بدون نام'}*",
+        f"👤 *{_md(fname or 'بدون نام')}*",
         f"🆔 `{uid}`",
-        f"🔗 @{uname}" if uname else "🔗 یوزرنیم نداره",
+        f"🔗 @{_md(uname)}" if uname else "🔗 یوزرنیم نداره",
         "",
         f"⬇️ کل دانلودها: *{total}*",
         f"⚡ تعاملات: {actions}",
@@ -141,7 +158,7 @@ def _user_detail_view(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
     ]
     if recent:
         lines += ["", "*آخرین دانلودها:*"]
-        lines += [f"   • [{k}] {t[:40]}" for k, t, _ in recent]
+        lines += [f"   • [{k}] {_md(title[:40])}" for k, title, _ in recent]
     return "\n".join(lines), back
 
 
@@ -203,8 +220,15 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     try:
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=kb)
     except Exception as e:
-        # "message is not modified" on a refresh with no new data
-        log.debug("admin panel edit skipped: %s", e)
+        if "not modified" in str(e).lower():
+            return  # refresh with no new data; nothing to do
+        # Anything else is a real failure - retry as plain text so the panel
+        # still works, and log loudly rather than looking like a dead button.
+        log.warning("admin panel Markdown failed (%s) - resending as plain text", e)
+        try:
+            await query.edit_message_text(text, reply_markup=kb)
+        except Exception as e2:
+            log.error("admin panel edit failed: %s", e2)
 
 
 # ---------------- broadcast ----------------
@@ -249,7 +273,7 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     )
 
 
-_pending_broadcast: dict[str, tuple[int | None, int | None, str]] = {}
+_pending_broadcast = BoundedDict(20)
 
 
 async def _run_broadcast(query, context, key: str) -> None:

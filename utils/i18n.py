@@ -182,4 +182,29 @@ _EN: dict[str, str] = {
     # --- instagram / soundcloud ---
     "☁️ پلی‌لیست ساندکلاد": "☁️ SoundCloud playlist",
     "🎧 پیدا کردن آهنگ این ویدیو": "🎧 Identify this video's music",
+
+    # --- buttons and limits added later ---
+    "⬇️ دانلود همه": "⬇️ Download all",
+    "⏳ یه دانلود گروهی دیگه از تو در حال اجراست. صبر کن تموم شه یا ⏹ توقف رو بزن.":
+        "⏳ You already have a batch download running. Wait for it, or press ⏹ Stop.",
+    "🎵 موزیک": "🎵 Music",
+    "⚡ موزیک (از کش)": "⚡ Music (cached)",
+    "🎧 صدای یوتیوب": "🎧 YouTube audio",
+    "🎬 ویدیو یوتیوب": "🎬 YouTube video",
+
+    # --- instagram / soundcloud ---
+    "⬇️ در حال دانلود از اینستاگرام…": "⬇️ Downloading from Instagram…",
+    "⬇️ گرفتن از اینستا…": "⬇️ Fetching from Instagram…",
+    "🤔 نوع لینک اینستا رو نشناختم.": "🤔 Unrecognised Instagram link type.",
+    "🎧 پیدا کردن آهنگ این ویدیو": "🎧 Identify this video's music",
+    "آهنگ این ویدیو رو برات پیدا کنم؟": "Want me to identify the music in this video?",
+    "📸 عکس پروفایل": "📸 Profile picture",
+    "📖 استوری‌ها": "📖 Stories",
+    "⌛ فایل ویدیو دیگه موجود نیست. دوباره لینک رو بفرست.":
+        "⌛ That video is no longer available. Send the link again.",
+    "اکشن نامعتبر.": "Invalid action.",
+    "🔎 در حال خوندن پلی‌لیست ساندکلاد…": "🔎 Reading the SoundCloud playlist…",
+    "ترکی تو این پلی‌لیست پیدا نکردم.": "No tracks found in that playlist.",
+    "🔎 در حال گرفتن اطلاعات ترک…": "🔎 Fetching track info…",
+    "☁️ پلی‌لیست ساندکلاد": "☁️ SoundCloud playlist",
 }

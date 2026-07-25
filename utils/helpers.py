@@ -37,17 +37,30 @@ def file_too_big(path: Path, limit_mb: int) -> bool:
     return path.exists() and path.stat().st_size > limit_mb * 1024 * 1024
 
 
-def run_in_thread(func: Callable[..., T]) -> Callable[..., Awaitable[T]]:
-    """Decorator: run a blocking function in the default executor."""
+def run_in_thread(func=None, *, heavy: bool = False):
+    """
+    Decorator: run a blocking function in a bounded thread pool.
 
-    @functools.wraps(func)
-    async def wrapper(*args: Any, **kwargs: Any) -> T:
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            None, functools.partial(func, *args, **kwargs)
-        )
+    `heavy=True` marks work that spawns yt-dlp/ffmpeg. Those go to a small
+    separate pool so a queue of downloads cannot delay a search: on the shared
+    default executor, a 200ms metadata lookup ended up waiting behind several
+    30-second downloads and the bot felt frozen for everyone.
+    """
 
-    return wrapper
+    def decorate(fn: Callable[..., T]) -> Callable[..., Awaitable[T]]:
+        @functools.wraps(fn)
+        async def wrapper(*args: Any, **kwargs: Any) -> T:
+            from utils.limits import heavy_pool, light_pool
+
+            loop = asyncio.get_running_loop()
+            pool = heavy_pool() if heavy else light_pool()
+            return await loop.run_in_executor(
+                pool, functools.partial(fn, *args, **kwargs)
+            )
+
+        return wrapper
+
+    return decorate(func) if func is not None else decorate
 
 
 @run_in_thread

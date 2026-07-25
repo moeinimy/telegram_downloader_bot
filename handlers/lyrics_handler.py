@@ -18,10 +18,12 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from modules.lyrics import fetch_lyrics
+from utils.i18n import t
+from utils.limits import BoundedDict
 
 log = logging.getLogger(__name__)
 
-_cache: dict[str, tuple[str, str]] = {}
+_cache = BoundedDict(2000)
 
 
 def lyrics_button(
@@ -30,6 +32,7 @@ def lyrics_button(
     links: dict[str, str] | None = None,
     *,
     track_id: str | None = None,
+    chat_id: int | None = None,
 ) -> InlineKeyboardMarkup:
     """Keyboard attached to the audio file: lyrics, plus recommendations when
     we know which catalogue track this is.
@@ -39,16 +42,17 @@ def lyrics_button(
     key = hashlib.md5(f"{artist}|{title}".encode("utf-8")).hexdigest()[:12]
     _cache[key] = (artist, title)
 
-    row = [InlineKeyboardButton("📜 متن آهنگ", callback_data=f"lyr:{key}")]
+    row = [InlineKeyboardButton(t(chat_id, "📜 متن آهنگ"), callback_data=f"lyr:{key}")]
     if track_id:
         row.append(
-            InlineKeyboardButton("🎧 شبیه این", callback_data=f"sp:sim:{track_id}")
+            InlineKeyboardButton(t(chat_id, "🎧 شبیه این"), callback_data=f"sp:sim:{track_id}")
         )
     return InlineKeyboardMarkup([row])
 
 
 def platform_keyboard(
-    artist: str, title: str, links: dict[str, str] | None = None
+    artist: str, title: str, links: dict[str, str] | None = None,
+    *, chat_id: int | None = None,
 ) -> InlineKeyboardMarkup:
     """Links to the song on each major service, shown under the cover art.
     Real URLs are used where the source gave us one; the rest fall back to
@@ -89,11 +93,11 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     pair = _cache.get(key)
     if not pair:
-        await query.message.reply_text("⌛ سشن منقضی شده. آهنگ رو دوباره بگیر.")
+        await query.message.reply_text(t(query.message.chat_id, "⌛ سشن منقضی شده. آهنگ رو دوباره بگیر."))
         return
 
     artist, title = pair
-    status = await query.message.reply_text("🔎 دنبال متن آهنگ می‌گردم…")
+    status = await query.message.reply_text(t(query.message.chat_id, "🔎 دنبال متن آهنگ می‌گردم…"))
 
     try:
         text = await fetch_lyrics(artist, title)
@@ -102,7 +106,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         text = None
 
     if not text:
-        await status.edit_text(f"😕 متنی برای «{artist} — {title}» پیدا نکردم.")
+        await status.edit_text(t(query.message.chat_id, "😕 متنی برای «{artist} — {title}» پیدا نکردم.").format(artist=artist, title=title))
         return
 
     await status.delete()
