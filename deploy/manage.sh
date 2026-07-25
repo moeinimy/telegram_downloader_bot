@@ -398,8 +398,13 @@ do_spotify() {
     warn "با کلید، پلی‌لیست‌های چند هزارتایی کامل خونده می‌شن."
     echo
     info "۱) برو developer.spotify.com/dashboard و وارد شو"
-    info "۲) Create app بزن (اسم و توضیح دلخواه، Redirect URI: http://localhost)"
-    info "۳) Client ID و Client Secret رو کپی کن"
+    info "۲) Create app بزن:"
+    info "     - App name / description: هرچی خواستی (کلمه Spotify نباشه)"
+    info "     - Redirect URI:  http://127.0.0.1:8080/callback   بعد Add رو بزن"
+    info "       (localhost رو قبول نمی‌کنه؛ باید https باشه یا آی‌پی عددی)"
+    info "     - تیک Web API رو بزن، شرایط رو قبول کن، Save"
+    info "۳) تو Settings اپ: Client ID و View client secret"
+    warn "این Redirect URI هیچ‌وقت استفاده نمی‌شه، فقط فرم اجبارش می‌کنه."
     echo
     read -rp "Client ID: " cid
     read -rp "Client Secret: " csec
