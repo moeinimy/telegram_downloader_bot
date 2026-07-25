@@ -515,12 +515,19 @@ _botapi_run() {
     mkdir -p "$data_dir"
     docker rm -f telegram-bot-api &>/dev/null
 
+    # TELEGRAM_LOCAL, not "--local": this image's entrypoint builds the server
+    # command line from environment variables and discards the container's
+    # own arguments entirely. Passing --local as an argument looked right and
+    # did nothing, so the server kept answering getFile with relative paths
+    # and every media download 404'd.
     docker run -d --name telegram-bot-api --restart always \
         -p 127.0.0.1:8081:8081 \
         -e TELEGRAM_API_ID="$api_id" \
         -e TELEGRAM_API_HASH="$api_hash" \
+        -e TELEGRAM_LOCAL=1 \
+        -e TELEGRAM_DIR="$data_dir" \
         -v "$data_dir:$data_dir" \
-        aiogram/telegram-bot-api:latest --local --dir="$data_dir" \
+        aiogram/telegram-bot-api:latest \
         || { err "docker بالا نیومد"; return 1; }
 
     info "صبر برای بالا اومدن سرور..."
@@ -529,6 +536,17 @@ _botapi_run() {
         sleep 2
         if curl -s -m 3 -o /dev/null "http://127.0.0.1:8081/"; then
             ok "سرور بالا اومد"
+            # Confirm --local really reached the server. Without it getFile
+            # answers with relative paths, files are never written where the
+            # bot looks, and every download fails with "Not Found".
+            if docker logs telegram-bot-api 2>&1 | grep -q -- '--local'; then
+                ok "حالت local فعاله"
+            else
+                err "حالت local فعال نشد! دستور اجراشده:"
+                docker logs telegram-bot-api 2>&1 | grep 'telegram-bot-api --' \
+                    | tail -1 | sed 's/^/    /'
+                warn "بدون این، دانلود فایل‌های بزرگ کار نمی‌کنه."
+            fi
             _botapi_grant_read
             return 0
         fi
@@ -671,6 +689,15 @@ do_diag() {
     echo
     info "پاسخ سرور محلی:"
     curl -s -m 5 -o /dev/null -w '    HTTP %{http_code}\n' http://127.0.0.1:8081/ || err "جواب نداد"
+
+    echo
+    info "حالت local سرور:"
+    if docker logs telegram-bot-api 2>&1 | grep -q -- '--local'; then
+        ok "فعاله"
+    else
+        err "فعال نیست — علت اصلی «Not Found» همینه"
+        warn "بزن: botctl botapi-repair"
+    fi
 
     echo
     info "آخرین لاگ کانتینر:"
