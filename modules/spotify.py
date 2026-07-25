@@ -360,9 +360,40 @@ def _entry_to_track(e: dict, prefix: str) -> TrackMeta | None:
     return meta
 
 
+@run_in_thread
+def deep_search(query: str, limit: int = 12) -> list[TrackMeta]:
+    """
+    Wide search across YouTube and SoundCloud.
+
+    This is where remixes, bootlegs, slowed/reverb edits and SoundCloud-only
+    uploads live - things no commercial catalogue lists. It costs a full
+    yt-dlp extraction pass per source, so it runs on demand rather than on
+    every search. Results are ranked by match against the query.
+    """
+    tracks = _fallback_search_tracks(query, limit)
+
+    def _relevance(t: TrackMeta) -> float:
+        artist = t.artists[0] if t.artists else ""
+        both = f"{artist} {t.name}"
+        score = _overlap(query, both)
+        if _norm(query) in _norm(both):
+            score += 0.5
+        score += 0.3 / (1 + t.src_rank)
+        return score
+
+    tracks.sort(key=_relevance, reverse=True)
+    return tracks
+
+
 def _search_one(search_url: str, prefix: str) -> list[TrackMeta]:
     try:
-        return [t for t in (_entry_to_track(e, prefix) for e in _flat_entries(search_url)) if t]
+        out = []
+        for idx, e in enumerate(_flat_entries(search_url)):
+            t = _entry_to_track(e, prefix)
+            if t:
+                t.src_rank = idx
+                out.append(t)
+        return out
     except Exception as e:
         log.warning("%s search failed: %s", prefix, e)
         return []
@@ -589,9 +620,10 @@ def download_track(meta: TrackMeta) -> Path:
     out_dir = settings.download_dir / "spotify"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    out_path = out_dir / f"{safe_filename(meta.display)}.mp3"
-    if out_path.exists():
-        return out_path
+    base = out_dir / safe_filename(meta.display)
+    for ext in (".m4a", ".mp3"):
+        if base.with_suffix(ext).exists():
+            return base.with_suffix(ext)
 
     if meta.id.startswith(("yt_", "sc_")) and meta.spotify_url.startswith("http"):
         target = meta.spotify_url
@@ -603,29 +635,71 @@ def download_track(meta: TrackMeta) -> Path:
         target = f"ytsearch1:{meta.search_query} audio"
 
     extra = {
-        "format": "bestaudio/best",
-        "outtmpl": str(out_path.with_suffix(".%(ext)s")),
+        # Prefer a ready-made AAC stream. ExtractAudio can then remux it with
+        # `-acodec copy` instead of re-encoding: transcoding every track to
+        # 320k mp3 cost several seconds of CPU per song AND added a second
+        # lossy pass on top of an already-compressed source.
+        "format": "bestaudio[ext=m4a]/bestaudio/best",
+        "outtmpl": str(base.with_suffix(".%(ext)s")),
         "postprocessors": [
             {
                 "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "320",
+                "preferredcodec": "m4a",
+                "preferredquality": "0",
             },
             {"key": "FFmpegMetadata"},
         ],
     }
     ytdlp_run(extra, lambda ydl: ydl.download([target]))
 
-    if not out_path.exists():
+    out_path = None
+    for ext in (".m4a", ".mp3", ".opus", ".ogg", ".webm"):
+        cand = base.with_suffix(ext)
+        if cand.exists():
+            out_path = cand
+            break
+    if out_path is None:
         raise RuntimeError(f"دانلود فایلی تولید نکرد: {meta.display}")
 
     _embed_cover_and_tags(out_path, meta)
     return out_path
 
 
-def _embed_cover_and_tags(path: Path, meta: TrackMeta) -> None:
-    """Embed album art (APIC) + title/artist/album ID3 tags via mutagen."""
+def _fetch_cover(url: str) -> tuple[bytes, str] | None:
+    if not url:
+        return None
     try:
+        from utils import http
+
+        r = http.get(url)
+        r.raise_for_status()
+        return r.content, r.headers.get("content-type", "image/jpeg").split(";")[0]
+    except Exception as e:
+        log.warning("cover download failed: %s", e)
+        return None
+
+
+def _embed_cover_and_tags(path: Path, meta: TrackMeta) -> None:
+    """Embed album art + title/artist/album tags. MP3 uses ID3 frames, MP4/M4A
+    uses iTunes-style atoms - writing ID3 into an .m4a silently does nothing."""
+    try:
+        cover = _fetch_cover(meta.cover_url)
+
+        if path.suffix.lower() in (".m4a", ".mp4", ".aac"):
+            from mutagen.mp4 import MP4, MP4Cover
+
+            audio = MP4(str(path))
+            audio["\xa9nam"] = [meta.name]
+            audio["\xa9ART"] = [", ".join(meta.artists)]
+            if meta.album:
+                audio["\xa9alb"] = [meta.album]
+            if cover:
+                data, mime = cover
+                fmt = MP4Cover.FORMAT_PNG if "png" in mime else MP4Cover.FORMAT_JPEG
+                audio["covr"] = [MP4Cover(data, imageformat=fmt)]
+            audio.save()
+            return
+
         from mutagen.id3 import APIC, ID3, TALB, TIT2, TPE1
 
         try:
@@ -640,15 +714,10 @@ def _embed_cover_and_tags(path: Path, meta: TrackMeta) -> None:
         if meta.album:
             tags.delall("TALB")
             tags.add(TALB(encoding=3, text=meta.album))
-
-        if meta.cover_url:
-            from utils import http
-
-            r = http.get(meta.cover_url)
-            r.raise_for_status()
-            mime = r.headers.get("content-type", "image/jpeg").split(";")[0]
+        if cover:
+            data, mime = cover
             tags.delall("APIC")
-            tags.add(APIC(encoding=3, mime=mime, type=3, desc="Cover", data=r.content))
+            tags.add(APIC(encoding=3, mime=mime, type=3, desc="Cover", data=data))
 
         tags.save(str(path))
     except Exception as e:

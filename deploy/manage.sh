@@ -122,6 +122,9 @@ ensure_service() {
 fix_perms() {
     mkdir -p "$PROJECT_DIR/downloads"
     chown -R "$BOT_USER:$BOT_USER" "$PROJECT_DIR"
+    # git reset --hard restores the mode recorded in the repo; keep this as a
+    # safety net for clones made before the exec bit was committed.
+    chmod +x "$PROJECT_DIR"/deploy/*.sh 2>/dev/null
     [[ -f "$PROJECT_DIR/.env" ]] && chmod 600 "$PROJECT_DIR/.env"
     git config --global --add safe.directory "$PROJECT_DIR" 2>/dev/null
 }
@@ -471,7 +474,6 @@ do_instagram() {
 
 install_shortcut() {
     ln -sf "$PROJECT_DIR/deploy/manage.sh" /usr/local/bin/botctl
-    chmod +x "$PROJECT_DIR/deploy/manage.sh" 2>/dev/null
     ok "دستور میانبر ساخته شد: botctl"
 }
 
