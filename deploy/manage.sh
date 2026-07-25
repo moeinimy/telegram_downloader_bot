@@ -97,10 +97,15 @@ ensure_venv() {
         err "venv خرابه (pip نیست). پوشه .venv رو پاک کن و دوباره نصب بزن."
         return 1
     fi
-    info "نصب/آپدیت پکیج‌های پایتون..."
-    sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/pip" install -q --upgrade pip
-    sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/pip" install -q -r "$PROJECT_DIR/requirements.txt" \
-        || { err "نصب پکیج‌های پایتون شکست خورد"; return 1; }
+    info "نصب/آپدیت پکیج‌های پایتون (چند دقیقه طول می‌کشه)..."
+    sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/pip" install -q --upgrade pip setuptools wheel
+    # Not quiet: this is the step most likely to fail, and the output is the
+    # only useful diagnostic when it does.
+    if ! sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/pip" install \
+            --progress-bar off -r "$PROJECT_DIR/requirements.txt"; then
+        err "نصب پکیج‌های پایتون شکست خورد - خطای بالا رو بفرست"
+        return 1
+    fi
     ok "پکیج‌های پایتون آماده‌ن"
 }
 
@@ -417,7 +422,7 @@ menu() {
     local state
     if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
         state="${G}● روشن${N}"
-    elif systemctl list-unit-files 2>/dev/null | grep -q "$SERVICE_NAME"; then
+    elif [[ -f "/etc/systemd/system/$SERVICE_NAME.service" ]]; then
         state="${R}● خاموش${N}"
     else
         state="${Y}● نصب نشده${N}"
