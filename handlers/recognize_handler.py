@@ -83,18 +83,22 @@ _pending: dict[str, list] = {}
 
 async def _handle_candidates(msg, status, candidates: list) -> None:
     if not candidates:
-        await status.edit_text("😕 نتونستم آهنگی تو این ویدیو تشخیص بدم.")
+        await status.edit_text(
+            "😕 آهنگی تشخیص ندادم.\n\n"
+            "معمولا یعنی صدای موزیک زیر حرف/افکت گم شده یا تیکه خیلی کوتاهه. "
+            "یه بخش بلندتر که موزیکش واضح‌تره بفرست، یا اسم آهنگ رو تایپ کن."
+        )
         return
 
     top_song, top_votes = candidates[0]
 
-    # One answer, or one that several windows agreed on: act on it.
-    if len(candidates) == 1 or top_votes >= 2:
+    # Only a match two independent windows agreed on is treated as certain.
+    # A single hit used to be announced as fact, which is how a 14-second clip
+    # came back confidently labelled as an unrelated track.
+    if top_votes >= 2:
         await _download_recognized(msg, status, top_song)
         return
 
-    # Windows disagreed. Guessing here is exactly how a Sicko Mode clip came
-    # back as Big Poppa - ask instead of asserting.
     import hashlib
 
     key = hashlib.md5(f"{id(candidates)}{top_song.query}".encode()).hexdigest()[:12]
@@ -107,8 +111,15 @@ async def _handle_candidates(msg, status, candidates: list) -> None:
                               callback_data=f"rec:pick:{key}:{i}")]
         for i, (s, _) in enumerate(candidates[:5])
     ]
+    header = (
+        "🎧 مطمئن نیستم — این احتمالات رو پیدا کردم:"
+        if len(candidates) > 1
+        else "🎧 این رو پیدا کردم ولی مطمئن نیستم:"
+    )
     await status.edit_text(
-        "🎧 مطمئن نیستم — چند تا احتمال پیدا کردم. کدومه؟",
+        f"{header}\n\n"
+        "اگه درسته بزن روش. اگه نه، اسم آهنگ رو تایپ کن یا یه تیکه‌ی "
+        "بلندتر/واضح‌تر از ویدیو بفرست.",
         reply_markup=InlineKeyboardMarkup(rows),
     )
 

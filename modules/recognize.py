@@ -95,7 +95,11 @@ def _extract_window(src: Path, offset: int, seconds: int, dest: Path) -> Path | 
             [
                 "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
                 "-ss", str(offset), "-t", str(seconds), "-i", str(src),
-                "-vn", "-ac", "1", "-ar", "44100", "-b:a", "128k", str(dest),
+                # Phone clips are often quiet with the music well under
+                # speech; levelling the audio gives the fingerprint more to
+                # work with. Nothing is filtered out, only evened up.
+                "-vn", "-af", "dynaudnorm=f=200:g=5",
+                "-ac", "1", "-ar", "44100", "-b:a", "128k", str(dest),
             ],
             capture_output=True, timeout=120,
         )
@@ -115,6 +119,32 @@ def _extract_window(src: Path, offset: int, seconds: int, dest: Path) -> Path | 
     return None
 
 
+def _sample_plan(duration: float) -> tuple[int, list[int]]:
+    """
+    Choose the window length and where to sample.
+
+    A fixed 15s window meant anything shorter than that got exactly one
+    sample, so the whole point of cross-checking was lost precisely where it
+    matters most: short clips, which is what people actually send. Windows
+    are sized to the clip and overlapped so even a 14-second video is
+    fingerprinted three times.
+
+    Returns (window_seconds, offsets).
+    """
+    if duration <= 0:
+        return 12, [0]
+
+    # Shazam matches comfortably on 5-12 seconds.
+    window = 12 if duration >= 20 else max(5, int(duration * 0.6))
+    last = max(int(duration - window), 0)
+    if last == 0:
+        return window, [0]
+
+    count = min(5, max(3, last // max(window // 2, 3) + 1))
+    offsets = sorted({int(last * i / (count - 1)) for i in range(count)})
+    return window, offsets
+
+
 async def recognize_candidates(path: Path) -> list[tuple[RecognizedSong, int]]:
     """
     Fingerprint several windows of a file and return every distinct answer
@@ -127,15 +157,7 @@ async def recognize_candidates(path: Path) -> list[tuple[RecognizedSong, int]]:
     presenting one unverified guess as fact.
     """
     duration = _media_duration(path)
-    window = 15
-    if duration <= 0:
-        offsets = [0]
-    else:
-        span = max(duration - window, 0)
-        # Skip the very start (intros, talking) and spread across the file.
-        # Four windows, not more: each is a Shazam request, and firing a long
-        # burst risks being rate limited into recognising nothing at all.
-        offsets = sorted({int(span * f) for f in (0.08, 0.35, 0.62, 0.88)})
+    window, offsets = _sample_plan(duration)
 
     tmp_dir = path.parent
     votes: dict[tuple[str, str], int] = {}
