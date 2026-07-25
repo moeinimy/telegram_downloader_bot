@@ -42,3 +42,38 @@ def client() -> httpx.Client:
 
 def get(url: str, **kwargs) -> httpx.Response:
     return client().get(url, **kwargs)
+
+
+# Cover art gets fetched up to three times per track: to embed in the file, to
+# build the 320x320 Telegram thumbnail, and sometimes to send as a photo. Keep
+# the bytes around instead.
+_MAX_CACHED = 64
+_bytes_cache: "OrderedDict[str, tuple[bytes, str]]" = None  # type: ignore[assignment]
+
+
+def get_bytes(url: str) -> tuple[bytes, str] | None:
+    """Fetch a binary resource, memoised. Returns (data, content_type)."""
+    global _bytes_cache
+    if _bytes_cache is None:
+        from collections import OrderedDict
+
+        _bytes_cache = OrderedDict()
+
+    if not url:
+        return None
+    with _lock:
+        hit = _bytes_cache.get(url)
+        if hit is not None:
+            _bytes_cache.move_to_end(url)
+            return hit
+    try:
+        r = get(url)
+        r.raise_for_status()
+        value = (r.content, r.headers.get("content-type", "image/jpeg").split(";")[0])
+    except Exception:
+        return None
+    with _lock:
+        _bytes_cache[url] = value
+        while len(_bytes_cache) > _MAX_CACHED:
+            _bytes_cache.popitem(last=False)
+    return value

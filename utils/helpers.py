@@ -61,12 +61,14 @@ def prepare_telegram_thumb(url: str, dest: Path) -> Path | None:
     try:
         from io import BytesIO
 
-        import httpx
         from PIL import Image
 
-        r = httpx.get(url, timeout=20, follow_redirects=True)
-        r.raise_for_status()
-        img = Image.open(BytesIO(r.content)).convert("RGB")
+        from utils import http
+
+        got = http.get_bytes(url)
+        if not got:
+            return None
+        img = Image.open(BytesIO(got[0])).convert("RGB")
         img.thumbnail((320, 320))
         dest.parent.mkdir(parents=True, exist_ok=True)
         img.save(dest, "JPEG", quality=85)

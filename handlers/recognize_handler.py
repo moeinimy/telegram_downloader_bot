@@ -98,9 +98,16 @@ async def _handle_recognition_result(msg, status, song) -> None:
 
 
 async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle a video/audio/voice file sent directly to the bot."""
+    """Identify the music in any video/audio the user sends or forwards.
+
+    Files sent "as file" arrive as documents, so those count too - but only
+    when the MIME type is audio/video, never for arbitrary attachments."""
     msg = update.effective_message
     media = msg.video or msg.audio or msg.voice or msg.video_note
+    if media is None and msg.document:
+        mime = (msg.document.mime_type or "").lower()
+        if mime.startswith(("audio/", "video/")):
+            media = msg.document
     if not media:
         return
 

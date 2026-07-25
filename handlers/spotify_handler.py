@@ -251,6 +251,9 @@ async def _send_container_menu(msg, kind: str, rid: str) -> None:
 # order. Higher values mostly just annoy YouTube.
 _PARALLEL_DOWNLOADS = 4
 
+# Chats that pressed "stop" mid-batch.
+_cancelled: set[int] = set()
+
 
 async def _download_range(msg, container, offset: int, count: int) -> None:
     import asyncio
@@ -262,7 +265,26 @@ async def _download_range(msg, container, offset: int, count: int) -> None:
         await msg.reply_text("چیزی تو این محدوده نیست.")
         return
 
-    status = await msg.reply_text(f"⬇️ شروع دانلود {len(tracks)} ترک…")
+    chat_id = msg.chat_id
+    _cancelled.discard(chat_id)
+
+    # One cover for the whole batch. Sending artwork per track turned a
+    # 50-song playlist into 100 messages.
+    cover = getattr(container, "cover_url", "") or next(
+        (t.cover_url for t in tracks if t.cover_url), ""
+    )
+    if cover:
+        try:
+            await msg.reply_photo(photo=cover, caption=f"🎵 {len(tracks)} ترک")
+        except Exception as e:
+            log.info("batch cover failed: %s", e)
+
+    status = await msg.reply_text(
+        f"⬇️ شروع دانلود {len(tracks)} ترک…",
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("⏹ توقف", callback_data="sp:stop")]]
+        ),
+    )
     sem = asyncio.Semaphore(_PARALLEL_DOWNLOADS)
 
     async def fetch(meta):
@@ -278,7 +300,14 @@ async def _download_range(msg, container, offset: int, count: int) -> None:
     jobs = [asyncio.create_task(fetch(t)) for t in tracks]
 
     done = failed = 0
+    stopped = False
     for i, (meta, job) in enumerate(zip(tracks, jobs), 1):
+        if chat_id in _cancelled:
+            stopped = True
+            for pending in jobs[i - 1 :]:
+                pending.cancel()
+            break
+
         result = await job
         try:
             if isinstance(result, Exception):
@@ -286,11 +315,15 @@ async def _download_range(msg, container, offset: int, count: int) -> None:
                 await msg.reply_text(f"⚠️ رد شد: {meta.display} — {result}")
             elif result is None:
                 cached = file_cache.get(f"audio:{meta.id}")
-                ok = await _send_cached(msg, meta, cached) if cached else False
+                ok = (
+                    await _send_cached(msg, meta, cached, with_cover=False)
+                    if cached
+                    else False
+                )
                 done += ok
                 failed += not ok
             else:
-                ok = await _upload_track(msg, meta, result)
+                ok = await _upload_track(msg, meta, result, with_cover=False)
                 done += ok
                 failed += not ok
         except Exception as e:
@@ -302,12 +335,16 @@ async def _download_range(msg, container, offset: int, count: int) -> None:
             try:
                 await status.edit_text(
                     f"⬇️ {i}/{len(tracks)} — ✅ {done}"
-                    + (f" · ❌ {failed}" if failed else "")
+                    + (f" · ❌ {failed}" if failed else ""),
+                    reply_markup=InlineKeyboardMarkup(
+                        [[InlineKeyboardButton("⏹ توقف", callback_data="sp:stop")]]
+                    ),
                 )
             except Exception:
                 pass
 
-    summary = f"✅ {done} ترک فرستاده شد"
+    _cancelled.discard(chat_id)
+    summary = ("⏹ متوقف شد — " if stopped else "") + f"✅ {done} ترک فرستاده شد"
     if failed:
         summary += f" · {failed} تا ناموفق"
     try:
@@ -364,7 +401,9 @@ async def _upload_track(msg, meta, path, *, with_cover: bool = True) -> bool:
                 performer=", ".join(meta.artists),
                 duration=meta.duration_ms // 1000,
                 thumbnail=thumb_path.open("rb") if thumb_path else None,
-                reply_markup=lyrics_button(", ".join(meta.artists), meta.name),
+                reply_markup=lyrics_button(
+                    ", ".join(meta.artists), meta.name, track_id=meta.id
+                ),
             )
         if sent and sent.audio:
             file_cache.put(cache_key, sent.audio.file_id)
@@ -375,16 +414,17 @@ async def _upload_track(msg, meta, path, *, with_cover: bool = True) -> bool:
         return False
 
 
-async def _send_cached(msg, meta, file_id: str) -> bool:
+async def _send_cached(msg, meta, file_id: str, *, with_cover: bool = True) -> bool:
     from handlers.lyrics_handler import lyrics_button
 
-    await _send_cover(msg, meta)
+    if with_cover:
+        await _send_cover(msg, meta)
     await msg.reply_audio(
         audio=file_id,
         title=meta.name,
         performer=", ".join(meta.artists),
         duration=meta.duration_ms // 1000,
-        reply_markup=lyrics_button(", ".join(meta.artists), meta.name),
+        reply_markup=lyrics_button(", ".join(meta.artists), meta.name, track_id=meta.id),
     )
     return True
 
@@ -444,6 +484,35 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     data = query.data
 
     if data == "sp:noop":
+        return
+
+    if data == "sp:stop":
+        _cancelled.add(query.message.chat_id)
+        try:
+            await query.answer("متوقف شد — ترک‌های در حال دانلود تموم می‌شن.")
+        except Exception:
+            pass
+        return
+
+    if data.startswith("sp:sim:"):
+        track_id = data.split(":", 2)[2]
+        status = await query.message.reply_text("🎧 دنبال آهنگ‌های شبیه می‌گردم…")
+        try:
+            meta = await sp.get_track_meta(track_id)
+            tracks = await sp.similar_tracks(meta, limit=8)
+        except Exception as e:
+            await status.edit_text(f"❌ {e}")
+            return
+        if not tracks:
+            await status.edit_text("چیزی شبیه این پیدا نکردم.")
+            return
+        await status.delete()
+        await _send_tracklist(
+            query.message,
+            title=f"🎧 شبیه «{meta.display}»",
+            tracks=tracks,
+            bulk_callback=None,
+        )
         return
 
     if data.startswith("sp:plpg:"):

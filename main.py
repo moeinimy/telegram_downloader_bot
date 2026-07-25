@@ -65,10 +65,17 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("start", start.start_cmd))
     app.add_handler(CommandHandler("help", start.help_cmd))
 
-    # Video / audio sent directly to the bot -> identify its music.
+    # Any video/audio the user sends or forwards -> identify its music.
+    # Document.* covers files sent "as file" (no compression), which arrive as
+    # documents rather than video/audio and would otherwise be ignored.
     app.add_handler(
         MessageHandler(
-            filters.VIDEO | filters.AUDIO | filters.VOICE | filters.VIDEO_NOTE,
+            filters.VIDEO
+            | filters.AUDIO
+            | filters.VOICE
+            | filters.VIDEO_NOTE
+            | filters.Document.VIDEO
+            | filters.Document.AUDIO,
             recognize_handler.on_media,
         )
     )

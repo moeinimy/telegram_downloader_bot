@@ -54,6 +54,12 @@ class Settings:
     # "Sign in to confirm you're not a bot" check without an account.
     yt_cookies_file: str
 
+    # Audio container for downloaded music: m4a (default), mp3 or flac.
+    # NOTE: every source the bot can reach (YouTube, SoundCloud) serves lossy
+    # audio, so "flac" produces a much larger file without recovering any
+    # detail - it is a lossless container around lossy content.
+    audio_format: str
+
     # Logging
     log_level: str
 
@@ -84,8 +90,14 @@ settings = Settings(
     download_dir=Path(_get("DOWNLOAD_DIR", "./downloads")).resolve(),
     max_upload_mb=int(_get("MAX_UPLOAD_MB", "50") or 50),
     yt_cookies_file=_cookies_path(),
+    audio_format=(_get("AUDIO_FORMAT", "m4a").lower() or "m4a"),
     log_level=_get("LOG_LEVEL", "INFO"),
 )
+
+if settings.audio_format not in ("m4a", "mp3", "flac"):
+    raise RuntimeError(
+        f"AUDIO_FORMAT={settings.audio_format!r} is not one of: m4a, mp3, flac"
+    )
 
 settings.download_dir.mkdir(parents=True, exist_ok=True)
 

@@ -625,6 +625,118 @@ def ensure_cover(meta: TrackMeta) -> None:
             return
 
 
+def _deezer_artist_id(meta: TrackMeta) -> int | None:
+    """
+    Resolve the Deezer artist behind a track.
+
+    Searching `artist:"Drake"` is unreliable - Deezer answered that with a
+    French chanson singer. Resolving through the song itself (or the track id
+    we already hold) lands on the right artist; the by-name lookup is a last
+    resort and picks the most-followed match, since several no-name accounts
+    share big artists' names.
+    """
+    from utils import http
+
+    artist = meta.artists[0] if meta.artists else ""
+    try:
+        if meta.id.startswith("dz_"):
+            d = http.get(f"https://api.deezer.com/track/{meta.id[3:]}").json()
+            aid = (d.get("artist") or {}).get("id")
+            if aid:
+                return int(aid)
+
+        hit = http.get(
+            "https://api.deezer.com/search",
+            params={"q": f"{artist} {meta.name}".strip(), "limit": 1},
+        ).json()
+        data = hit.get("data") or []
+        if data:
+            aid = (data[0].get("artist") or {}).get("id")
+            if aid:
+                return int(aid)
+
+        cand = http.get(
+            "https://api.deezer.com/search/artist", params={"q": artist, "limit": 5}
+        ).json()
+        entries = [
+            a for a in (cand.get("data") or []) if _norm(a.get("name", "")) == _norm(artist)
+        ] or (cand.get("data") or [])
+        if entries:
+            return int(max(entries, key=lambda a: a.get("nb_fan") or 0)["id"])
+    except Exception as e:
+        log.warning("deezer artist lookup failed for %s: %s", meta.display, e)
+    return None
+
+
+@run_in_thread
+def similar_tracks(meta: TrackMeta, limit: int = 8) -> list[TrackMeta]:
+    """
+    Recommendations built from Deezer's keyless graph: more of the same
+    artist's top tracks, then one hit each from related artists. Deezer has no
+    per-track "related" endpoint, so the artist is the pivot.
+    """
+    from utils import http
+
+    artist = meta.artists[0] if meta.artists else ""
+    if not artist:
+        return []
+
+    try:
+        artist_id = _deezer_artist_id(meta)
+        if not artist_id:
+            return []
+
+        out: list[TrackMeta] = []
+        seen = {_norm(meta.name)}
+
+        def add(entries, cap):
+            added = 0
+            for d in entries:
+                if added >= cap or len(out) >= limit:
+                    break
+                title = (d.get("title") or "").strip()
+                if not title or _norm(title) in seen:
+                    continue
+                seen.add(_norm(title))
+                album = d.get("album") or {}
+                out.append(
+                    TrackMeta(
+                        id=f"dz_{d['id']}",
+                        name=title,
+                        artists=[((d.get("artist") or {}).get("name") or "").strip()],
+                        album=album.get("title") or "",
+                        duration_ms=int((d.get("duration") or 0) * 1000),
+                        cover_url=album.get("cover_xl") or album.get("cover_big") or "",
+                        spotify_url=d.get("link") or "",
+                    )
+                )
+                added += 1
+
+        top = http.get(
+            f"https://api.deezer.com/artist/{artist_id}/top", params={"limit": 10}
+        ).json()
+        add(top.get("data") or [], cap=max(limit // 2, 3))
+
+        related = http.get(f"https://api.deezer.com/artist/{artist_id}/related").json()
+        for rel in (related.get("data") or [])[:6]:
+            if len(out) >= limit:
+                break
+            rid = rel.get("id")
+            if not rid:
+                continue
+            rtop = http.get(
+                f"https://api.deezer.com/artist/{rid}/top", params={"limit": 2}
+            ).json()
+            add(rtop.get("data") or [], cap=1)
+
+        for t in out:
+            _yt_cache[t.id] = t
+        return out
+    except Exception as e:
+        log.warning("similar-track lookup failed for %s: %s", meta.display, e)
+        return []
+
+
 def platform_links(meta: TrackMeta) -> dict[str, str]:
     """Direct links we actually know for this track; the keyboard falls back
     to per-platform search URLs for the rest."""
@@ -687,7 +799,7 @@ def download_track(meta: TrackMeta) -> Path:
         "postprocessors": [
             {
                 "key": "FFmpegExtractAudio",
-                "preferredcodec": "m4a",
+                "preferredcodec": settings.audio_format,
                 "preferredquality": "320",
             },
             {"key": "FFmpegMetadata"},
@@ -740,17 +852,9 @@ def _find_output(base: Path) -> Path | None:
 
 
 def _fetch_cover(url: str) -> tuple[bytes, str] | None:
-    if not url:
-        return None
-    try:
-        from utils import http
+    from utils import http
 
-        r = http.get(url)
-        r.raise_for_status()
-        return r.content, r.headers.get("content-type", "image/jpeg").split(";")[0]
-    except Exception as e:
-        log.warning("cover download failed: %s", e)
-        return None
+    return http.get_bytes(url)
 
 
 def _embed_cover_and_tags(path: Path, meta: TrackMeta) -> None:
@@ -758,6 +862,23 @@ def _embed_cover_and_tags(path: Path, meta: TrackMeta) -> None:
     uses iTunes-style atoms - writing ID3 into an .m4a silently does nothing."""
     try:
         cover = _fetch_cover(meta.cover_url)
+
+        if path.suffix.lower() == ".flac":
+            from mutagen.flac import FLAC, Picture
+
+            audio = FLAC(str(path))
+            audio["title"] = meta.name
+            audio["artist"] = ", ".join(meta.artists)
+            if meta.album:
+                audio["album"] = meta.album
+            if cover:
+                data, mime = cover
+                pic = Picture()
+                pic.type, pic.mime, pic.data = 3, mime, data
+                audio.clear_pictures()
+                audio.add_picture(pic)
+            audio.save()
+            return
 
         if path.suffix.lower() in (".m4a", ".mp4", ".aac"):
             from mutagen.mp4 import MP4, MP4Cover

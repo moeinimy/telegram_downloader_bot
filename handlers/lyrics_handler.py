@@ -25,17 +25,26 @@ _cache: dict[str, tuple[str, str]] = {}
 
 
 def lyrics_button(
-    artist: str, title: str, links: dict[str, str] | None = None
+    artist: str,
+    title: str,
+    links: dict[str, str] | None = None,
+    *,
+    track_id: str | None = None,
 ) -> InlineKeyboardMarkup:
-    """Lyrics-only keyboard, attached to the audio file itself.
+    """Keyboard attached to the audio file: lyrics, plus recommendations when
+    we know which catalogue track this is.
 
     `links` is accepted and ignored so older call sites keep working; platform
     links now live under the cover image (see platform_keyboard)."""
     key = hashlib.md5(f"{artist}|{title}".encode("utf-8")).hexdigest()[:12]
     _cache[key] = (artist, title)
-    return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("📜 متن آهنگ", callback_data=f"lyr:{key}")]]
-    )
+
+    row = [InlineKeyboardButton("📜 متن آهنگ", callback_data=f"lyr:{key}")]
+    if track_id:
+        row.append(
+            InlineKeyboardButton("🎧 شبیه این", callback_data=f"sp:sim:{track_id}")
+        )
+    return InlineKeyboardMarkup([row])
 
 
 def platform_keyboard(

@@ -472,6 +472,56 @@ do_instagram() {
     ok "ذخیره شد - استوری حالا فعاله"
 }
 
+do_clearcache() {
+    echo; info "=== پاک کردن کش بات ==="
+    warn "این‌ها پاک می‌شن:"
+    warn "  - شناسه فایل‌های تلگرام (file_ids.json)"
+    warn "  - موزیک‌های دانلودشده، کاورها و کش yt-dlp"
+    warn ".env و کد دست نمی‌خوره."
+    echo
+    read -rp "ادامه؟ (y/n) " a
+    [[ "$a" != "y" ]] && { warn "لغو شد"; return; }
+
+    systemctl stop "$SERVICE_NAME" 2>/dev/null
+    rm -f  "$PROJECT_DIR/downloads/file_ids.json"
+    rm -rf "$PROJECT_DIR/downloads/spotify" \
+           "$PROJECT_DIR/downloads/thumbs" \
+           "$PROJECT_DIR/downloads/recognize" \
+           "$PROJECT_DIR/downloads/.ytdlp-cache"
+    mkdir -p "$PROJECT_DIR/downloads"
+    chown -R "$BOT_USER:$BOT_USER" "$PROJECT_DIR/downloads"
+    systemctl start "$SERVICE_NAME"
+    sleep 2
+    systemctl is-active --quiet "$SERVICE_NAME" \
+        && ok "کش پاک شد و بات دوباره بالا اومد" \
+        || err "بات بالا نیومد - گزینه ۶ رو بزن"
+}
+
+
+do_audioformat() {
+    echo; info "=== فرمت فایل صوتی ==="
+    echo "  1) m4a  (پیشنهادی - سریع‌ترین، بدون تبدیل مجدد)"
+    echo "  2) mp3  (سازگاری حداکثری)"
+    echo "  3) flac (فایل بزرگ‌تر - منابع یوتیوب/ساندکلاد lossy هستن،"
+    echo "          پس کیفیت واقعی بهتر نمی‌شه)"
+    echo
+    read -rp "انتخاب: " a
+    case "$a" in
+        1) fmt=m4a ;;
+        2) fmt=mp3 ;;
+        3) fmt=flac ;;
+        *) warn "لغو شد"; return ;;
+    esac
+    if grep -q '^AUDIO_FORMAT=' "$PROJECT_DIR/.env"; then
+        sed -i "s|^AUDIO_FORMAT=.*|AUDIO_FORMAT=$fmt|" "$PROJECT_DIR/.env"
+    else
+        echo "AUDIO_FORMAT=$fmt" >> "$PROJECT_DIR/.env"
+    fi
+    systemctl restart "$SERVICE_NAME"
+    ok "فرمت روی $fmt تنظیم شد"
+}
+
+
 install_shortcut() {
     ln -sf "$PROJECT_DIR/deploy/manage.sh" /usr/local/bin/botctl
     ok "دستور میانبر ساخته شد: botctl"
@@ -511,7 +561,9 @@ menu() {
     echo "  9) فعال کردن آپلود ۲ گیگی"
     echo " 10) ست کردن کوکی اینستاگرام"
     echo " 11) توقف بات"
-    echo " 12) نصب مجدد از صفر (پاک کردن همه چی)"
+    echo " 12) پاک کردن کش (کاور/فایل‌های قدیمی)"
+    echo " 13) فرمت فایل صوتی (m4a / mp3 / flac)"
+    echo " 14) نصب مجدد از صفر (پاک کردن همه چی)"
     echo "  0) خروج"
     echo
 }
@@ -520,6 +572,7 @@ menu() {
 case "${1:-}" in
     install) do_install; exit $? ;;
     reset)   do_reset;   exit $? ;;
+    clearcache) do_clearcache; exit $? ;;
     update)  do_update;  exit $? ;;
     restart) systemctl restart "$SERVICE_NAME"; exit $? ;;
     status)  do_status;  exit 0 ;;
@@ -545,7 +598,9 @@ while true; do
         9)  do_botapi; pause ;;
         10) do_instagram; pause ;;
         11) systemctl stop "$SERVICE_NAME"; ok "بات خاموش شد"; pause ;;
-        12) do_reset; pause ;;
+        12) do_clearcache; pause ;;
+        13) do_audioformat; pause ;;
+        14) do_reset; pause ;;
         0)  echo; exit 0 ;;
         *)  err "گزینه نامعتبر"; sleep 1 ;;
     esac
