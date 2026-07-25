@@ -34,20 +34,35 @@ from handlers import (
 log = logging.getLogger("main")
 
 
-def _local_api_reachable(base: str, timeout: float = 3.0) -> bool:
+def _local_api_reachable(base: str, attempts: int = 10, delay: float = 3.0) -> bool:
     """A TCP connect is enough: the server answers 404 on / but that still
-    proves it is listening."""
+    proves it is listening.
+
+    Retried, because on boot the bot can easily win the race against the
+    Bot API container, and because a bot that was moved to a local server has
+    been logged out of the cloud API - there is nothing useful to fall back
+    to, so waiting beats failing.
+    """
     import socket
+    import time as _time
     from urllib.parse import urlparse
 
     parsed = urlparse(base)
     host = parsed.hostname or "127.0.0.1"
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return True
-    except OSError:
-        return False
+
+    for attempt in range(1, attempts + 1):
+        try:
+            with socket.create_connection((host, port), timeout=3.0):
+                return True
+        except OSError:
+            if attempt < attempts:
+                log.warning(
+                    "Local Bot API not up yet (%d/%d) - retrying in %.0fs",
+                    attempt, attempts, delay,
+                )
+                _time.sleep(delay)
+    return False
 
 
 def build_app() -> Application:
@@ -78,12 +93,13 @@ def build_app() -> Application:
             )
             log.info("Using local Bot API server at %s", base)
         else:
-            # Falling back keeps the bot answering. Refusing to start left it
-            # in a crash loop whenever the container was down, which took out
-            # every feature over an optional upgrade.
+            # Enabling a local server logs the bot out of api.telegram.org, so
+            # the public API answers "Logged out" and the fallback is useless.
+            # Say that plainly instead of leaving a confusing traceback.
             log.error(
-                "BOT_API_BASE_URL=%s is not reachable - falling back to the "
-                "public Bot API (50MB limit). Fix with: botctl diag",
+                "Local Bot API at %s is unreachable. This bot was moved to a "
+                "local server, so the public API will reject it with "
+                "'Logged out'. Start the container: botctl diag / option 9.",
                 base,
             )
 

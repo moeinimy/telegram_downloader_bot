@@ -628,6 +628,10 @@ do_diag() {
     echo
     info "پاسخ سرور محلی:"
     curl -s -m 5 -o /dev/null -w '    HTTP %{http_code}\n' http://127.0.0.1:8081/ || err "جواب نداد"
+
+    echo
+    info "آخرین لاگ کانتینر:"
+    docker logs --tail 25 telegram-bot-api 2>&1 | sed 's/^/    /' || true
 }
 
 

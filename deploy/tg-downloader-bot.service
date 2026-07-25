@@ -1,7 +1,10 @@
 [Unit]
 Description=Telegram Multi-Platform Downloader Bot
-After=network-online.target
+After=network-online.target docker.service
 Wants=network-online.target
+# Not Requires=: docker is only needed for the optional local Bot API server,
+# and the bot must still start on a host that has no docker at all.
+After=local-fs.target
 
 [Service]
 Type=simple
