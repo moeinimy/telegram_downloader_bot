@@ -155,9 +155,16 @@ async def _fetch_to_disk(context, file_id: str, dest: Path) -> Path:
     """
     import shutil
 
+    log.info(
+        "get_file: id=%s local_api=%s local_mode=%s",
+        file_id[:24],
+        settings.bot_api_base_url or "-",
+        getattr(context.bot, "local_mode", "?"),
+    )
     try:
         tg_file = await context.bot.get_file(file_id)
     except Exception as e:
+        log.warning("get_file failed: %s: %s", type(e).__name__, e)
         if settings.bot_api_base_url and "not found" in str(e).lower():
             # python-telegram-bot only keeps the server's absolute path when it
             # can stat it. If the bot user cannot read the Bot API data dir the
@@ -172,6 +179,7 @@ async def _fetch_to_disk(context, file_id: str, dest: Path) -> Path:
         raise
 
     file_path = getattr(tg_file, "file_path", "") or ""
+    log.info("get_file ok: file_path=%r", file_path)
     src = _server_path(file_path)
 
     if src is not None:
@@ -186,7 +194,12 @@ async def _fetch_to_disk(context, file_id: str, dest: Path) -> Path:
             "botctl fixperms"
         )
 
-    return Path(await tg_file.download_to_drive(custom_path=str(dest)))
+    try:
+        return Path(await tg_file.download_to_drive(custom_path=str(dest)))
+    except Exception as e:
+        # Include what we were actually asked to fetch: a bare "Not Found"
+        # says nothing about which path or URL failed.
+        raise RuntimeError(f"{e} (file_path={file_path!r})") from e
 
 
 def _server_path(file_path: str) -> Path | None:
