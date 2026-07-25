@@ -141,6 +141,7 @@ def build_app() -> Application:
     app.add_handler(CallbackQueryHandler(spotify_handler.on_callback, pattern=r"^sp:"))
     app.add_handler(CallbackQueryHandler(lyrics_handler.on_callback, pattern=r"^lyr:"))
     app.add_handler(CallbackQueryHandler(admin.on_callback, pattern=r"^adm:"))
+    app.add_handler(CallbackQueryHandler(recognize_handler.on_pick, pattern=r"^rec:"))
 
     # Global error log
     app.add_error_handler(_on_error)

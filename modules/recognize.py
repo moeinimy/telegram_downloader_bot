@@ -86,30 +86,32 @@ def _extract_window(src: Path, offset: int, seconds: int, dest: Path) -> Path | 
     return dest if dest.exists() and dest.stat().st_size > 8000 else None
 
 
-async def recognize_file(path: Path) -> RecognizedSong | None:
+async def recognize_candidates(path: Path) -> list[tuple[RecognizedSong, int]]:
     """
-    Identify the music in a local audio/video file.
+    Fingerprint several windows of a file and return every distinct answer
+    with its vote count, best first.
 
     A single sample is unreliable: speech, effects or an intro over the music
     makes Shazam answer with something unrelated (a clip of "Sicko Mode" came
-    back as "Big Poppa"). Several windows across the file are fingerprinted
-    instead and the answer that repeats wins; an answer seen only once, with
-    others disagreeing, is discarded rather than reported as fact.
+    back as "Big Poppa"). Returning all candidates lets the caller act on a
+    clear winner and ask the user when the windows disagree, instead of
+    presenting one unverified guess as fact.
     """
-    from collections import Counter
-
     duration = _media_duration(path)
-    window = 12
+    window = 15
     if duration <= 0:
         offsets = [0]
     else:
-        # Skip the very start (intros/silence) and spread over the file.
         span = max(duration - window, 0)
-        offsets = sorted({int(span * f) for f in (0.05, 0.3, 0.55, 0.8)})
+        # Skip the very start (intros, talking) and spread across the file.
+        offsets = sorted({int(span * f) for f in (0.05, 0.22, 0.4, 0.58, 0.76, 0.92)})
 
     tmp_dir = path.parent
-    votes: Counter = Counter()
-    first: RecognizedSong | None = None
+    votes: dict[tuple[str, str], int] = {}
+    songs: dict[tuple[str, str], RecognizedSong] = {}
+
+    def _key(s: RecognizedSong) -> tuple[str, str]:
+        return (s.artist.lower().strip(), s.title.lower().strip())
 
     for i, off in enumerate(offsets):
         clip = tmp_dir / f"{path.stem}_w{i}.wav"
@@ -121,7 +123,7 @@ async def recognize_file(path: Path) -> RecognizedSong | None:
             if i == 0:
                 song = await _recognize_once(path)
                 if song:
-                    return song
+                    return [(song, 1)]
             continue
 
         try:
@@ -131,23 +133,24 @@ async def recognize_file(path: Path) -> RecognizedSong | None:
 
         if not song:
             continue
-        first = first or song
-        key = (song.artist.lower().strip(), song.title.lower().strip())
-        votes[key] += 1
-        log.info("Shazam window @%ds: %s - %s", off, song.artist, song.title)
-        # Two windows agreeing is enough; stop paying for more.
-        if votes[key] >= 2:
-            return song
 
-    if not votes:
-        return None
-    (artist, title), count = votes.most_common(1)[0]
-    if count == 1 and len(votes) > 1:
-        log.info("Shazam windows disagreed (%s) - reporting no match", list(votes))
-        return None
-    if first and (first.artist.lower().strip(), first.title.lower().strip()) == (artist, title):
-        return first
-    return RecognizedSong(title=title, artist=artist)
+        k = _key(song)
+        songs.setdefault(k, song)
+        votes[k] = votes.get(k, 0) + 1
+        log.info("Shazam window @%ds: %s - %s", off, song.artist, song.title)
+
+        # Two windows agreeing is a confident match; stop sampling.
+        if votes[k] >= 2:
+            break
+
+    ranked = sorted(votes.items(), key=lambda kv: kv[1], reverse=True)
+    return [(songs[k], n) for k, n in ranked]
+
+
+async def recognize_file(path: Path) -> RecognizedSong | None:
+    """Best single answer, or None when nothing was recognised."""
+    candidates = await recognize_candidates(path)
+    return candidates[0][0] if candidates else None
 
 
 @run_in_thread

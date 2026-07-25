@@ -18,7 +18,7 @@ import asyncio
 import logging
 from pathlib import Path
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from config import settings
@@ -30,30 +30,30 @@ log = logging.getLogger(__name__)
 
 
 async def recognize_from_url(msg, url: str) -> None:
-    """Sample up to two windows of the video; songs often start mid-video."""
+    """Sample up to two chunks of the video; songs often start mid-video."""
     status = await msg.reply_text("🎧 در حال گوش دادن به ویدیو و پیدا کردن آهنگ…")
 
-    song = None
+    candidates: list = []
     for offset in (0, 60):
         try:
-            snippet = await rec.fetch_audio_snippet(url, offset=offset)
+            snippet = await rec.fetch_audio_snippet(url, seconds=90, offset=offset)
         except Exception as e:
             if offset == 0:
                 await status.edit_text(f"❌ نتونستم صدای ویدیو رو بگیرم: {e}")
                 return
-            break  # second window unavailable (video too short) - keep first result
+            break  # second chunk unavailable (video too short)
 
         try:
-            song = await rec.recognize_file(snippet)
+            candidates = await rec.recognize_candidates(snippet)
         finally:
             snippet.unlink(missing_ok=True)
 
-        if song:
+        if candidates:
             break
         if offset == 0:
-            await status.edit_text("🎧 پنجره اول جواب نداد، وسط ویدیو رو گوش می‌دم…")
+            await status.edit_text("🎧 اول ویدیو جواب نداد، وسطش رو گوش می‌دم…")
 
-    await _handle_recognition_result(msg, status, song)
+    await _handle_candidates(msg, status, candidates)
 
 
 async def recognize_from_file(msg, path: Path, cleanup: bool = False) -> None:
@@ -63,7 +63,7 @@ async def recognize_from_file(msg, path: Path, cleanup: bool = False) -> None:
 
 async def _recognize_and_send(msg, status, audio_path: Path, *, cleanup: bool) -> None:
     try:
-        song = await rec.recognize_file(audio_path)
+        candidates = await rec.recognize_candidates(audio_path)
     except Exception as e:
         await status.edit_text(f"❌ خطا در تشخیص آهنگ: {e}")
         return
@@ -74,14 +74,46 @@ async def _recognize_and_send(msg, status, audio_path: Path, *, cleanup: bool) -
             except Exception:
                 pass
 
-    await _handle_recognition_result(msg, status, song)
+    await _handle_candidates(msg, status, candidates)
 
 
-async def _handle_recognition_result(msg, status, song) -> None:
-    if not song:
+# Ambiguous results, keyed by a short hash so they fit in callback data.
+_pending: dict[str, list] = {}
+
+
+async def _handle_candidates(msg, status, candidates: list) -> None:
+    if not candidates:
         await status.edit_text("😕 نتونستم آهنگی تو این ویدیو تشخیص بدم.")
         return
 
+    top_song, top_votes = candidates[0]
+
+    # One answer, or one that several windows agreed on: act on it.
+    if len(candidates) == 1 or top_votes >= 2:
+        await _download_recognized(msg, status, top_song)
+        return
+
+    # Windows disagreed. Guessing here is exactly how a Sicko Mode clip came
+    # back as Big Poppa - ask instead of asserting.
+    import hashlib
+
+    key = hashlib.md5(f"{id(candidates)}{top_song.query}".encode()).hexdigest()[:12]
+    _pending[key] = [s for s, _ in candidates]
+    if len(_pending) > 100:
+        _pending.pop(next(iter(_pending)), None)
+
+    rows = [
+        [InlineKeyboardButton(f"🎵 {s.artist} — {s.title}"[:60],
+                              callback_data=f"rec:pick:{key}:{i}")]
+        for i, (s, _) in enumerate(candidates[:5])
+    ]
+    await status.edit_text(
+        "🎧 مطمئن نیستم — چند تا احتمال پیدا کردم. کدومه؟",
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
+
+
+async def _download_recognized(msg, status, song) -> None:
     await status.edit_text(
         f"✅ پیدا شد: *{song.artist} — {song.title}*\n⬇️ در حال دانلود…",
         parse_mode="Markdown",
@@ -96,6 +128,25 @@ async def _handle_recognition_result(msg, status, song) -> None:
 
     await status.delete()
     await _send_and_download_track(msg, tracks[0])
+
+
+async def on_pick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """User chose which of the ambiguous matches was right."""
+    query = update.callback_query
+    await query.answer()
+    _, _, key, idx = query.data.split(":", 3)
+
+    options = _pending.get(key)
+    if not options:
+        await query.message.reply_text("⌛ سشن منقضی شده. دوباره ویدیو رو بفرست.")
+        return
+    try:
+        song = options[int(idx)]
+    except (ValueError, IndexError):
+        return
+
+    status = await query.message.reply_text("⬇️ …")
+    await _download_recognized(query.message, status, song)
 
 
 async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
