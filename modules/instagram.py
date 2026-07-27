@@ -99,9 +99,10 @@ def _friendly_error(e: Exception) -> RuntimeError:
                 "کوکی‌های تازه بگیر و با «botctl → گزینه ۱۰» ست کن."
             )
         return RuntimeError(
-            "این پست رو اینستاگرام بدون لاگین نمی‌ده.\n\n"
-            "معمولا یعنی محدودیت سنی داره، «حساس» علامت خورده، یا خصوصیه. "
-            "بقیه پست‌ها بدون اکانت مشکلی ندارن — فقط همین دسته لاگین می‌خوان."
+            "😕 این پست رو نتونستم بگیرم.\n\n"
+            "خود اینستاگرام بعضی پست‌ها رو محدود می‌کنه (محدودیت سنی، "
+            "علامت «حساس»، یا اکانت خصوصی) و اونا رو فقط به کاربر لاگین‌کرده نشون می‌ده.\n\n"
+            "یه پست دیگه امتحان کن — معمولا مشکلی پیش نمیاد."
         )
 
     if "private" in low or "not available" in low:
@@ -348,12 +349,19 @@ def _media_urls_from_node(node: dict) -> list[str]:
     return [u for u in out if u]
 
 
+# Filled in by the probes so the diagnostic can say WHY a route returned
+# nothing - "0 media" alone cannot distinguish "Instagram refused us" from
+# "our parsing is wrong", and those need different fixes.
+_last_reason: dict[str, str] = {}
+
+
 def _try_graphql(shortcode: str) -> list[str]:
     """instagram.com/graphql/query with the web client's own doc_id."""
     import json
 
     from utils import http
 
+    reasons = []
     # Instagram rotates these; try the known-good ones in turn.
     for doc_id in ("8845758582119845", "10015901848480474", "9510064595728286"):
         r = http.client().post(
@@ -368,16 +376,23 @@ def _try_graphql(shortcode: str) -> list[str]:
             },
         )
         if r.status_code != 200:
+            reasons.append(f"{doc_id[:6]}:HTTP{r.status_code}")
             continue
         try:
             data = r.json().get("data") or {}
         except Exception:
+            reasons.append(f"{doc_id[:6]}:not-json")
             continue
         node = data.get("xdt_shortcode_media") or data.get("shortcode_media")
-        if node:
-            urls = _media_urls_from_node(node)
-            if urls:
-                return urls
+        if not node:
+            reasons.append(f"{doc_id[:6]}:empty-data")
+            continue
+        urls = _media_urls_from_node(node)
+        if urls:
+            return urls
+        reasons.append(f"{doc_id[:6]}:no-urls")
+
+    _last_reason["graphql"] = ", ".join(reasons)
     return []
 
 
@@ -394,9 +409,11 @@ def _try_api_v1(shortcode: str) -> list[str]:
         },
     )
     if r.status_code != 200:
+        _last_reason["api_v1"] = f"HTTP{r.status_code} {r.text[:60]}"
         return []
     items = (r.json().get("items") or [])
     if not items:
+        _last_reason["api_v1"] = "no items"
         return []
     item = items[0]
 
@@ -468,30 +485,52 @@ def _download_urls(urls: list[str], target: Path) -> list[Path]:
     return saved
 
 
+# Which route last produced media. Whichever works on a given server is
+# stable for long stretches, so trying the others first only adds latency:
+# three futile HTTP calls sat in front of every single download when yt-dlp
+# was the one that worked.
+_preferred_route: str | None = None
+
+_HTTP_ROUTES = {
+    "graphql": _try_graphql,
+    "api_v1": _try_api_v1,
+    "embed": _try_embed,
+}
+
+
+def _route_order() -> list[str]:
+    """Known-good route first, then the rest, then yt-dlp."""
+    names = list(_HTTP_ROUTES) + ["ytdlp"]
+    if _preferred_route in names:
+        names.remove(_preferred_route)
+        names.insert(0, _preferred_route)
+    return names
+
+
 def _anonymous_fetch(shortcode: str, target: Path) -> list[Path]:
-    """Try every cookie-free route; the first that yields media wins."""
+    """Try the cookie-free routes; the first that yields media wins."""
+    global _preferred_route
+
     errors: list[str] = []
-    for name, fn in (
-        ("graphql", _try_graphql),
-        ("api_v1", _try_api_v1),
-        ("embed", _try_embed),
-    ):
+    for name in _route_order():
         try:
-            urls = fn(shortcode)
+            if name == "ytdlp":
+                files = _ytdlp_fetch(shortcode, target)
+                _preferred_route = "ytdlp"
+                log.info("instagram: yt-dlp served %d files for %s", len(files), shortcode)
+                return files
+
+            urls = _HTTP_ROUTES[name](shortcode)
             if urls:
-                # Logged so the winning route is visible in production; which
-                # ones survive changes over time is otherwise guesswork.
+                _preferred_route = name
                 log.info("instagram: %s served %d media for %s", name, len(urls), shortcode)
                 return _download_urls(urls, target)
-            errors.append(f"{name}: no media")
+            errors.append(f"{name}: {_last_reason.get(name, 'no media')}")
         except Exception as e:
             errors.append(f"{name}: {type(e).__name__}")
             log.info("instagram %s failed for %s: %s", name, shortcode, e)
 
-    # yt-dlp last: it is the slowest and duplicates much of the above, but it
-    # keeps up with extractor changes we do not track ourselves.
-    log.info("instagram: falling back to yt-dlp for %s (%s)", shortcode, "; ".join(errors))
-    return _ytdlp_fetch(shortcode, target)
+    raise RuntimeError("; ".join(errors) or "no route returned media")
 
 
 def _probe_routes(shortcode: str) -> dict[str, int]:
@@ -536,7 +575,12 @@ def diagnose(shortcode: str | None = None) -> str:
     def render(sc: str, res: dict[str, int]) -> list[str]:
         out = [f"📄 {sc}"]
         for name, n in res.items():
-            out.append(f"   {'✅' if n > 0 else '❌'} {name}: " + (f"{n} media" if n >= 0 else "error"))
+            if n > 0:
+                out.append(f"   ✅ {name}: {n} media")
+            else:
+                # Why it failed, not just that it did.
+                why = _last_reason.get(name, "error" if n < 0 else "no media")
+                out.append(f"   ❌ {name}: {why[:70]}")
         return out
 
     lines: list[str] = []

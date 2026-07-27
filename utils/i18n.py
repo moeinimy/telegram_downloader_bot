@@ -211,13 +211,14 @@ _EN: dict[str, str] = {
     # --- Instagram access errors ---
     # These come out of modules/instagram.py already phrased for the user, and
     # are translated at the handler boundary.
-    "این پست رو اینستاگرام بدون لاگین نمی‌ده.\n\n"
-    "معمولا یعنی محدودیت سنی داره، «حساس» علامت خورده، یا خصوصیه. "
-    "بقیه پست‌ها بدون اکانت مشکلی ندارن — فقط همین دسته لاگین می‌خوان.":
-        "Instagram will not serve this particular post without a login.\n\n"
-        "Usually that means it is age-restricted, flagged as sensitive, or "
-        "private. Other posts download fine without an account — only this "
-        "category needs one.",
+    "😕 این پست رو نتونستم بگیرم.\n\n"
+    "خود اینستاگرام بعضی پست‌ها رو محدود می‌کنه (محدودیت سنی، "
+    "علامت «حساس»، یا اکانت خصوصی) و اونا رو فقط به کاربر لاگین‌کرده نشون می‌ده.\n\n"
+    "یه پست دیگه امتحان کن — معمولا مشکلی پیش نمیاد.":
+        "😕 I couldn't fetch this post.\n\n"
+        "Instagram restricts some posts (age limits, a “sensitive” flag, or a "
+        "private account) and only shows those to logged-in users.\n\n"
+        "Try another post — most work fine.",
     "اینستاگرام این پست رو نداد. معمولا یعنی کوکی‌های اکانت منقضی شدن "
     "یا پست خصوصی/حذف شده‌ست.\n\n"
     "کوکی‌های تازه بگیر و با «botctl → گزینه ۱۰» ست کن.":
