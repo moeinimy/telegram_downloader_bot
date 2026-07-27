@@ -515,6 +515,48 @@ def _split_artist_title(s: str) -> tuple[str, str]:
     return "", s.strip()
 
 
+def _clean_source_title(meta: TrackMeta) -> None:
+    """
+    Tidy a raw YouTube/SoundCloud title when no catalogue match was found.
+
+    Without this the video title survives untouched - "HesamTiem - Karkas
+    (Official Music Video)" under the channel name "HesamTiem", which displays
+    as the artist twice and, worse, is what gets sent to the lyrics lookup, so
+    it never matches anything. Persian and other non-catalogue music hits this
+    every time, which is exactly where the raw title is all we have.
+    """
+    cleaned = _strip_noise(meta.name)
+    if not cleaned:
+        return
+
+    artist, title = _split_artist_title(cleaned)
+    channel = meta.artists[0] if meta.artists else ""
+
+    if artist and title:
+        # "Artist - Title" in the video title is more trustworthy than the
+        # channel name, and collapses the duplicate when they are the same.
+        # Uploaders sometimes repeat themselves ("X - X - Song"), so keep
+        # peeling while the remainder still opens with the artist.
+        for _ in range(3):
+            nxt_artist, nxt_title = _split_artist_title(title)
+            if nxt_artist and _norm(nxt_artist) == _norm(artist) and nxt_title:
+                title = nxt_title
+                continue
+            break
+        meta.artists = [artist]
+        meta.name = title
+    else:
+        meta.name = cleaned
+        # A title that merely repeats the channel name tells the lyrics search
+        # nothing; drop the redundancy.
+        if channel and _norm(cleaned).startswith(_norm(channel)):
+            rest = cleaned[len(channel):].strip(" -–—:|")
+            if rest:
+                meta.name = rest
+
+    log.info("cleaned source title -> %s", meta.display)
+
+
 def _itunes_enrich(meta: TrackMeta) -> None:
     """
     For YouTube/SoundCloud sources the 'metadata' is just a video title plus a
@@ -589,7 +631,8 @@ def _itunes_enrich(meta: TrackMeta) -> None:
             best = (score, it)
 
     if best is None:
-        log.info("iTunes: no confident match for %r - keeping source metadata", meta.name)
+        log.info("iTunes: no confident match for %r - cleaning the raw title", meta.name)
+        _clean_source_title(meta)
         return
 
     it = best[1]
