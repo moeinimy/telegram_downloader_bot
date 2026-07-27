@@ -73,6 +73,9 @@ class Settings:
     audd_token: str
     recognition_engines: tuple[str, ...]
 
+    # Lyrics sources, in priority order. All are free and keyless.
+    lyrics_sources: tuple[str, ...]
+
     # Telegram user ids allowed to open the admin panel. Empty = disabled.
     admin_ids: frozenset[int]
 
@@ -141,6 +144,9 @@ settings = Settings(
     audd_token=_get("AUDD_API_TOKEN"),
     recognition_engines=tuple(
         e for e in _get("RECOGNITION_ENGINES", "acoustid,audd").replace(" ", "").split(",") if e
+    ),
+    lyrics_sources=tuple(
+        s for s in _get("LYRICS_SOURCES", "lrclib,lyricsovh,genius").replace(" ", "").split(",") if s
     ),
     admin_ids=_admin_ids(),
     required_channel=_channel_name(),
