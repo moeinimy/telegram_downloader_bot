@@ -192,6 +192,23 @@ async def igcheck_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await msg.edit_text(("✅ " if ok else "❌ ") + detail)
 
 
+async def igtest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/igtest [shortcode] - which cookie-free routes work from THIS server."""
+    if not _is_admin(update):
+        return
+    from modules import instagram as ig
+
+    sc = (context.args[0] if context.args else "Bt4k7fjnRRl").strip()
+    for prefix in ("https://www.instagram.com/p/", "https://www.instagram.com/reel/"):
+        if sc.startswith(prefix):
+            sc = sc[len(prefix):].strip("/").split("?")[0]
+    msg = await update.effective_message.reply_text("🔎 تست روش‌های بدون کوکی…")
+    try:
+        await msg.edit_text(await ig.diagnose(sc))
+    except Exception as e:
+        await msg.edit_text(f"❌ {e}")
+
+
 async def whoami_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Lets the owner discover the id to put in ADMIN_IDS."""
     user = update.effective_user

@@ -1,16 +1,17 @@
 """
 Instagram module.
 
-Two paths, picked automatically:
+Cookie-free by default. Four independent anonymous routes are tried in
+order - Instagram's own GraphQL endpoint, the mobile media-info API, the
+public embed page, then yt-dlp - because Instagram has been closing these
+one at a time and which of them still answers depends on the requesting IP.
+A single method means the feature dies the moment that one is throttled;
+diagnose() reports which ones work from the host actually running the bot.
 
-  1. No session cookies configured (the simple, account-free default):
-     everything goes straight through yt-dlp, which handles reels, video
-     posts and most photo posts anonymously. Stories are not reachable
-     without an account and return a clear message.
-
-  2. IG_SESSIONID + INSTAGRAM_USERNAME set: instaloader is tried first
-     (it also covers stories and multi-photo carousels), with the yt-dlp
-     path as a fallback.
+Session cookies remain optional. When IG_SESSIONID + INSTAGRAM_USERNAME are
+set, instaloader is tried first (it also covers stories and multi-photo
+carousels) and the anonymous routes act as the fallback. Stories are the one
+thing that genuinely cannot work without an account.
 
 Public coroutines:
   - fetch_post(shortcode)        -> list[Path]
@@ -206,7 +207,7 @@ def fetch_post(shortcode: str) -> list[Path]:
     # burn anonymous GraphQL requests and get the IP rate-limited for nothing.
     if not settings.has_instagram_session:
         try:
-            return _ytdlp_fetch(shortcode, target)
+            return _anonymous_fetch(shortcode, target)
         except Exception as e:
             raise _friendly_error(e) from e
 
@@ -220,9 +221,9 @@ def fetch_post(shortcode: str) -> list[Path]:
         L.download_post(post, target=str(target))
         return _collect_media(target)
     except Exception as e:
-        log.warning("instaloader failed for %s (%s) — trying yt-dlp fallback.", shortcode, e)
+        log.warning("instaloader failed for %s (%s) — trying anonymous routes.", shortcode, e)
         try:
-            return _ytdlp_fetch(shortcode, target)
+            return _anonymous_fetch(shortcode, target)
         except Exception:
             # yt-dlp mostly handles video; for photo/carousel posts the
             # original instaloader error is the meaningful one.
@@ -296,6 +297,234 @@ def _instagram_cookiefile() -> str | None:
         lines.append(f".instagram.com\tTRUE\t/\tTRUE\t{expiry}\t{name}\t{value}")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return str(path)
+
+
+# --------------------------------------------------------------------------
+# Cookie-free strategies.
+#
+# Instagram has been closing anonymous access endpoint by endpoint, and which
+# ones still answer depends heavily on the requesting IP: a residential or
+# clean server address often still gets a reply where a flagged one gets 403.
+# Relying on a single method therefore means the whole feature dies the moment
+# that one is throttled. Four independent paths are tried in order, cheapest
+# first, and diagnose() reports which of them actually work from this host.
+# --------------------------------------------------------------------------
+
+_APP_ID = "936619743392459"  # public web-client id, sent by instagram.com itself
+_WEB_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+)
+_SHORTCODE_ALPHABET = (
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+)
+
+
+def _shortcode_to_media_id(shortcode: str) -> int:
+    """Instagram shortcodes are the media id in base64url."""
+    n = 0
+    for ch in shortcode.split("?")[0]:
+        n = n * 64 + _SHORTCODE_ALPHABET.index(ch)
+    return n
+
+
+def _media_urls_from_node(node: dict) -> list[str]:
+    """Pull every media URL out of a GraphQL media node, carousel included."""
+    out: list[str] = []
+
+    def one(n: dict) -> None:
+        if n.get("is_video") and n.get("video_url"):
+            out.append(n["video_url"])
+        elif n.get("display_url"):
+            out.append(n["display_url"])
+
+    children = ((node.get("edge_sidecar_to_children") or {}).get("edges")) or []
+    if children:
+        for edge in children:
+            one(edge.get("node") or {})
+    else:
+        one(node)
+    return [u for u in out if u]
+
+
+def _try_graphql(shortcode: str) -> list[str]:
+    """instagram.com/graphql/query with the web client's own doc_id."""
+    import json
+
+    from utils import http
+
+    # Instagram rotates these; try the known-good ones in turn.
+    for doc_id in ("8845758582119845", "10015901848480474", "9510064595728286"):
+        r = http.client().post(
+            "https://www.instagram.com/graphql/query/",
+            data={"doc_id": doc_id, "variables": json.dumps({"shortcode": shortcode})},
+            headers={
+                "User-Agent": _WEB_UA,
+                "X-IG-App-ID": _APP_ID,
+                "Content-Type": "application/x-www-form-urlencoded",
+                "X-Requested-With": "XMLHttpRequest",
+                "Referer": f"https://www.instagram.com/p/{shortcode}/",
+            },
+        )
+        if r.status_code != 200:
+            continue
+        try:
+            data = r.json().get("data") or {}
+        except Exception:
+            continue
+        node = data.get("xdt_shortcode_media") or data.get("shortcode_media")
+        if node:
+            urls = _media_urls_from_node(node)
+            if urls:
+                return urls
+    return []
+
+
+def _try_api_v1(shortcode: str) -> list[str]:
+    """i.instagram.com media info, addressed by the numeric media id."""
+    from utils import http
+
+    media_id = _shortcode_to_media_id(shortcode)
+    r = http.get(
+        f"https://i.instagram.com/api/v1/media/{media_id}/info/",
+        headers={
+            "User-Agent": "Instagram 219.0.0.12.117 Android",
+            "X-IG-App-ID": _APP_ID,
+        },
+    )
+    if r.status_code != 200:
+        return []
+    items = (r.json().get("items") or [])
+    if not items:
+        return []
+    item = items[0]
+
+    def from_item(it: dict) -> str | None:
+        vids = it.get("video_versions") or []
+        if vids:
+            return vids[0].get("url")
+        cands = ((it.get("image_versions2") or {}).get("candidates")) or []
+        return cands[0].get("url") if cands else None
+
+    carousel = item.get("carousel_media") or []
+    urls = [from_item(c) for c in carousel] if carousel else [from_item(item)]
+    return [u for u in urls if u]
+
+
+def _try_embed(shortcode: str) -> list[str]:
+    """The public embed page still carries the media URLs on some hosts."""
+    import json
+    import re
+
+    from utils import http
+
+    r = http.get(
+        f"https://www.instagram.com/p/{shortcode}/embed/captioned/",
+        headers={"User-Agent": _WEB_UA},
+    )
+    if r.status_code != 200:
+        return []
+    body = r.text
+
+    m = re.search(r'"gql_data"\s*:\s*(\{.*?\})\s*,\s*"', body, re.S)
+    if m:
+        try:
+            node = (json.loads(m.group(1)) or {}).get("shortcode_media")
+            if node:
+                urls = _media_urls_from_node(node)
+                if urls:
+                    return urls
+        except Exception:
+            pass
+
+    # Fall back to the raw fields; they appear escaped inside a JS string.
+    urls = [
+        u.encode().decode("unicode_escape")
+        for u in re.findall(r'"video_url":"([^"]+)"', body)
+    ] or [
+        u.encode().decode("unicode_escape")
+        for u in re.findall(r'"display_url":"([^"]+)"', body)
+    ]
+    return urls
+
+
+def _download_urls(urls: list[str], target: Path) -> list[Path]:
+    """Save direct CDN URLs. Much cheaper than a yt-dlp run once we have them."""
+    from utils import http
+
+    target.mkdir(parents=True, exist_ok=True)
+    saved: list[Path] = []
+    for i, url in enumerate(urls):
+        clean = url.split("?")[0]
+        ext = ".mp4" if ".mp4" in clean else (".jpg" if ".jpg" in clean or ".webp" in clean else ".bin")
+        dest = target / f"{i:02d}{ext}"
+        r = http.get(url, headers={"User-Agent": _WEB_UA, "Referer": "https://www.instagram.com/"})
+        r.raise_for_status()
+        dest.write_bytes(r.content)
+        saved.append(dest)
+    if not saved:
+        raise FileNotFoundError("no media downloaded")
+    return saved
+
+
+def _anonymous_fetch(shortcode: str, target: Path) -> list[Path]:
+    """Try every cookie-free route; the first that yields media wins."""
+    errors: list[str] = []
+    for name, fn in (
+        ("graphql", _try_graphql),
+        ("api_v1", _try_api_v1),
+        ("embed", _try_embed),
+    ):
+        try:
+            urls = fn(shortcode)
+            if urls:
+                log.info("instagram: %s returned %d media for %s", name, len(urls), shortcode)
+                return _download_urls(urls, target)
+            errors.append(f"{name}: no media")
+        except Exception as e:
+            errors.append(f"{name}: {type(e).__name__}")
+            log.info("instagram %s failed for %s: %s", name, shortcode, e)
+
+    # yt-dlp last: it is the slowest and duplicates much of the above, but it
+    # keeps up with extractor changes we do not track ourselves.
+    log.info("instagram: falling back to yt-dlp for %s (%s)", shortcode, "; ".join(errors))
+    return _ytdlp_fetch(shortcode, target)
+
+
+@run_in_thread
+def diagnose(shortcode: str = "Bt4k7fjnRRl") -> str:
+    """
+    Run every cookie-free strategy and report which ones work from THIS host.
+
+    Whether anonymous access is available is an IP-level question, so the only
+    answer that counts comes from the machine actually running the bot.
+    """
+    lines = [f"شورت‌کد تست: {shortcode}", ""]
+    for name, fn in (
+        ("graphql", _try_graphql),
+        ("api_v1", _try_api_v1),
+        ("embed", _try_embed),
+    ):
+        try:
+            urls = fn(shortcode)
+            lines.append(f"{'✅' if urls else '❌'} {name}: {len(urls)} media")
+        except Exception as e:
+            lines.append(f"❌ {name}: {type(e).__name__}: {str(e)[:60]}")
+
+    try:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            files = _ytdlp_fetch(shortcode, Path(tmp))
+        lines.append(f"✅ yt-dlp: {len(files)} media")
+    except Exception as e:
+        lines.append(f"❌ yt-dlp: {str(e)[:70]}")
+
+    lines.append("")
+    lines.append(
+        "کوکی ست شده" if settings.has_instagram_session else "کوکی ست نشده (حالت بدون اکانت)"
+    )
+    return "\n".join(lines)
 
 
 def _ytdlp_fetch(shortcode: str, target: Path) -> list[Path]:
