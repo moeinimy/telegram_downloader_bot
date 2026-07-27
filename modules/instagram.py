@@ -88,7 +88,7 @@ def _friendly_error(e: Exception) -> RuntimeError:
     # (age-gated, "sensitive", or region-limited) demand a login. Saying
     # "anonymous access is closed" here was simply wrong.
     if any(k in low for k in (
-        "empty media response", "no video formats", "unsupported url",
+        _HIDDEN, "empty media response", "no video formats", "unsupported url",
         "requested content is not available", "login required",
         "you need to log in", "rate-limit reached", "no media",
     )):
@@ -354,45 +354,111 @@ def _media_urls_from_node(node: dict) -> list[str]:
 # "our parsing is wrong", and those need different fixes.
 _last_reason: dict[str, str] = {}
 
+# Instagram answered "this exists but you may not see it": a null media node
+# with status ok and no errors. Distinct from being blocked or throttled.
+_HIDDEN = "not-visible-logged-out"
+
+
+# Verified working: this pair is what instagram.com's own web player sends.
+# The others are kept as backups because Instagram rotates them.
+_DOC_IDS = ("10015901848480474", "8845758582119845", "9510064595728286")
+
+_boot_at = 0.0
+_BOOT_TTL = 1800.0
+
+
+def _ensure_anon_cookies() -> str:
+    """
+    Fetch instagram.com once so the client holds csrftoken/mid, exactly as a
+    browser does before any XHR.
+
+    This is the difference between the GraphQL endpoint answering 403 HTML and
+    answering JSON: without these cookies every anonymous call is rejected out
+    of hand, which is why the endpoint looked permanently closed.
+    """
+    global _boot_at
+
+    from utils import http
+
+    client = http.client()
+    csrf = client.cookies.get("csrftoken")
+    if csrf and (time.time() - _boot_at) < _BOOT_TTL:
+        return csrf
+    try:
+        client.get("https://www.instagram.com/", headers={"User-Agent": _WEB_UA})
+        _boot_at = time.time()
+    except Exception as e:
+        log.info("instagram cookie bootstrap failed: %s", e)
+    return client.cookies.get("csrftoken") or ""
+
 
 def _try_graphql(shortcode: str) -> list[str]:
-    """instagram.com/graphql/query with the web client's own doc_id."""
+    """
+    instagram.com/graphql/query, called the way the site's own player does.
+
+    Three details all have to be right or it returns nothing: the anonymous
+    cookies from _ensure_anon_cookies, the full variables shape below (a bare
+    {"shortcode": ...} yields "execution error"), and a current doc_id.
+    """
     import json
 
     from utils import http
 
+    csrf = _ensure_anon_cookies()
+    headers = {
+        "User-Agent": _WEB_UA,
+        "X-IG-App-ID": _APP_ID,
+        "X-ASBD-ID": "129477",
+        "X-IG-WWW-Claim": "0",
+        "X-CSRFToken": csrf,
+        "X-Requested-With": "XMLHttpRequest",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Referer": f"https://www.instagram.com/reel/{shortcode}/",
+        "Accept": "*/*",
+    }
+    variables = {
+        "shortcode": shortcode,
+        "fetch_tagged_user_count": None,
+        "hoisted_comment_id": None,
+        "hoisted_reply_id": None,
+    }
+
     reasons = []
-    # Instagram rotates these; try the known-good ones in turn.
-    for doc_id in ("8845758582119845", "10015901848480474", "9510064595728286"):
+    hidden = False
+    for doc_id in _DOC_IDS:
         r = http.client().post(
             "https://www.instagram.com/graphql/query/",
-            data={"doc_id": doc_id, "variables": json.dumps({"shortcode": shortcode})},
-            headers={
-                "User-Agent": _WEB_UA,
-                "X-IG-App-ID": _APP_ID,
-                "Content-Type": "application/x-www-form-urlencoded",
-                "X-Requested-With": "XMLHttpRequest",
-                "Referer": f"https://www.instagram.com/p/{shortcode}/",
-            },
+            data={"doc_id": doc_id, "variables": json.dumps(variables)},
+            headers=headers,
         )
         if r.status_code != 200:
             reasons.append(f"{doc_id[:6]}:HTTP{r.status_code}")
             continue
         try:
-            data = r.json().get("data") or {}
+            payload = r.json()
         except Exception:
             reasons.append(f"{doc_id[:6]}:not-json")
             continue
-        node = data.get("xdt_shortcode_media") or data.get("shortcode_media")
-        if not node:
-            reasons.append(f"{doc_id[:6]}:empty-data")
-            continue
-        urls = _media_urls_from_node(node)
-        if urls:
-            return urls
-        reasons.append(f"{doc_id[:6]}:no-urls")
 
-    _last_reason["graphql"] = ", ".join(reasons)
+        data = payload.get("data") or {}
+        node = data.get("xdt_shortcode_media") or data.get("shortcode_media")
+        if node:
+            urls = _media_urls_from_node(node)
+            if urls:
+                return urls
+            reasons.append(f"{doc_id[:6]}:no-urls")
+            continue
+
+        # A null node with status ok and no errors is Instagram's way of
+        # saying the post exists but is not visible to a logged-out viewer.
+        if "xdt_shortcode_media" in data and not payload.get("errors"):
+            hidden = True
+            reasons.append(f"{doc_id[:6]}:not-visible-logged-out")
+            break
+        reasons.append(f"{doc_id[:6]}:empty-data")
+
+    # Kept as a stable ASCII marker so callers can branch on it.
+    _last_reason["graphql"] = _HIDDEN if hidden else ", ".join(reasons)
     return []
 
 
@@ -530,6 +596,10 @@ def _anonymous_fetch(shortcode: str, target: Path) -> list[Path]:
             errors.append(f"{name}: {type(e).__name__}")
             log.info("instagram %s failed for %s: %s", name, shortcode, e)
 
+    # When Instagram explicitly said the post is not visible logged-out, that
+    # is the answer - do not bury it among the other routes' noise.
+    if _last_reason.get("graphql") == _HIDDEN:
+        raise RuntimeError(_HIDDEN)
     raise RuntimeError("; ".join(errors) or "no route returned media")
 
 
