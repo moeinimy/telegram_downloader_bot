@@ -37,7 +37,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             return
     except Exception as e:
         log.exception("range reply failed")
-        await msg.reply_text(t(msg.chat_id, "❌ خطا: {err}").format(err=e))
+        # Module errors are already user-facing sentences, so run them through
+        # t() as well - otherwise an English user gets a Persian error body.
+        await msg.reply_text(
+            t(msg.chat_id, "❌ خطا: {err}").format(err=t(msg.chat_id, str(e)))
+        )
         return
 
     result = route(text)
@@ -60,4 +64,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             await msg.reply_text(t(msg.chat_id, "🤔 لینک رو نشناختم. یوتوب / اینستا / اسپاتیفای ساپورت میشه."))
     except Exception as e:
         log.exception("handle_text failed")
-        await msg.reply_text(t(msg.chat_id, "❌ خطا: {err}").format(err=e))
+        # Module errors are already user-facing sentences, so run them through
+        # t() as well - otherwise an English user gets a Persian error body.
+        await msg.reply_text(
+            t(msg.chat_id, "❌ خطا: {err}").format(err=t(msg.chat_id, str(e)))
+        )

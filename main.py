@@ -123,6 +123,7 @@ def build_app() -> Application:
     app.add_handler(CommandHandler(["id", "whoami"], admin.whoami_cmd))
     app.add_handler(CommandHandler(["lang", "language"], start.lang_cmd))
     app.add_handler(CommandHandler("broadcast", admin.broadcast_cmd))
+    app.add_handler(CommandHandler("igcheck", admin.igcheck_cmd))
 
     # Any video/audio the user sends or forwards -> identify its music.
     # Document.* covers files sent "as file" (no compression), which arrive as

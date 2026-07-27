@@ -207,4 +207,35 @@ _EN: dict[str, str] = {
     "ترکی تو این پلی‌لیست پیدا نکردم.": "No tracks found in that playlist.",
     "🔎 در حال گرفتن اطلاعات ترک…": "🔎 Fetching track info…",
     "☁️ پلی‌لیست ساندکلاد": "☁️ SoundCloud playlist",
+
+    # --- Instagram access errors ---
+    # These come out of modules/instagram.py already phrased for the user, and
+    # are translated at the handler boundary.
+    "اینستاگرام این پست رو بدون لاگین نمی‌ده.\n\n"
+    "اینستاگرام دسترسی بدون اکانت رو بسته؛ برای دانلود باید کوکی‌های "
+    "یه اکانت یه‌بارمصرف تو سرور ست بشه:\n"
+    "botctl → گزینه ۱۰":
+        "Instagram will not serve this post without a login.\n\n"
+        "They have closed anonymous access, so a throwaway account's cookies "
+        "must be set on the server:\n"
+        "botctl -> option 10",
+    "اینستاگرام این پست رو نداد. معمولا یعنی کوکی‌های اکانت منقضی شدن "
+    "یا پست خصوصی/حذف شده‌ست.\n\n"
+    "کوکی‌های تازه بگیر و با «botctl → گزینه ۱۰» ست کن.":
+        "Instagram refused this post. Usually the account cookies have expired, "
+        "or the post is private or deleted.\n\n"
+        "Get fresh cookies and set them with botctl -> option 10.",
+    "سشن اینستاگرام دیگه معتبر نیست. کوکی‌ها رو از مرورگر دوباره بگیر "
+    "و تو سرور با «botctl → گزینه ۱۰» آپدیتشون کن.":
+        "The Instagram session is no longer valid. Take the cookies from your "
+        "browser again and update them with botctl -> option 10.",
+    "این پست خصوصیه یا حذف شده.": "This post is private or has been deleted.",
+    "اینستاگرام اکانت رو موقتا محدود کرده. تو مرورگر وارد اکانت شو، "
+    "اگه پیام تایید اومد تاییدش کن و چند ساعت بعد دوباره امتحان کن.":
+        "Instagram has temporarily restricted the account. Log into it in a "
+        "browser, confirm any security prompt, and try again in a few hours.",
+    "اینستاگرام ریت‌لیمیت کرده. حدود یک ساعت صبر کن و دوباره امتحان کن.":
+        "Instagram is rate-limiting us. Wait about an hour and try again.",
+    "این کاربر الان استوری فعالی نداره.":
+        "This user has no active stories right now.",
 }

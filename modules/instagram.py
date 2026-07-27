@@ -55,24 +55,84 @@ def _throttle() -> None:
 
 
 def _friendly_error(e: Exception) -> RuntimeError:
+    """
+    Turn an extractor error into something the user can act on.
+
+    Instagram's own messages are long, English and full of yt-dlp flags that
+    mean nothing to someone in a chat window, so anything left unmapped used
+    to be dumped verbatim. Whether session cookies are currently configured
+    changes the advice completely, so it is part of every answer.
+    """
     s = str(e)
-    if "feedback_required" in s:
+    low = s.lower()
+    have_session = settings.has_instagram_session
+
+    if "feedback_required" in low:
         return RuntimeError(
             "اینستاگرام اکانت رو موقتا محدود کرده. تو مرورگر وارد اکانت شو، "
             "اگه پیام تایید اومد تاییدش کن و چند ساعت بعد دوباره امتحان کن."
         )
-    if "429" in s or "Too Many Requests" in s:
+    if "429" in s or "too many requests" in low:
         return RuntimeError("اینستاگرام ریت‌لیمیت کرده. حدود یک ساعت صبر کن و دوباره امتحان کن.")
-    if "login_required" in s.lower() or "401" in s:
+
+    # The session is present but Instagram rejected it.
+    if any(k in low for k in ("login_required", "checkpoint_required", "401", "not logged in")):
         return RuntimeError(
-            "سشن اینستاگرام منقضی شده. کوکی‌ها رو از مرورگر دوباره بگیر و تو .env آپدیت کن."
+            "سشن اینستاگرام دیگه معتبر نیست. کوکی‌ها رو از مرورگر دوباره بگیر "
+            "و تو سرور با «botctl → گزینه ۱۰» آپدیتشون کن."
         )
-    if "no video formats" in s.lower() or "unsupported url" in s.lower():
+
+    # Instagram increasingly refuses anonymous access. This is the single most
+    # common failure, and the raw text used to reach the user unchanged.
+    if any(k in low for k in (
+        "empty media response", "no video formats", "unsupported url",
+        "requested content is not available", "login required",
+        "you need to log in", "rate-limit reached",
+    )):
+        if have_session:
+            return RuntimeError(
+                "اینستاگرام این پست رو نداد. معمولا یعنی کوکی‌های اکانت منقضی شدن "
+                "یا پست خصوصی/حذف شده‌ست.\n\n"
+                "کوکی‌های تازه بگیر و با «botctl → گزینه ۱۰» ست کن."
+            )
         return RuntimeError(
-            "این پست رو بدون اکانت نتونستم بگیرم. اگه پست چندعکسیه، "
-            "کوکی‌های اینستاگرام رو تو .env ست کن."
+            "اینستاگرام این پست رو بدون لاگین نمی‌ده.\n\n"
+            "اینستاگرام دسترسی بدون اکانت رو بسته؛ برای دانلود باید کوکی‌های "
+            "یه اکانت یه‌بارمصرف تو سرور ست بشه:\n"
+            "botctl → گزینه ۱۰"
         )
+
+    if "private" in low or "not available" in low:
+        return RuntimeError("این پست خصوصیه یا حذف شده.")
+
     return RuntimeError(f"Instagram: {s}")
+
+
+@run_in_thread
+def check_session() -> tuple[bool, str]:
+    """
+    Report whether Instagram access is currently working.
+
+    Returns (ok, human readable detail). Used by the admin /igcheck command so
+    a dead session can be spotted directly instead of being inferred from a
+    failed download.
+    """
+    if not settings.has_instagram_session:
+        return False, (
+            "کوکی ست نشده — فقط حالت بدون اکانت، که اینستاگرام بیشترش رو بسته.\n"
+            "botctl → گزینه ۱۰"
+        )
+    try:
+        import instaloader
+
+        L = _loader_instance()
+        if not L.context.is_logged_in:
+            return False, "کوکی هست ولی اینستاگرام لاگین رو قبول نکرده (منقضی شده)."
+        # Cheapest authenticated call available.
+        profile = instaloader.Profile.from_username(L.context, settings.instagram_username)
+        return True, f"سشن سالمه — وارد شده به عنوان @{profile.username}"
+    except Exception as e:
+        return False, f"سشن مشکل داره: {_friendly_error(e)}"
 
 
 def _session_cookies() -> dict[str, str]:

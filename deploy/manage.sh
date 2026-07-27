@@ -455,6 +455,25 @@ do_channel() {
 }
 
 
+do_igcheck() {
+    echo; info "=== وضعیت اینستاگرام ==="; echo
+    local f="$PROJECT_DIR/.env"
+    if grep -qE '^IG_SESSIONID=.+' "$f"; then
+        ok "کوکی ست شده"
+        grep -E '^(INSTAGRAM_USERNAME|IG_DS_USER_ID)=' "$f" | sed 's/^/    /'
+    else
+        err "کوکی ست نشده"
+        warn "اینستاگرام دسترسی بدون اکانت رو تقریبا بسته؛ بدون کوکی اکثر پست‌ها نمیاد."
+        warn "با گزینه ۱۰ کوکی‌ها رو ست کن."
+    fi
+    echo
+    info "برای تست واقعی سشن، تو خود بات بزن:  /igcheck"
+    echo
+    info "آخرین خطاهای اینستاگرام:"
+    journalctl -u "$SERVICE_NAME" --no-pager -n 400         | grep -iE "instagram|instaloader" | tail -12
+}
+
+
 do_reclog() {
     echo; info "=== لاگ تشخیص آهنگ (آخرین تلاش‌ها) ==="; echo
     journalctl -u "$SERVICE_NAME" --no-pager -n 500 \
@@ -874,7 +893,8 @@ menu() {
     echo " 17) لاگ تشخیص آهنگ"
     echo " 18) کلید اسپاتیفای (پلی‌لیست بزرگ)"
     echo " 19) کانال اجباری (قفل عضویت)"
-    echo " 20) نصب مجدد از صفر (پاک کردن همه چی)"
+    echo " 20) وضعیت اینستاگرام"
+    echo " 21) نصب مجدد از صفر (پاک کردن همه چی)"
     echo "  0) خروج"
     echo
 }
@@ -890,6 +910,7 @@ case "${1:-}" in
     reclog)  do_reclog;  exit 0 ;;
     spotify) do_spotify; exit $? ;;
     channel) do_channel; exit $? ;;
+    igcheck) do_igcheck; exit 0 ;;
     update)  do_update;  exit $? ;;
     restart) systemctl restart "$SERVICE_NAME"; exit $? ;;
     status)  do_status;  exit 0 ;;
@@ -923,7 +944,8 @@ while true; do
         17) do_reclog; pause ;;
         18) do_spotify; pause ;;
         19) do_channel; pause ;;
-        20) do_reset; pause ;;
+        20) do_igcheck; pause ;;
+        21) do_reset; pause ;;
         0)  echo; exit 0 ;;
         *)  err "گزینه نامعتبر"; sleep 1 ;;
     esac

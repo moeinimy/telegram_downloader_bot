@@ -177,6 +177,21 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+async def igcheck_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Report whether the Instagram session actually works, so a dead cookie
+    is visible directly instead of being guessed from a failed download."""
+    if not _is_admin(update):
+        return
+    from modules import instagram as ig
+
+    msg = await update.effective_message.reply_text("🔎 چک کردن سشن اینستاگرام…")
+    try:
+        ok, detail = await ig.check_session()
+    except Exception as e:
+        ok, detail = False, str(e)
+    await msg.edit_text(("✅ " if ok else "❌ ") + detail)
+
+
 async def whoami_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Lets the owner discover the id to put in ADMIN_IDS."""
     user = update.effective_user
