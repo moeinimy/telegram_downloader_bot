@@ -65,7 +65,12 @@ def _is_transient(e: Exception) -> bool:
     return any(m in text for m in _TRANSIENT_MARKERS)
 
 
-async def _recognize_once(path: Path, attempts: int = 3) -> RecognizedSong | None:
+# Windows fingerprinted at once. Three keeps the wall-clock down without
+# looking like a burst to the endpoint.
+_BATCH = 3
+
+
+async def _recognize_once(path: Path, attempts: int = 2) -> RecognizedSong | None:
     """One window against Shazam. None means no match; a transient failure
     raises RecognitionUnavailable after the retries are exhausted."""
     shazam = _client()
@@ -85,7 +90,7 @@ async def _recognize_once(path: Path, attempts: int = 3) -> RecognizedSong | Non
                     "Shazam transient error (%d/%d) on %s: %s - retrying",
                     attempt, attempts, path.name, type(e).__name__,
                 )
-                await asyncio.sleep(1.5 * attempt)
+                await asyncio.sleep(0.8 * attempt)
                 continue
             if _is_transient(e):
                 log.warning("Shazam unreachable after %d tries: %s", attempts, e)
@@ -228,57 +233,73 @@ async def recognize_candidates(path: Path) -> list[tuple[RecognizedSong, int]]:
         path.name, duration, len(offsets), offsets,
     )
 
-    async def sweep(normalise: bool, label: str) -> bool:
-        """One pass over every offset. True once a match is confirmed twice."""
-        for i, off in enumerate(offsets):
-            clip = tmp_dir / f"{path.stem}_{label}{i}.mp3"
-            made = await asyncio.to_thread(
-                _extract_window, path, off, window, clip, normalise=normalise
+    async def one_window(i: int, off: int, normalise: bool, label: str):
+        """Cut and fingerprint a single window. Returns the song or None."""
+        clip = tmp_dir / f"{path.stem}_{label}{i}.mp3"
+        made = await asyncio.to_thread(
+            _extract_window, path, off, window, clip, normalise=normalise
+        )
+        if made is None:
+            return None
+        clip_path, level = made
+
+        # A near-silent window has nothing to identify; sending it wastes a
+        # request and returns a no-match that looks like a failure.
+        if level <= _SILENCE_DB:
+            log.info("window @%ds skipped: silent (%.0f dB)", off, level)
+            clip_path.unlink(missing_ok=True)
+            return None
+        try:
+            return await _recognize_once(clip_path)
+        finally:
+            clip_path.unlink(missing_ok=True)
+
+    async def sweep(normalise: bool, label: str, points: list[int]) -> bool:
+        """
+        One pass over `points`. True once a match is confirmed twice.
+
+        Windows go out in small concurrent batches rather than one at a time:
+        sequentially this was one round trip per window plus a deliberate
+        pause between each, which dominated the wait on anything it could not
+        identify immediately. Batching keeps the early exit - a batch is only
+        started if the previous one did not already settle it.
+        """
+        for start in range(0, len(points), _BATCH):
+            batch = points[start : start + _BATCH]
+            results = await asyncio.gather(
+                *[
+                    one_window(start + n, off, normalise, label)
+                    for n, off in enumerate(batch)
+                ],
+                return_exceptions=True,
             )
-            if made is None:
-                continue
-            clip_path, level = made
-
-            # A near-silent window has nothing to identify; sending it wastes
-            # a request and returns a no-match that looks like a failure.
-            if level <= _SILENCE_DB:
-                log.info("window @%ds skipped: silent (%.0f dB)", off, level)
-                clip_path.unlink(missing_ok=True)
-                continue
-
-            if i:
-                await asyncio.sleep(0.4)  # don't machine-gun the endpoint
-            try:
-                song = await _recognize_once(clip_path)
-            except RecognitionUnavailable:
-                # The service is down, not the audio's fault.
-                clip_path.unlink(missing_ok=True)
-                raise
-            finally:
-                clip_path.unlink(missing_ok=True)
-
-            if not song:
-                log.info("Shazam %s window @%ds (%.0f dB): no match", label, off, level)
-                continue
-
-            k = _key(song)
-            songs.setdefault(k, song)
-            votes[k] = votes.get(k, 0) + 1
-            log.info("Shazam %s window @%ds: %s - %s", label, off, song.artist, song.title)
-            if votes[k] >= 2:
-                return True
+            for off, song in zip(batch, results):
+                if isinstance(song, RecognitionUnavailable):
+                    raise song
+                if isinstance(song, BaseException) or not song:
+                    if not isinstance(song, BaseException):
+                        log.info("Shazam %s window @%ds: no match", label, off)
+                    continue
+                k = _key(song)
+                songs.setdefault(k, song)
+                votes[k] = votes.get(k, 0) + 1
+                log.info("Shazam %s window @%ds: %s - %s", label, off, song.artist, song.title)
+                if votes[k] >= 2:
+                    return True
         return False
 
-    if await sweep(normalise=True, label="n"):
+    if await sweep(normalise=True, label="n", points=offsets):
         ranked = sorted(votes.items(), key=lambda kv: kv[1], reverse=True)
         return [(songs[k], n) for k, n in ranked]
 
-    # Second pass without the loudness filter. dynaudnorm helps quiet clips
-    # but can smear a already-loud, compressed track enough to lose the
-    # fingerprint, so a failed first pass is worth retrying unprocessed.
+    # Second pass without the loudness filter. dynaudnorm rescues quiet clips
+    # but can smear an already-loud, compressed track enough to lose the
+    # fingerprint. Only a couple of points this time - a full repeat doubled
+    # the wait for the case that was already the slowest.
     if not votes:
-        log.info("recognize: retrying unprocessed audio")
-        await sweep(normalise=False, label="r")
+        probe = offsets[:1] + offsets[len(offsets) // 2 : len(offsets) // 2 + 1]
+        log.info("recognize: retrying %d unprocessed windows", len(probe))
+        await sweep(normalise=False, label="r", points=probe)
 
     if votes:
         ranked = sorted(votes.items(), key=lambda kv: kv[1], reverse=True)

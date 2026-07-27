@@ -497,23 +497,36 @@ async def _send_cover(msg, meta, status: str = ""):
         return None
 
 
-async def _upload_track(msg, meta, path, *, with_cover: bool = True) -> bool:
-    """Send the cover message and then the audio itself."""
+def _thumb_task(meta):
+    """Build the 320x320 audio thumbnail. Returned as a task so the caller can
+    let it run during the download instead of after it."""
+    import asyncio
+
     from config import settings
+    from utils.helpers import prepare_telegram_thumb, safe_filename
+
+    if not meta.cover_url:
+        return None
+    return asyncio.create_task(
+        prepare_telegram_thumb(
+            meta.cover_url,
+            settings.download_dir / "thumbs" / f"{safe_filename(meta.display)}.jpg",
+        )
+    )
+
+
+async def _upload_track(msg, meta, path, *, with_cover: bool = True, thumb=None) -> bool:
+    """Send the cover message and then the audio itself."""
     from handlers.lyrics_handler import lyrics_button
     from utils import file_cache
-    from utils.helpers import prepare_telegram_thumb, safe_filename
 
     cache_key = f"audio:{meta.id}"
     if with_cover:
         await _send_cover(msg, meta)
 
-    thumb_path = None
-    if meta.cover_url:
-        thumb_path = await prepare_telegram_thumb(
-            meta.cover_url,
-            settings.download_dir / "thumbs" / f"{safe_filename(meta.display)}.jpg",
-        )
+    if thumb is None:
+        thumb = _thumb_task(meta)
+    thumb_path = await thumb if thumb is not None else None
 
     try:
         with path.open("rb") as fh:
@@ -574,25 +587,38 @@ async def _send_and_download_track(msg, meta, *, quiet: bool = False) -> bool:
     # The cover goes out first, carrying the progress line in its caption.
     # A separate status message plus its edits and deletion cost three extra
     # round trips per track, which is most of the wait on a cached song.
+    import asyncio
+
     await sp.fill_cover(meta)
+
+    # Start fetching immediately and post the cover while it runs. Awaiting the
+    # cover first made a Telegram photo round trip block the download from even
+    # beginning, for no reason - the two are independent.
+    fetch = asyncio.create_task(sp.download_track(meta))
+    thumb = _thumb_task(meta)  # also runs during the download
     cover_msg = await _send_cover(msg, meta, status=t(msg.chat_id, "⬇️ در حال دانلود…"))
 
     status = None
     if cover_msg is None and not quiet:
         status = await msg.reply_text(
-            f"⬇️ دانلود: *{meta.display}*", parse_mode="Markdown"
+            t(msg.chat_id, "⬇️ دانلود: *{name}*").format(name=meta.display),
+            parse_mode="Markdown",
         )
 
     try:
-        path = await sp.download_track(meta)
+        path = await fetch
     except Exception as e:
+        # The thumbnail is now pointless; leaving it pending orphans a task.
+        if thumb is not None:
+            thumb.cancel()
+        err = t(msg.chat_id, str(e))
         if status:
-            await status.edit_text(f"❌ {e}")
+            await status.edit_text(f"❌ {err}")
         else:
-            await msg.reply_text(f"❌ {meta.display} — {e}")
+            await msg.reply_text(f"❌ {meta.display} — {err}")
         return False
 
-    ok = await _upload_track(msg, meta, path, with_cover=False)
+    ok = await _upload_track(msg, meta, path, with_cover=False, thumb=thumb)
 
     if cover_msg is not None:
         try:
