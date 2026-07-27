@@ -67,6 +67,12 @@ class Settings:
     # detail - it is a lossless container around lossy content.
     audio_format: str
 
+    # Extra music-recognition engines. Shazam always runs and needs nothing;
+    # these are optional and tried in the order given by RECOGNITION_ENGINES.
+    acoustid_key: str
+    audd_token: str
+    recognition_engines: tuple[str, ...]
+
     # Telegram user ids allowed to open the admin panel. Empty = disabled.
     admin_ids: frozenset[int]
 
@@ -131,6 +137,11 @@ settings = Settings(
     max_upload_mb=int(_get("MAX_UPLOAD_MB", "50") or 50),
     yt_cookies_file=_cookies_path(),
     audio_format=(_get("AUDIO_FORMAT", "m4a").lower() or "m4a"),
+    acoustid_key=_get("ACOUSTID_API_KEY"),
+    audd_token=_get("AUDD_API_TOKEN"),
+    recognition_engines=tuple(
+        e for e in _get("RECOGNITION_ENGINES", "acoustid,audd").replace(" ", "").split(",") if e
+    ),
     admin_ids=_admin_ids(),
     required_channel=_channel_name(),
     log_level=_get("LOG_LEVEL", "INFO"),

@@ -53,8 +53,8 @@ ensure_packages() {
     pyver=$(python3 -c 'import sys;print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null)
     apt-get install -y -qq \
         python3 python3-pip python3-venv "python${pyver}-venv" \
-        ffmpeg git unzip curl ca-certificates 2>/dev/null \
-      || apt-get install -y python3 python3-pip "python${pyver}-venv" ffmpeg git unzip curl ca-certificates \
+        ffmpeg git unzip curl ca-certificates libchromaprint-tools 2>/dev/null \
+      || apt-get install -y python3 python3-pip "python${pyver}-venv" ffmpeg git unzip curl ca-certificates libchromaprint-tools \
       || warn "بعضی پکیج‌ها نصب نشدن - ادامه می‌دم و venv رو چک می‌کنم"
 
     # Verify venv actually works now, otherwise stop before we build a broken one.
@@ -471,6 +471,39 @@ do_igcheck() {
     echo
     info "آخرین خطاهای اینستاگرام:"
     journalctl -u "$SERVICE_NAME" --no-pager -n 400         | grep -iE "instagram|instaloader" | tail -12
+}
+
+
+do_engines() {
+    echo; info "=== موتورهای تشخیص آهنگ ==="
+    info "شزم همیشه اول اجرا می‌شه، رایگان و بدون سقف."
+    info "بقیه فقط وقتی شزم چیزی پیدا نکرد امتحان می‌شن."
+    echo
+    info "AcoustID: رایگان و عملا بی‌نهایت — کلیدشو از اینجا بگیر:"
+    info "   https://acoustid.org/new-application"
+    info "AudD: دقیق‌تر ولی سهمیه رایگانش کمه (اختیاری) — audd.io"
+    echo
+    read -rp "AcoustID API key (خالی = رد کن): " ak
+    read -rp "AudD API token   (خالی = رد کن): " at
+
+    local f="$PROJECT_DIR/.env"
+    _set_env() {
+        local k="$1" v="$2"
+        [[ -z "$v" ]] && return
+        if grep -q "^$k=" "$f"; then sed -i "s|^$k=.*|$k=$v|" "$f"; else echo "$k=$v" >> "$f"; fi
+    }
+    _set_env ACOUSTID_API_KEY "$ak"
+    _set_env AUDD_API_TOKEN "$at"
+
+    if ! command -v fpcalc &>/dev/null; then
+        info "نصب fpcalc (برای AcoustID لازمه)..."
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq libchromaprint-tools &>/dev/null
+    fi
+    command -v fpcalc &>/dev/null && ok "fpcalc آماده‌ست" || warn "fpcalc نصب نشد - AcoustID کار نمی‌کنه"
+
+    systemctl restart "$SERVICE_NAME"
+    sleep 2
+    ok "ذخیره شد. تو بات با /recstatus وضعیت رو ببین."
 }
 
 
@@ -894,7 +927,8 @@ menu() {
     echo " 18) کلید اسپاتیفای (پلی‌لیست بزرگ)"
     echo " 19) کانال اجباری (قفل عضویت)"
     echo " 20) وضعیت اینستاگرام"
-    echo " 21) نصب مجدد از صفر (پاک کردن همه چی)"
+    echo " 21) موتورهای تشخیص آهنگ"
+    echo " 22) نصب مجدد از صفر (پاک کردن همه چی)"
     echo "  0) خروج"
     echo
 }
@@ -911,6 +945,7 @@ case "${1:-}" in
     spotify) do_spotify; exit $? ;;
     channel) do_channel; exit $? ;;
     igcheck) do_igcheck; exit 0 ;;
+    engines) do_engines; exit $? ;;
     update)  do_update;  exit $? ;;
     restart) systemctl restart "$SERVICE_NAME"; exit $? ;;
     status)  do_status;  exit 0 ;;
@@ -945,7 +980,8 @@ while true; do
         18) do_spotify; pause ;;
         19) do_channel; pause ;;
         20) do_igcheck; pause ;;
-        21) do_reset; pause ;;
+        21) do_engines; pause ;;
+        22) do_reset; pause ;;
         0)  echo; exit 0 ;;
         *)  err "گزینه نامعتبر"; sleep 1 ;;
     esac

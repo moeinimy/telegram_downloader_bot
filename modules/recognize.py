@@ -120,25 +120,39 @@ def _media_duration(path: Path) -> float:
         return 0.0
 
 
-def _extract_window(src: Path, offset: int, seconds: int, dest: Path) -> Path | None:
-    """
-    Cut one window of audio for fingerprinting.
+_SILENCE_DB = -45.0  # below this a window has nothing to fingerprint
 
-    Kept at 44.1kHz mono MP3 rather than a 16kHz WAV: the decoder shazamio
-    uses is happiest with ordinary compressed audio, and downsampling before
-    it does its own resampling only throws away detail the fingerprint needs.
+
+def _extract_window(
+    src: Path, offset: int, seconds: int, dest: Path, *, normalise: bool = True
+) -> tuple[Path, float] | None:
     """
+    Cut one window of audio and report its loudness.
+
+    Returns (path, mean_volume_dB) or None when the window is unusable.
+    volumedetect sits first in the chain so the figure describes the ORIGINAL
+    audio, before any levelling - that is what tells us whether the window
+    contains anything worth sending.
+
+    44.1kHz mono MP3 rather than a 16kHz WAV: the decoder shazamio uses is
+    happiest with ordinary compressed audio, and downsampling before its own
+    resampling only discards detail the fingerprint needs.
+    """
+    import re
     import subprocess
+
+    chain = "volumedetect"
+    if normalise:
+        # Phone clips are often quiet with the music under speech; levelling
+        # gives the fingerprint more to work with. Nothing is removed.
+        chain += ",dynaudnorm=f=200:g=5"
 
     try:
         proc = subprocess.run(
             [
-                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "ffmpeg", "-hide_banner", "-loglevel", "info", "-y",
                 "-ss", str(offset), "-t", str(seconds), "-i", str(src),
-                # Phone clips are often quiet with the music well under
-                # speech; levelling the audio gives the fingerprint more to
-                # work with. Nothing is filtered out, only evened up.
-                "-vn", "-af", "dynaudnorm=f=200:g=5",
+                "-vn", "-af", chain,
                 "-ac", "1", "-ar", "44100", "-b:a", "128k", str(dest),
             ],
             capture_output=True, timeout=120,
@@ -146,7 +160,7 @@ def _extract_window(src: Path, offset: int, seconds: int, dest: Path) -> Path | 
         if proc.returncode != 0:
             log.warning(
                 "ffmpeg window @%ds failed: %s",
-                offset, proc.stderr.decode("utf-8", "replace")[:200],
+                offset, proc.stderr.decode("utf-8", "replace")[-200:],
             )
             return None
     except Exception as e:
@@ -154,9 +168,12 @@ def _extract_window(src: Path, offset: int, seconds: int, dest: Path) -> Path | 
         return None
 
     # A window past the end of the file produces a near-empty file.
-    if dest.exists() and dest.stat().st_size > 4000:
-        return dest
-    return None
+    if not dest.exists() or dest.stat().st_size <= 4000:
+        return None
+
+    stderr = proc.stderr.decode("utf-8", "replace")
+    m = re.search(r"mean_volume:\s*(-?\d+(?:\.\d+)?) dB", stderr)
+    return dest, (float(m.group(1)) if m else 0.0)
 
 
 def _sample_plan(duration: float) -> tuple[int, list[int]]:
@@ -211,48 +228,91 @@ async def recognize_candidates(path: Path) -> list[tuple[RecognizedSong, int]]:
         path.name, duration, len(offsets), offsets,
     )
 
-    for i, off in enumerate(offsets):
-        clip = tmp_dir / f"{path.stem}_w{i}.mp3"
-        made = await asyncio.to_thread(_extract_window, path, off, window, clip)
-        if made is None:
-            continue
+    async def sweep(normalise: bool, label: str) -> bool:
+        """One pass over every offset. True once a match is confirmed twice."""
+        for i, off in enumerate(offsets):
+            clip = tmp_dir / f"{path.stem}_{label}{i}.mp3"
+            made = await asyncio.to_thread(
+                _extract_window, path, off, window, clip, normalise=normalise
+            )
+            if made is None:
+                continue
+            clip_path, level = made
 
-        if i:
-            await asyncio.sleep(0.4)  # don't machine-gun the Shazam endpoint
-        try:
-            song = await _recognize_once(made)
-        except RecognitionUnavailable:
-            # The service is down, not the audio's fault. Say so rather than
-            # letting it read as "this song is unknown".
-            clip.unlink(missing_ok=True)
-            raise
-        finally:
-            clip.unlink(missing_ok=True)
+            # A near-silent window has nothing to identify; sending it wastes
+            # a request and returns a no-match that looks like a failure.
+            if level <= _SILENCE_DB:
+                log.info("window @%ds skipped: silent (%.0f dB)", off, level)
+                clip_path.unlink(missing_ok=True)
+                continue
 
-        if not song:
-            log.info("Shazam window @%ds: no match", off)
-            continue
+            if i:
+                await asyncio.sleep(0.4)  # don't machine-gun the endpoint
+            try:
+                song = await _recognize_once(clip_path)
+            except RecognitionUnavailable:
+                # The service is down, not the audio's fault.
+                clip_path.unlink(missing_ok=True)
+                raise
+            finally:
+                clip_path.unlink(missing_ok=True)
 
-        k = _key(song)
-        songs.setdefault(k, song)
-        votes[k] = votes.get(k, 0) + 1
-        log.info("Shazam window @%ds: %s - %s", off, song.artist, song.title)
+            if not song:
+                log.info("Shazam %s window @%ds (%.0f dB): no match", label, off, level)
+                continue
 
-        # Two windows agreeing is a confident match; stop sampling.
-        if votes[k] >= 2:
-            break
+            k = _key(song)
+            songs.setdefault(k, song)
+            votes[k] = votes.get(k, 0) + 1
+            log.info("Shazam %s window @%ds: %s - %s", label, off, song.artist, song.title)
+            if votes[k] >= 2:
+                return True
+        return False
+
+    if await sweep(normalise=True, label="n"):
+        ranked = sorted(votes.items(), key=lambda kv: kv[1], reverse=True)
+        return [(songs[k], n) for k, n in ranked]
+
+    # Second pass without the loudness filter. dynaudnorm helps quiet clips
+    # but can smear a already-loud, compressed track enough to lose the
+    # fingerprint, so a failed first pass is worth retrying unprocessed.
+    if not votes:
+        log.info("recognize: retrying unprocessed audio")
+        await sweep(normalise=False, label="r")
 
     if votes:
         ranked = sorted(votes.items(), key=lambda kv: kv[1], reverse=True)
         return [(songs[k], n) for k, n in ranked]
 
-    # Windowing must never do worse than the original behaviour: if every
-    # window came back empty (ffmpeg unavailable, an unreadable container, or
-    # music that only surfaces where we did not sample), hand Shazam the whole
-    # file exactly as before.
-    log.info("recognize: no window matched - retrying with the whole file")
+    # Last resort: hand over the whole file, which is what the original
+    # implementation did and must never be beaten by the windowed version.
+    log.info("recognize: no window matched - trying the whole file")
     song = await _recognize_once(path)
-    return [(song, 1)] if song else []
+    if song:
+        return [(song, 1)]
+
+    # Shazam found nothing. Ask the other engines, whose failure modes differ
+    # from its own - AcoustID in particular fingerprints the exact recording,
+    # so it catches clean audio files that Shazam misses.
+    return await _try_other_engines(path)
+
+
+async def _try_other_engines(path: Path) -> list[tuple[RecognizedSong, int]]:
+    """Configured extra engines, in priority order, first answer wins."""
+    from modules import engines
+
+    for name in engines.active_engines():
+        try:
+            res = await asyncio.to_thread(engines.recognize_with, name, path)
+        except Exception as e:
+            log.info("engine %s raised: %s", name, e)
+            continue
+        if res and res.title:
+            log.info("engine %s matched: %s - %s", name, res.artist, res.title)
+            # Another engine agreeing where Shazam found nothing is the best
+            # evidence available, so treat it as confirmed.
+            return [(RecognizedSong(title=res.title, artist=res.artist), 2)]
+    return []
 
 
 def service_reachable() -> tuple[bool, str]:

@@ -192,6 +192,20 @@ async def igcheck_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await msg.edit_text(("✅ " if ok else "❌ ") + detail)
 
 
+async def recstatus_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/recstatus - which recognition engines are usable right now."""
+    if not _is_admin(update):
+        return
+    from modules import engines, recognize
+
+    ok, detail = recognize.service_reachable()
+    lines = [("✅ " if ok else "❌ ") + f"shazam: {detail}"]
+    lines += engines.status()
+    lines.append("")
+    lines.append("ترتیب: " + " → ".join(("shazam",) + tuple(settings.recognition_engines)))
+    await update.effective_message.reply_text("\n".join(lines))
+
+
 async def igtest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/igtest [shortcode] - which cookie-free routes work from THIS server."""
     if not _is_admin(update):
