@@ -83,12 +83,14 @@ def _friendly_error(e: Exception) -> RuntimeError:
             "و تو سرور با «botctl → گزینه ۱۰» آپدیتشون کن."
         )
 
-    # Instagram increasingly refuses anonymous access. This is the single most
-    # common failure, and the raw text used to reach the user unchanged.
+    # The common case. Note this is per POST, not a blanket block: most posts
+    # download fine anonymously, and only ones Instagram marks restricted
+    # (age-gated, "sensitive", or region-limited) demand a login. Saying
+    # "anonymous access is closed" here was simply wrong.
     if any(k in low for k in (
         "empty media response", "no video formats", "unsupported url",
         "requested content is not available", "login required",
-        "you need to log in", "rate-limit reached",
+        "you need to log in", "rate-limit reached", "no media",
     )):
         if have_session:
             return RuntimeError(
@@ -97,10 +99,9 @@ def _friendly_error(e: Exception) -> RuntimeError:
                 "کوکی‌های تازه بگیر و با «botctl → گزینه ۱۰» ست کن."
             )
         return RuntimeError(
-            "اینستاگرام این پست رو بدون لاگین نمی‌ده.\n\n"
-            "اینستاگرام دسترسی بدون اکانت رو بسته؛ برای دانلود باید کوکی‌های "
-            "یه اکانت یه‌بارمصرف تو سرور ست بشه:\n"
-            "botctl → گزینه ۱۰"
+            "این پست رو اینستاگرام بدون لاگین نمی‌ده.\n\n"
+            "معمولا یعنی محدودیت سنی داره، «حساس» علامت خورده، یا خصوصیه. "
+            "بقیه پست‌ها بدون اکانت مشکلی ندارن — فقط همین دسته لاگین می‌خوان."
         )
 
     if "private" in low or "not available" in low:
@@ -478,7 +479,9 @@ def _anonymous_fetch(shortcode: str, target: Path) -> list[Path]:
         try:
             urls = fn(shortcode)
             if urls:
-                log.info("instagram: %s returned %d media for %s", name, len(urls), shortcode)
+                # Logged so the winning route is visible in production; which
+                # ones survive changes over time is otherwise guesswork.
+                log.info("instagram: %s served %d media for %s", name, len(urls), shortcode)
                 return _download_urls(urls, target)
             errors.append(f"{name}: no media")
         except Exception as e:
@@ -491,34 +494,76 @@ def _anonymous_fetch(shortcode: str, target: Path) -> list[Path]:
     return _ytdlp_fetch(shortcode, target)
 
 
-@run_in_thread
-def diagnose(shortcode: str = "Bt4k7fjnRRl") -> str:
-    """
-    Run every cookie-free strategy and report which ones work from THIS host.
-
-    Whether anonymous access is available is an IP-level question, so the only
-    answer that counts comes from the machine actually running the bot.
-    """
-    lines = [f"شورت‌کد تست: {shortcode}", ""]
+def _probe_routes(shortcode: str) -> dict[str, int]:
+    """How many media each cookie-free route yields. -1 means it errored."""
+    results: dict[str, int] = {}
     for name, fn in (
         ("graphql", _try_graphql),
         ("api_v1", _try_api_v1),
         ("embed", _try_embed),
     ):
         try:
-            urls = fn(shortcode)
-            lines.append(f"{'✅' if urls else '❌'} {name}: {len(urls)} media")
+            results[name] = len(fn(shortcode))
         except Exception as e:
-            lines.append(f"❌ {name}: {type(e).__name__}: {str(e)[:60]}")
-
+            log.info("probe %s failed for %s: %s", name, shortcode, e)
+            results[name] = -1
     try:
         import tempfile
 
         with tempfile.TemporaryDirectory() as tmp:
-            files = _ytdlp_fetch(shortcode, Path(tmp))
-        lines.append(f"✅ yt-dlp: {len(files)} media")
-    except Exception as e:
-        lines.append(f"❌ yt-dlp: {str(e)[:70]}")
+            results["yt-dlp"] = len(_ytdlp_fetch(shortcode, Path(tmp)))
+    except Exception:
+        results["yt-dlp"] = -1
+    return results
+
+
+@run_in_thread
+def diagnose(shortcode: str | None = None) -> str:
+    """
+    Report which cookie-free routes work from THIS host, for a specific post
+    and for a control post.
+
+    The control matters: without it a single failing post looks identical to
+    "anonymous access is blocked for this server", and those need completely
+    different answers. Instagram serves most posts to logged-out clients and
+    withholds the ones it marks restricted, so the useful question is not
+    "does it work" but "does it work for everything, or just not this one".
+    """
+    # A plain, long-public reel used purely as a control.
+    CONTROL = "DZfwtaiob79"
+    target = (shortcode or CONTROL).strip()
+
+    def render(sc: str, res: dict[str, int]) -> list[str]:
+        out = [f"📄 {sc}"]
+        for name, n in res.items():
+            out.append(f"   {'✅' if n > 0 else '❌'} {name}: " + (f"{n} media" if n >= 0 else "error"))
+        return out
+
+    lines: list[str] = []
+    target_res = _probe_routes(target)
+    lines += render(target, target_res)
+    target_ok = any(n > 0 for n in target_res.values())
+
+    control_ok = target_ok
+    if target != CONTROL:
+        lines.append("")
+        control_res = _probe_routes(CONTROL)
+        lines += render(CONTROL + "  (کنترل)", control_res)
+        control_ok = any(n > 0 for n in control_res.values())
+
+    lines.append("")
+    if target_ok:
+        lines.append("✅ این پست بدون کوکی قابل دانلوده.")
+    elif control_ok:
+        lines.append(
+            "⚠️ فقط همین پست مشکل داره — سرور مشکلی نداره.\n"
+            "این پست محدودیت سنی/حساس یا خصوصیه و اینستاگرام بدون لاگین نمی‌دتش."
+        )
+    else:
+        lines.append(
+            "❌ هیچ پستی بدون کوکی نمیاد — اینستاگرام IP این سرور رو محدود کرده.\n"
+            "چند ساعت صبر کن، یا کوکی ست کن (botctl → گزینه ۱۰)."
+        )
 
     lines.append("")
     lines.append(
