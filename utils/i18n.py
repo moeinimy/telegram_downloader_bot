@@ -238,4 +238,14 @@ _EN: dict[str, str] = {
         "Instagram is rate-limiting us. Wait about an hour and try again.",
     "این کاربر الان استوری فعالی نداره.":
         "This user has no active stories right now.",
+
+    # --- recognition service ---
+    "⏳ سرویس تشخیص آهنگ الان جواب نمی‌ده. چند دقیقه دیگه دوباره امتحان کن.":
+        "⏳ The music-recognition service is not responding right now. "
+        "Please try again in a few minutes.",
+    "⚠️ این فایل {size} مگابایته و تلگرام اجازه نمی‌ده بات فایل‌های "
+    "بزرگ‌تر از ۲۰ مگ رو بگیره.\n\n"
+    "یه تیکه کوتاه‌تر از ویدیو بفرست.":
+        "⚠️ This file is {size}MB and Telegram does not let bots fetch files "
+        "over 20MB.\n\nSend a shorter part of the video.",
 }

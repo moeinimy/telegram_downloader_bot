@@ -47,6 +47,12 @@ async def recognize_from_url(msg, url: str) -> None:
 
         try:
             candidates = await rec.recognize_candidates(snippet)
+        except rec.RecognitionUnavailable:
+            snippet.unlink(missing_ok=True)
+            await status.edit_text(
+                t(msg.chat_id, "⏳ سرویس تشخیص آهنگ الان جواب نمی‌ده. چند دقیقه دیگه دوباره امتحان کن.")
+            )
+            return
         finally:
             snippet.unlink(missing_ok=True)
 
@@ -66,6 +72,11 @@ async def recognize_from_file(msg, path: Path, cleanup: bool = False) -> None:
 async def _recognize_and_send(msg, status, audio_path: Path, *, cleanup: bool) -> None:
     try:
         candidates = await rec.recognize_candidates(audio_path)
+    except rec.RecognitionUnavailable:
+        await status.edit_text(
+            t(msg.chat_id, "⏳ سرویس تشخیص آهنگ الان جواب نمی‌ده. چند دقیقه دیگه دوباره امتحان کن.")
+        )
+        return
     except Exception as e:
         await status.edit_text(t(msg.chat_id, "❌ خطا در تشخیص آهنگ: {err}").format(err=e))
         return
@@ -157,7 +168,7 @@ async def on_pick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except (ValueError, IndexError):
         return
 
-    status = await query.message.reply_text("⬇️ …")
+    status = await query.message.reply_text("⬇️ …")  # placeholder, no text to translate
     await _download_recognized(query.message, status, song)
 
 

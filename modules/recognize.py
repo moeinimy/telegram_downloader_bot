@@ -43,24 +43,64 @@ def _client():
     return _shazam
 
 
-async def _recognize_once(path: Path) -> RecognizedSong | None:
-    shazam = _client()
-    try:
-        if hasattr(shazam, "recognize"):
-            out = await shazam.recognize(str(path))
-        else:
-            # older shazamio versions used recognize_song()
-            out = await shazam.recognize_song(str(path))
-    except Exception as e:
-        log.warning("Shazam error on %s: %s: %s", path.name, type(e).__name__, e)
-        return None
+class RecognitionUnavailable(RuntimeError):
+    """The recognition service could not be reached or refused us.
 
-    track = (out or {}).get("track") or {}
-    title = (track.get("title") or "").strip()
-    artist = (track.get("subtitle") or "").strip()
-    if not title:
-        return None
-    return RecognizedSong(title=title, artist=artist)
+    Deliberately distinct from "no match": one means try again shortly, the
+    other means the audio genuinely is not in the catalogue. Collapsing both
+    into None told users "no music found" whenever Shazam was briefly
+    unreachable or throttling us, which looks exactly like poor accuracy.
+    """
+
+
+_TRANSIENT_MARKERS = (
+    "cannot connect", "connection", "timeout", "timed out", "temporarily",
+    "too many requests", "429", "502", "503", "504", "reset by peer",
+    "ssl", "dns", "unreachable",
+)
+
+
+def _is_transient(e: Exception) -> bool:
+    text = f"{type(e).__name__} {e}".lower()
+    return any(m in text for m in _TRANSIENT_MARKERS)
+
+
+async def _recognize_once(path: Path, attempts: int = 3) -> RecognizedSong | None:
+    """One window against Shazam. None means no match; a transient failure
+    raises RecognitionUnavailable after the retries are exhausted."""
+    shazam = _client()
+    last: Exception | None = None
+
+    for attempt in range(1, attempts + 1):
+        try:
+            if hasattr(shazam, "recognize"):
+                out = await shazam.recognize(str(path))
+            else:
+                # older shazamio versions used recognize_song()
+                out = await shazam.recognize_song(str(path))
+        except Exception as e:
+            last = e
+            if _is_transient(e) and attempt < attempts:
+                log.info(
+                    "Shazam transient error (%d/%d) on %s: %s - retrying",
+                    attempt, attempts, path.name, type(e).__name__,
+                )
+                await asyncio.sleep(1.5 * attempt)
+                continue
+            if _is_transient(e):
+                log.warning("Shazam unreachable after %d tries: %s", attempts, e)
+                raise RecognitionUnavailable(str(e)) from e
+            log.warning("Shazam error on %s: %s: %s", path.name, type(e).__name__, e)
+            return None
+
+        track = (out or {}).get("track") or {}
+        title = (track.get("title") or "").strip()
+        artist = (track.get("subtitle") or "").strip()
+        if not title:
+            return None
+        return RecognizedSong(title=title, artist=artist)
+
+    raise RecognitionUnavailable(str(last))
 
 
 def _media_duration(path: Path) -> float:
@@ -181,6 +221,11 @@ async def recognize_candidates(path: Path) -> list[tuple[RecognizedSong, int]]:
             await asyncio.sleep(0.4)  # don't machine-gun the Shazam endpoint
         try:
             song = await _recognize_once(made)
+        except RecognitionUnavailable:
+            # The service is down, not the audio's fault. Say so rather than
+            # letting it read as "this song is unknown".
+            clip.unlink(missing_ok=True)
+            raise
         finally:
             clip.unlink(missing_ok=True)
 
@@ -208,6 +253,18 @@ async def recognize_candidates(path: Path) -> list[tuple[RecognizedSong, int]]:
     log.info("recognize: no window matched - retrying with the whole file")
     song = await _recognize_once(path)
     return [(song, 1)] if song else []
+
+
+def service_reachable() -> tuple[bool, str]:
+    """Cheap connectivity check for the recognition endpoint, so 'it never
+    recognises anything' can be told apart from a blocked host."""
+    import socket
+
+    try:
+        socket.create_connection(("amp.shazam.com", 443), timeout=6).close()
+        return True, "amp.shazam.com در دسترسه"
+    except Exception as e:
+        return False, f"amp.shazam.com در دسترس نیست ({type(e).__name__})"
 
 
 async def recognize_file(path: Path) -> RecognizedSong | None:
