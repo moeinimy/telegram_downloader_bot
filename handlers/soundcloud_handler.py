@@ -13,6 +13,7 @@ from telegram.ext import ContextTypes
 
 from handlers.spotify_handler import _send_and_download_track, _send_tracklist
 from modules import spotify as sp
+from utils.i18n import t
 from utils.url_router import RouteResult
 
 log = logging.getLogger(__name__)

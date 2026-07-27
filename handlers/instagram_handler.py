@@ -23,6 +23,7 @@ from telegram import (
 from telegram.ext import ContextTypes
 
 from modules import instagram as ig
+from utils.i18n import t
 from utils.url_router import InstagramKind, RouteResult
 
 log = logging.getLogger(__name__)
