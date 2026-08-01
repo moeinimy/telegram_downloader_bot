@@ -151,13 +151,99 @@ def search_tracks(query: str, limit: int = 10) -> list[TrackMeta]:
     keyless JSON endpoints that answer in ~200ms with the real song title,
     artist, album and cover art. yt-dlp's ytsearch/scsearch needs a full
     extraction pass per query (5-15s) and returns raw video titles with
-    channel names as the "artist", so it is only the fallback now.
+    channel names as the "artist", so it is not paid for unless it is needed.
+
+    "Needed" used to mean the catalogues returned literally nothing, which
+    almost never happens - asked for a remix, iTunes answers with the original
+    and the wide search never ran. So the catalogue's *best match* is judged
+    against what was typed instead, and a weak one (or an outright request for
+    a remix, bootleg, live cut...) opens the search up to YouTube and
+    SoundCloud, where that material actually lives.
     """
+    import time
+
     tracks = _music_api_search(query, limit)
-    if tracks:
+    if not _needs_wide_search(query, tracks):
         return tracks
-    log.info("music APIs returned nothing for %r - falling back to yt-dlp", query)
-    return _fallback_search_tracks(query, limit)
+
+    # The wide search costs a yt-dlp pass, so remember its outcome: paging back
+    # to a result list, or retyping the same thing, must not buy it twice.
+    wide_key = f"wide|{query.strip().lower()}|{limit}"
+    hit = _search_cache.get(wide_key)
+    if hit and time.monotonic() - hit[0] < _SEARCH_TTL:
+        return hit[1]
+
+    log.info("catalogue match for %r is weak - widening to yt-dlp", query)
+    wide = _fallback_search_tracks(query, limit)
+    if not wide:
+        return tracks
+    # These arrive as raw video titles under a channel name. Tidying them here
+    # makes the result list readable, lets them de-duplicate against the
+    # catalogue entries, and is what the lyrics lookup later reads.
+    for t in wide:
+        _clean_source_title(t)
+    merged = _merge_results(query, tracks, wide, limit)
+    if merged:
+        _search_cache[wide_key] = (time.monotonic(), merged)
+    return merged
+
+
+# Material no commercial catalogue carries. Asking for any of these means the
+# answer is on YouTube or SoundCloud, whatever iTunes chooses to reply with.
+_WIDE_MARKERS = (
+    "remix", "bootleg", "mashup", "mash up", "cover", "live", "acoustic",
+    "slowed", "reverb", "sped up", "speed up", "nightcore", "8d", "instrumental",
+    "unreleased", "leak", "demo", "snippet", "edit", "version", "vip", "flip",
+    "ریمیکس", "لایو", "اجرای زنده", "نسخه", "بی کلام", "دمو", "کاور",
+)
+
+# Below this, the best catalogue hit is not really an answer to the question.
+_WEAK_MATCH = 0.55
+
+
+def _needs_wide_search(query: str, tracks: list[TrackMeta]) -> bool:
+    if not tracks:
+        return True
+    q = _norm(query)
+    if any(_norm(m) in q for m in _WIDE_MARKERS):
+        return True
+    best = max(
+        _overlap(query, f"{t.artists[0] if t.artists else ''} {t.name}") for t in tracks
+    )
+    return best < _WEAK_MATCH
+
+
+def _merge_results(
+    query: str, catalogue: list[TrackMeta], wide: list[TrackMeta], limit: int
+) -> list[TrackMeta]:
+    """Rank both pools against the query together, catalogue nudged ahead on ties."""
+    n_query = _norm(query)
+
+    def rank(t: TrackMeta) -> float:
+        both = f"{t.artists[0] if t.artists else ''} {t.name}"
+        score = _overlap(query, both)
+        if n_query and n_query in _norm(both):
+            score += 0.6
+        score += 0.3 / (1 + t.src_rank)
+        score += 0.4 * t.popularity
+        # A catalogue entry brings a real artist, album and 600x600 art, so it
+        # wins an otherwise equal race against a raw video title.
+        if t.id.startswith(("it_", "dz_")):
+            score += 0.15
+        return score
+
+    seen: set[str] = set()
+    out: list[TrackMeta] = []
+    for t in sorted(catalogue + wide, key=rank, reverse=True):
+        key = _dedupe_key(t)
+        if key in seen:
+            continue
+        seen.add(key)
+        _yt_cache[t.id] = t
+        out.append(t)
+        if len(out) >= limit:
+            break
+    return out
 
 
 # ---------------- fast keyless music metadata search ----------------
@@ -495,8 +581,33 @@ def _strip_noise(raw: str) -> str:
     return re.sub(r"\s+", " ", s).strip(" -–—_·")
 
 
+# Arabic and Persian write the same sound several ways, and the two scripts
+# disagree on a handful of letters. Folding them means "کرکس" typed one way
+# still matches "كركس" spelt the other.
+_FOLD = str.maketrans({
+    "ي": "ی", "ك": "ک", "ۀ": "ه", "ة": "ه", "أ": "ا", "إ": "ا", "آ": "ا",
+    "ؤ": "و", "ئ": "ی",
+    "‌": " ", "‎": " ", "‏": " ",  # ZWNJ + bidi marks
+    "٠": "0", "١": "1", "٢": "2", "٣": "3", "٤": "4",
+    "٥": "5", "٦": "6", "٧": "7", "٨": "8", "٩": "9",
+    "۰": "0", "۱": "1", "۲": "2", "۳": "3", "۴": "4",
+    "۵": "5", "۶": "6", "۷": "7", "۸": "8", "۹": "9",
+})
+
+
 def _norm(s: str) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", s.lower()).strip()
+    """
+    Fold a title down to comparable tokens.
+
+    This kept only [a-z0-9], which quietly erased Persian, Arabic and every
+    other non-Latin script: two completely different Persian songs both
+    normalised to the empty string, so they compared as *equal*. That made the
+    de-duplication in search throw away all but the first Persian result, and
+    every title comparison against a Persian name score zero.
+    """
+    s = (s or "").lower().translate(_FOLD)
+    s = re.sub(r"[ً-ْٰ]+", "", s)  # harakat: written optionally
+    return re.sub(r"[^a-z0-9ء-ۿ]+", " ", s).strip()
 
 
 def _overlap(a: str, b: str) -> float:
@@ -816,6 +927,150 @@ def platform_links(meta: TrackMeta) -> dict[str, str]:
     return links
 
 
+# ---------------- locating the audio behind a catalogue track ----------------
+
+# Words marking a *different recording* of a song. Grabbing one of these when
+# the studio track was asked for is the worst failure this bot has: the cover
+# and the tags are right, the audio is another performance entirely, and
+# nothing looks wrong until you press play. So they are rejected, not merely
+# ranked down - a track we refuse to guess at is recoverable, a wrong file
+# that looks correct is not.
+#
+# Hour-long mixes, compilations and full albums are deliberately absent: the
+# runtime check already excludes them, and listing them here would only add
+# ways to misfire on an honest title.
+_VARIANT_WORDS = (
+    "live", "concert", "acoustic", "cover", "karaoke", "instrumental",
+    "remix", "mashup", "bootleg", "nightcore", "8d", "sped up", "speed up",
+    "slowed", "reverb", "reaction", "tutorial", "teaser", "trailer",
+    "snippet", "preview", "interview", "making of", "behind the scenes",
+)
+
+# How far a candidate's runtime may sit from the catalogue's before it is a
+# different recording. Music videos add an intro, so this is not tight.
+_DURATION_REJECT = 25.0
+# Candidates pulled per search. A flat search costs one extraction pass no
+# matter how many entries it returns, so a wider net is effectively free.
+_SEARCH_POOL = 6
+
+
+def _is_other_recording(candidate: str, wanted: str) -> bool:
+    """True when the candidate advertises a cut the request never asked for."""
+    # "Cover Art" is a picture, not a cover version - the one phrase in which
+    # these words describe the artwork rather than the performance.
+    cand = re.sub(r"\bcover\s*art\w*\b", " ", _norm(candidate))
+    want = _norm(wanted)
+    # Whole tokens only: "livestream" is not "live", "8d" is not part of "8 days".
+    return any(
+        f" {_norm(w)} " in f" {cand} " and f" {_norm(w)} " not in f" {want} "
+        for w in _VARIANT_WORDS
+    )
+
+
+def _match_youtube_entry(meta: TrackMeta, e: dict, rank: int) -> tuple[float, str] | None:
+    """Score one search hit against the track we know we want; None = reject."""
+    vid, title = e.get("id"), (e.get("title") or "").strip()
+    if not vid or not title:
+        return None
+
+    channel = (e.get("channel") or e.get("uploader") or "").strip()
+    want_title = meta.name
+    want_artist = meta.artists[0] if meta.artists else ""
+    want_secs = meta.duration_ms / 1000 if meta.duration_ms else 0.0
+    secs = float(e.get("duration") or 0)
+
+    if _is_other_recording(title, f"{want_artist} {want_title}"):
+        return None
+
+    n_title, n_want = _norm(title), _norm(want_title)
+    # Containment first: "Artist - Song (Official Video)" holds the whole title
+    # but dilutes a token overlap with words the catalogue never carries.
+    title_score = 1.0 if n_want and n_want in n_title else _overlap(title, want_title)
+    if title_score < 0.45:
+        return None
+
+    hay = f"{title} {channel}"
+    n_artist = _norm(want_artist)
+    artist_score = (
+        1.0 if n_artist and n_artist in _norm(hay) else _overlap(want_artist, hay)
+    )
+
+    if want_secs and secs:
+        delta = abs(secs - want_secs)
+        if delta > _DURATION_REJECT:
+            return None  # another recording: a live cut, a mix, an hour-long upload
+        duration_score = 1.0 - delta / _DURATION_REJECT
+    else:
+        duration_score = 0.0
+
+    # The title alone is not proof - plenty of unrelated songs share one. Either
+    # the artist or the runtime has to corroborate it.
+    if artist_score < 0.3 and duration_score == 0.0:
+        return None
+
+    score = (
+        2.0 * title_score
+        + 1.5 * artist_score
+        + 1.5 * duration_score
+        # "<Artist> - Topic" is YouTube's auto-generated channel: the label's
+        # own master, which is exactly the recording the catalogue lists.
+        + (0.8 if channel.lower().endswith("- topic") else 0.0)
+        # Failing that, the artist's own channel. Re-upload channels routinely
+        # pitch-shift or speed up a track to dodge copyright matching, so the
+        # official upload is worth preferring even at an equal title score.
+        + (0.5 if n_artist and n_artist in _norm(channel) else 0.0)
+        + 0.3 / (1 + rank)
+    )
+    return score, vid
+
+
+def _locate_audio(meta: TrackMeta) -> str:
+    """
+    Find the YouTube upload that actually *is* this track.
+
+    This used to be `ytsearch1:<artist> <title> audio` handed straight to
+    yt-dlp, i.e. whatever came back first was downloaded unverified. For
+    anything thin on YouTube - a remix, a Persian release, an album cut - the
+    first hit is regularly a different song, a full-album upload or an
+    hour-long compilation, and the result is a file with the right cover and
+    the right tags wrapped around the wrong audio.
+
+    Candidates are now checked against the runtime and the title the catalogue
+    gave us, and nothing credible means an error rather than a wrong song.
+    """
+    queries = [meta.search_query]
+    if meta.album and _norm(meta.album) != _norm(meta.name):
+        queries.append(f"{meta.search_query} official audio")
+    else:
+        queries.append(f"{meta.name} {meta.artists[0] if meta.artists else ''}".strip())
+
+    for q in queries:
+        try:
+            entries = _flat_entries(f"ytsearch{_SEARCH_POOL}:{q}")
+        except Exception as e:
+            log.warning("youtube search failed for %r: %s", q, e)
+            continue
+
+        scored = [
+            m
+            for m in (_match_youtube_entry(meta, e, i) for i, e in enumerate(entries))
+            if m is not None
+        ]
+        if scored:
+            score, vid = max(scored, key=lambda m: m[0])
+            log.info(
+                "audio match for %s -> %s (score %.2f, %d/%d candidates passed)",
+                meta.display, vid, score, len(scored), len(entries),
+            )
+            return f"https://www.youtube.com/watch?v={vid}"
+        log.info("no credible audio match for %r among %d hits", q, len(entries))
+
+    raise RuntimeError(
+        f"نسخه درست «{meta.display}» رو روی یوتیوب پیدا نکردم. "
+        "چیزی که بود آهنگ دیگه‌ای بود، برای همین نفرستادمش."
+    )
+
+
 # ---------------- downloading ----------------
 
 @run_in_thread(heavy=True)
@@ -835,7 +1090,12 @@ def download_track(meta: TrackMeta) -> Path:
     out_dir = settings.download_dir / "spotify"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    base = out_dir / safe_filename(meta.display)
+    # The track id goes in the name so two different tracks can never land on
+    # one path. Keying only on "Artist — Title" meant a remix and the original
+    # shared a file, and - far worse - one bad download poisoned that name
+    # permanently: every later request for it was served the stale file off
+    # disk without so much as a lookup.
+    base = out_dir / f"{safe_filename(meta.display)} [{_id_tag(meta.id)}]"
     existing = _find_output(base)
     if existing is not None:
         return existing
@@ -846,8 +1106,8 @@ def download_track(meta: TrackMeta) -> Path:
         target = f"https://www.youtube.com/watch?v={meta.id[3:]}"
     else:
         # Spotify / iTunes / Deezer entries carry metadata only - the audio
-        # itself still has to be located on YouTube.
-        target = f"ytsearch1:{meta.search_query} audio"
+        # itself still has to be located on YouTube, and verified.
+        target = _locate_audio(meta)
 
     extra = {
         # Highest-bitrate audio available. When it is already AAC, ExtractAudio
@@ -867,15 +1127,9 @@ def download_track(meta: TrackMeta) -> Path:
         ],
     }
 
-    try:
-        ytdlp_run(extra, lambda ydl: ydl.download([target]))
-    except Exception as e:
-        # A bare "artist title audio" query finds nothing for obscure tracks;
-        # the plain title often does.
-        if not target.startswith("ytsearch"):
-            raise
-        log.info("search download failed (%s) - retrying without 'audio'", e)
-        ytdlp_run(extra, lambda ydl: ydl.download([f"ytsearch1:{meta.search_query}"]))
+    # `target` is always a concrete URL now: _locate_audio already tried its
+    # alternate queries and refused to guess, so there is nothing left to retry.
+    ytdlp_run(extra, lambda ydl: ydl.download([target]))
 
     out_path = _find_output(base)
     if out_path is None:
@@ -888,6 +1142,13 @@ def download_track(meta: TrackMeta) -> Path:
 
 
 _AUDIO_EXTS = {".m4a", ".mp3", ".opus", ".ogg", ".oga", ".webm", ".aac", ".mp4", ".flac", ".wav"}
+
+
+def _id_tag(track_id: str) -> str:
+    """Short filesystem-safe stamp of a track id, to keep paths unique."""
+    import hashlib
+
+    return hashlib.md5(track_id.encode("utf-8")).hexdigest()[:8]
 
 
 def _find_output(base: Path) -> Path | None:
