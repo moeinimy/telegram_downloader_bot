@@ -578,7 +578,7 @@ async def _send_and_download_track(msg, meta, *, quiet: bool = False) -> bool:
     cached = file_cache.get(cache_key)
     if cached:
         try:
-            await sp.fill_cover(meta)
+            await sp.fill_details(meta)
             return await _send_cached(msg, meta, cached)
         except Exception as e:
             log.info("cached file_id rejected (%s) - re-downloading", e)
@@ -589,7 +589,7 @@ async def _send_and_download_track(msg, meta, *, quiet: bool = False) -> bool:
     # round trips per track, which is most of the wait on a cached song.
     import asyncio
 
-    await sp.fill_cover(meta)
+    await sp.fill_details(meta)
 
     # Start fetching immediately and post the cover while it runs. Awaiting the
     # cover first made a Telegram photo round trip block the download from even
@@ -669,6 +669,31 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await _send_tracklist(
             query.message,
             title=t(query.message.chat_id, "🎧 شبیه «{name}»").format(name=meta.display),
+            tracks=tracks,
+            bulk_callback=None,
+        )
+        return
+
+    if data.startswith("sp:ver:"):
+        track_id = data.split(":", 2)[2]
+        status = await query.message.reply_text(
+            t(query.message.chat_id, "🎚 دنبال نسخه‌های دیگه می‌گردم…")
+        )
+        try:
+            meta = await sp.get_track_meta(track_id)
+            tracks = await sp.other_versions(meta, limit=8)
+        except Exception as e:
+            await status.edit_text(f"❌ {e}")
+            return
+        if not tracks:
+            await status.edit_text(
+                t(query.message.chat_id, "نسخه دیگه‌ای از این آهنگ پیدا نکردم.")
+            )
+            return
+        await status.delete()
+        await _send_tracklist(
+            query.message,
+            title=t(query.message.chat_id, "🎚 نسخه‌های «{name}»").format(name=meta.display),
             tracks=tracks,
             bulk_callback=None,
         )

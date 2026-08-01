@@ -56,6 +56,7 @@ class TrackMeta:
     # but they are exactly what somebody searching for a featured artist
     # typed, so ranking has to keep reading the original.
     match_text: str = ""
+    credits_done: bool = False  # full artist list already resolved
 
     @property
     def display(self) -> str:
@@ -886,9 +887,90 @@ def _itunes_enrich(meta: TrackMeta) -> None:
     log.info("iTunes enriched (score %.2f): %s", best[0], meta.display)
 
 
+# ---------------- full artist credits ----------------
+
+# The credit runs to the end of the title, and never spans a bracket - so
+# "No Feat (Live)" is not read as featuring somebody called Live. "with" is
+# deliberately not a marker: it would turn "Dancing With Myself" into "Dancing"
+# by an artist named Myself.
+_FEAT_RE = re.compile(
+    r"\s*[\(\[]?\s*\b(?:feat|ft|featuring)\b\.?\s*([^()\[\]]+?)\s*[\)\]]?\s*$", re.I
+)
+
+
+def _feat_names(title: str) -> list[str]:
+    """Pull the guests out of 'Song (feat. A, B & C)'."""
+    m = _FEAT_RE.search(title)
+    if not m:
+        return []
+    return [
+        p.strip(" .")
+        for p in re.split(r",|&|\band\b|\bx\b", m.group(1), flags=re.I)
+        if p.strip(" .")
+    ]
+
+
+def _merge_names(*groups: list[str]) -> list[str]:
+    """Order-preserving union, case- and spacing-insensitive."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        for name in group:
+            key = _norm(name)
+            if key and key not in seen:
+                seen.add(key)
+                out.append(name.strip())
+    return out
+
+
+def _ensure_credits(meta: TrackMeta) -> None:
+    """
+    Name everyone on the track, not just whoever the search endpoint led with.
+
+    Deezer's /search returns one `artist`; the track endpoint carries the full
+    `contributors` list. "Tuning" is credited to Tiem, HesamTiem and Salii and
+    reached the bot as plain "Tiem". iTunes keeps its guests in the *title*
+    instead, as "(feat. ...)" - the same information in a worse place, since it
+    then pollutes every title match. Both are normalised here: guests belong in
+    the artist list, and the title keeps the song's actual name.
+
+    One request, and only for a track somebody actually picked.
+    """
+    if meta.credits_done:
+        return
+    meta.credits_done = True
+
+    from utils import http
+
+    try:
+        if meta.id.startswith("dz_"):
+            d = http.get(f"https://api.deezer.com/track/{meta.id[3:]}").json()
+            names = [
+                (c.get("name") or "").strip() for c in (d.get("contributors") or [])
+            ]
+            if any(names):
+                meta.artists = _merge_names([n for n in names if n], meta.artists)
+            # Deezer keeps "(Remix)", "(Live)" and the like in a separate field.
+            version = (d.get("version") or "").strip()
+            if version and _norm(version) not in _norm(meta.name):
+                meta.name = f"{meta.name} {version}".strip()
+
+        guests = _feat_names(meta.name)
+        if guests:
+            meta.artists = _merge_names(meta.artists, guests)
+            stripped = _FEAT_RE.sub("", meta.name).strip(" -–—([")
+            if stripped:
+                meta.name = stripped
+        if guests or meta.id.startswith("dz_"):
+            log.info("credits resolved -> %s", meta.display)
+    except Exception as e:
+        log.info("credit lookup failed for %s: %s", meta.display, e)
+
+
 @run_in_thread
-def fill_cover(meta: TrackMeta) -> None:
-    """Async wrapper so handlers can fetch artwork without blocking the loop."""
+def fill_details(meta: TrackMeta) -> None:
+    """Async wrapper so handlers can complete a track without blocking the loop."""
+    _ensure_credits(meta)
     ensure_cover(meta)
 
 
@@ -1046,6 +1128,57 @@ def similar_tracks(meta: TrackMeta, limit: int = 8) -> list[TrackMeta]:
         return []
 
 
+@run_in_thread
+def other_versions(meta: TrackMeta, limit: int = 8) -> list[TrackMeta]:
+    """
+    Remixes, live cuts, acoustic takes, slowed edits and covers of this song.
+
+    Deliberately the mirror image of the download matcher: that one refuses
+    every recording which is not the catalogue take, and everything it refuses
+    is exactly what belongs here. None of it is in the commercial catalogues,
+    so this is a wide search narrowed back down to the same composition.
+    """
+    artist = meta.artists[0] if meta.artists else ""
+    query = f"{artist} {meta.name}".strip()
+    if not query:
+        return []
+
+    ours = meta.duration_ms / 1000 if meta.duration_ms else 0
+    out: list[TrackMeta] = []
+    seen = {_dedupe_key(meta)}
+
+    for cand in _fallback_search_tracks(query, limit * 2):
+        hay = cand.match_hay
+        if _marks(hay, "", _NON_MUSIC):
+            continue
+        # Same song...
+        if _agree(meta.name, cand.name, 0.5) is None:
+            continue
+        # Any credited artist will do. A remix upload names whoever the
+        # remixer felt like naming, and it is rarely the lead - the "Friend
+        # Zone" remix credits Arown and Sami Low but not Arman Miladi.
+        if meta.artists and not any(
+            _agree(a, hay, 0.3) is not None for a in meta.artists
+        ):
+            continue
+        # ...but not the same recording, which is the whole point.
+        theirs = cand.duration_ms / 1000 if cand.duration_ms else 0
+        if not (
+            _marks(hay, "", _VARIANT_WORDS)
+            or (ours and theirs and abs(ours - theirs) > 8)
+        ):
+            continue
+        _clean_source_title(cand)
+        key = _dedupe_key(cand)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(cand)
+        if len(out) >= limit:
+            break
+    return out
+
+
 def platform_links(meta: TrackMeta) -> dict[str, str]:
     """Direct links we actually know for this track; the keyboard falls back
     to per-platform search URLs for the rest."""
@@ -1087,7 +1220,7 @@ _VARIANT_WORDS = (
 # under reaction and breakdown uploads that carry every artist's name in the
 # title, so they answer a search better than the song does.
 _NON_MUSIC = (
-    "reaction", "reacts", "reacting", "tutorial", "review", "interview",
+    "reaction", "reacts", "reacting", "tutorial", "review", "interview", "parody",
     "podcast", "trailer", "teaser", "unboxing", "vlog", "explained",
     "breakdown", "behind the scenes", "making of",
     "ری اکشن", "ریاکشن", "واکنش", "آموزش", "نقد", "مصاحبه", "پادکست",
@@ -1217,6 +1350,7 @@ def download_track(meta: TrackMeta) -> Path:
     # Fix metadata + cover before computing the filename.
     if meta.id.startswith(("yt_", "sc_")):
         _itunes_enrich(meta)
+    _ensure_credits(meta)
     ensure_cover(meta)
 
     out_dir = settings.download_dir / "spotify"

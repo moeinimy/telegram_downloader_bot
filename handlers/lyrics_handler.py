@@ -47,7 +47,16 @@ def lyrics_button(
         row.append(
             InlineKeyboardButton(t(chat_id, "🎧 شبیه این"), callback_data=f"sp:sim:{track_id}")
         )
-    return InlineKeyboardMarkup([row])
+    rows = [row]
+    if track_id:
+        # Remixes, live cuts and edits of this exact song. They are refused as a
+        # download source on purpose, so this is the way to reach them.
+        rows.append([
+            InlineKeyboardButton(
+                t(chat_id, "🎚 نسخه‌های دیگه"), callback_data=f"sp:ver:{track_id}"
+            )
+        ])
+    return InlineKeyboardMarkup(rows)
 
 
 def platform_keyboard(

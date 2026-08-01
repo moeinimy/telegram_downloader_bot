@@ -99,6 +99,10 @@ _EN: dict[str, str] = {
     "🎧 شبیه این": "🎧 Similar",
     "🎧 دنبال آهنگ‌های شبیه می‌گردم…": "🎧 Looking for similar tracks…",
     "چیزی شبیه این پیدا نکردم.": "Nothing similar found.",
+    "🎚 نسخه‌های دیگه": "🎚 Other versions",
+    "🎚 دنبال نسخه‌های دیگه می‌گردم…": "🎚 Looking for other versions…",
+    "نسخه دیگه‌ای از این آهنگ پیدا نکردم.": "No other version of this track found.",
+    "🎚 نسخه‌های «{name}»": "🎚 Versions of “{name}”",
     "🎧 شبیه «{name}»": "🎧 Similar to “{name}”",
     "🔎 دنبال متن آهنگ می‌گردم…": "🔎 Looking for lyrics…",
     "😕 متنی برای «{artist} — {title}» پیدا نکردم.":
