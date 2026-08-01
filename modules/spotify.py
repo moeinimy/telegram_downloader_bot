@@ -47,13 +47,23 @@ class TrackMeta:
     cover_url: str
     spotify_url: str  # source URL (spotify page, youtube watch, soundcloud permalink)
     itunes_url: str = ""  # filled by _itunes_enrich when a match is confident
-    # Search-ranking signals (unused outside _music_api_search).
+    # Search-ranking signals (unused outside search).
     src_rank: int = 0       # position in the source's own result list
     popularity: float = 0.0  # 0..1, from Deezer's rank; 0 when unknown
+    # The text this result should be *matched* against, which is not the text
+    # it is displayed as. A YouTube title lists the featured artists ("... ft.
+    # Arown, Sami Low & Raha") and tidying it for display throws them away -
+    # but they are exactly what somebody searching for a featured artist
+    # typed, so ranking has to keep reading the original.
+    match_text: str = ""
 
     @property
     def display(self) -> str:
         return f"{', '.join(self.artists)} — {self.name}"
+
+    @property
+    def match_hay(self) -> str:
+        return self.match_text or f"{', '.join(self.artists)} {self.name} {self.album}"
 
     @property
     def search_query(self) -> str:
@@ -220,12 +230,20 @@ def _merge_results(
     n_query = _norm(query)
 
     def rank(t: TrackMeta) -> float:
-        both = f"{t.artists[0] if t.artists else ''} {t.name}"
-        score = _overlap(query, both)
-        if n_query and n_query in _norm(both):
+        hay = t.match_hay
+        # Coverage leads: a result that leaves part of the query unexplained is
+        # answering a different question, however tidy its title.
+        score = 2.5 * _coverage(query, hay) + 0.6 * _overlap(query, hay)
+        if n_query and n_query in _norm(hay):
             score += 0.6
         score += 0.3 / (1 + t.src_rank)
         score += 0.4 * t.popularity
+        if _marks(hay, query, _NON_MUSIC):
+            score -= 1.5
+        # Somebody who did not type "remix" wants the original; the remix is
+        # still listed, just below it.
+        if _marks(hay, query, _VARIANT_WORDS):
+            score -= 0.5
         # A catalogue entry brings a real artist, album and 600x600 art, so it
         # wins an otherwise equal race against a raw video title.
         if t.id.startswith(("it_", "dz_")):
@@ -357,9 +375,8 @@ def _music_api_search(query: str, limit: int) -> list[TrackMeta]:
     # so "still here drake" puts Drake's track above another artist's song
     # that happens to share the title.
     def _relevance(t: TrackMeta) -> float:
-        artist = t.artists[0] if t.artists else ""
-        both = f"{artist} {t.name}"
-        score = _overlap(query, both)
+        both = t.match_hay
+        score = 2.0 * _coverage(query, both) + 0.5 * _overlap(query, both)
         if _norm(query) in _norm(both):
             score += 0.5
         # Each API already ranked its own results; keep that as a signal.
@@ -453,14 +470,17 @@ def _entry_to_track(e: dict, prefix: str) -> TrackMeta | None:
     if prefix == "yt" and not url.startswith("http"):
         url = f"https://www.youtube.com/watch?v={vid}"
     thumbs = e.get("thumbnails") or []
+    title = e.get("title") or "Unknown"
+    channel = e.get("channel") or e.get("uploader") or prefix
     meta = TrackMeta(
         id=f"{prefix}_{vid}",
-        name=e.get("title") or "Unknown",
-        artists=[e.get("channel") or e.get("uploader") or prefix],
+        name=title,
+        artists=[channel],
         album="",
         duration_ms=int((e.get("duration") or 0) * 1000),
         cover_url=(thumbs[-1].get("url", "") if thumbs else e.get("thumbnail") or ""),
         spotify_url=url,
+        match_text=f"{title} {channel}",
     )
     _yt_cache[meta.id] = meta
     return meta
@@ -479,15 +499,21 @@ def deep_search(query: str, limit: int = 12) -> list[TrackMeta]:
     tracks = _fallback_search_tracks(query, limit)
 
     def _relevance(t: TrackMeta) -> float:
-        artist = t.artists[0] if t.artists else ""
-        both = f"{artist} {t.name}"
-        score = _overlap(query, both)
-        if _norm(query) in _norm(both):
+        hay = t.match_hay
+        score = 2.5 * _coverage(query, hay) + 0.6 * _overlap(query, hay)
+        if _norm(query) in _norm(hay):
             score += 0.5
         score += 0.3 / (1 + t.src_rank)
+        if _marks(hay, query, _NON_MUSIC):
+            score -= 1.5
+        if _marks(hay, query, _VARIANT_WORDS):
+            score -= 0.5
         return score
 
     tracks.sort(key=_relevance, reverse=True)
+    tracks = tracks[:limit]
+    for t in tracks:
+        _clean_source_title(t)
     return tracks
 
 
@@ -507,16 +533,19 @@ def _search_one(search_url: str, prefix: str) -> list[TrackMeta]:
 
 def _fallback_search_tracks(query: str, limit: int) -> list[TrackMeta]:
     """Combined YouTube + SoundCloud search, run concurrently - sequentially
-    this waited out two full yt-dlp round trips before showing anything."""
+    this waited out two full yt-dlp round trips before showing anything.
+
+    Both sources are asked for a full list rather than half each: a flat search
+    costs one extraction pass whatever it returns, and splitting the budget
+    used to drop SoundCloud results on the floor before anything ranked them.
+    Callers rank the pool and take what they need."""
     from concurrent.futures import ThreadPoolExecutor
 
-    half = max(limit // 2, 4)
+    per_source = max(limit, 8)
     with ThreadPoolExecutor(max_workers=2) as pool:
-        f_yt = pool.submit(_search_one, f"ytsearch{half}:{query}", "yt")
-        f_sc = pool.submit(_search_one, f"scsearch{half}:{query}", "sc")
-        tracks = f_yt.result() + f_sc.result()
-
-    return tracks[:limit]
+        f_yt = pool.submit(_search_one, f"ytsearch{per_source}:{query}", "yt")
+        f_sc = pool.submit(_search_one, f"scsearch{per_source}:{query}", "sc")
+        return f_yt.result() + f_sc.result()
 
 
 def _probe_source_track_sync(url: str, prefix: str) -> TrackMeta:
@@ -578,7 +607,10 @@ def _strip_noise(raw: str) -> str:
     s = re.sub(r"\s*\|.*$", "", s)              # trailing "| Channel"
     s = re.sub(r"\s*\bft\.?\b.*$", "", s, flags=re.I)   # "ft. Someone"
     s = re.sub(r"\s*\bfeat\.?\b.*$", "", s, flags=re.I)
-    return re.sub(r"\s+", " ", s).strip(" -–—_·")
+    # "Song (ft. X & Y)" loses its tail to the rule above and keeps the opening
+    # bracket, which then shows up in the track list as "Friend Zone (".
+    s = re.sub(r"\s*[\(\[]\s*$", "", s)
+    return re.sub(r"\s+", " ", s).strip(" -–—_·([")
 
 
 # Arabic and Persian write the same sound several ways, and the two scripts
@@ -616,6 +648,24 @@ def _overlap(a: str, b: str) -> float:
     if not ta or not tb:
         return 0.0
     return len(ta & tb) / len(ta | tb)
+
+
+def _coverage(query: str, text: str) -> float:
+    """
+    Share of what was *typed* that the candidate accounts for.
+
+    Jaccard is the wrong tool for ranking a search: it punishes a candidate for
+    carrying words the query did not, which is precisely what a YouTube title
+    does when it credits the featured artists. Searching "friend zone raha"
+    scored six unrelated songs called "Friend Zone" above the one actually
+    featuring Raha, because their short titles wasted fewer tokens. What
+    matters is the opposite question - is any part of what I asked for
+    unaccounted for?
+    """
+    q = set(_norm(query).split())
+    if not q:
+        return 0.0
+    return len(q & set(_norm(text).split())) / len(q)
 
 
 def _split_artist_title(s: str) -> tuple[str, str]:
@@ -942,8 +992,18 @@ def platform_links(meta: TrackMeta) -> dict[str, str]:
 _VARIANT_WORDS = (
     "live", "concert", "acoustic", "cover", "karaoke", "instrumental",
     "remix", "mashup", "bootleg", "nightcore", "8d", "sped up", "speed up",
-    "slowed", "reverb", "reaction", "tutorial", "teaser", "trailer",
-    "snippet", "preview", "interview", "making of", "behind the scenes",
+    "slowed", "reverb", "snippet", "preview",
+)
+
+# Not a different cut - not music at all. Persian rap in particular is buried
+# under reaction and breakdown uploads that carry every artist's name in the
+# title, so they answer a search better than the song does.
+_NON_MUSIC = (
+    "reaction", "reacts", "reacting", "tutorial", "review", "interview",
+    "podcast", "trailer", "teaser", "unboxing", "vlog", "explained",
+    "breakdown", "behind the scenes", "making of",
+    "ری اکشن", "ریاکشن", "واکنش", "آموزش", "نقد", "مصاحبه", "پادکست",
+    "پشت صحنه", "بررسی",
 )
 
 # How far a candidate's runtime may sit from the catalogue's before it is a
@@ -954,8 +1014,8 @@ _DURATION_REJECT = 25.0
 _SEARCH_POOL = 6
 
 
-def _is_other_recording(candidate: str, wanted: str) -> bool:
-    """True when the candidate advertises a cut the request never asked for."""
+def _marks(candidate: str, wanted: str, words: tuple[str, ...]) -> bool:
+    """True when the candidate advertises something the request never asked for."""
     # "Cover Art" is a picture, not a cover version - the one phrase in which
     # these words describe the artwork rather than the performance.
     cand = re.sub(r"\bcover\s*art\w*\b", " ", _norm(candidate))
@@ -963,8 +1023,12 @@ def _is_other_recording(candidate: str, wanted: str) -> bool:
     # Whole tokens only: "livestream" is not "live", "8d" is not part of "8 days".
     return any(
         f" {_norm(w)} " in f" {cand} " and f" {_norm(w)} " not in f" {want} "
-        for w in _VARIANT_WORDS
+        for w in words
     )
+
+
+def _is_other_recording(candidate: str, wanted: str) -> bool:
+    return _marks(candidate, wanted, _VARIANT_WORDS + _NON_MUSIC)
 
 
 def _match_youtube_entry(meta: TrackMeta, e: dict, rank: int) -> tuple[float, str] | None:
