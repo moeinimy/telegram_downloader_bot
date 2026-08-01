@@ -174,7 +174,7 @@ def search_tracks(query: str, limit: int = 10) -> list[TrackMeta]:
 
     tracks = _music_api_search(query, limit)
     if not _needs_wide_search(query, tracks):
-        return tracks
+        return _focus(query, tracks)
 
     # The wide search costs a yt-dlp pass, so remember its outcome: paging back
     # to a result list, or retyping the same thing, must not buy it twice.
@@ -243,7 +243,7 @@ def _merge_results(
         # Somebody who did not type "remix" wants the original; the remix is
         # still listed, just below it.
         if _marks(hay, query, _VARIANT_WORDS):
-            score -= 0.5
+            score -= 1.0
         # A catalogue entry brings a real artist, album and 600x600 art, so it
         # wins an otherwise equal race against a raw video title.
         if t.id.startswith(("it_", "dz_")):
@@ -261,7 +261,7 @@ def _merge_results(
         out.append(t)
         if len(out) >= limit:
             break
-    return out
+    return _focus(query, out)
 
 
 # ---------------- fast keyless music metadata search ----------------
@@ -507,11 +507,11 @@ def deep_search(query: str, limit: int = 12) -> list[TrackMeta]:
         if _marks(hay, query, _NON_MUSIC):
             score -= 1.5
         if _marks(hay, query, _VARIANT_WORDS):
-            score -= 0.5
+            score -= 1.0
         return score
 
     tracks.sort(key=_relevance, reverse=True)
-    tracks = tracks[:limit]
+    tracks = _focus(query, tracks[:limit])
     for t in tracks:
         _clean_source_title(t)
     return tracks
@@ -665,7 +665,100 @@ def _coverage(query: str, text: str) -> float:
     q = set(_norm(query).split())
     if not q:
         return 0.0
-    return len(q & set(_norm(text).split())) / len(q)
+    normalised = _norm(text)
+    tokens = set(normalised.split())
+    # People type an artist's name the way they say it, not the way it is
+    # spelt: "samilow" is "Sami Low". Long tokens are also looked for in the
+    # space-stripped text, with a length floor so short words cannot land
+    # inside an unrelated one by accident.
+    glued = normalised.replace(" ", "")
+    hits = sum(1 for w in q if w in tokens or (len(w) >= 5 and w in glued))
+    return hits / len(q)
+
+
+def _focus(query: str, ranked: list[TrackMeta], keep_min: int = 3) -> list[TrackMeta]:
+    """
+    Drop partial answers once a complete one exists.
+
+    Searching "tiem tuning" returned Tiem's track and then six unrelated songs
+    with "Tuning" in the name - none of them by Tiem, all of them noise. If
+    something accounts for the whole query, results that ignore half of it are
+    not near-misses worth showing. A few are kept regardless, so an unlucky
+    exact match can never be the only thing on offer.
+    """
+    if not ranked:
+        return ranked
+    covers = [(t, _coverage(query, t.match_hay)) for t in ranked]
+    if max(c for _, c in covers) < 0.999:
+        return ranked
+    full = [t for t, c in covers if c >= 0.999]
+    rest = [t for t, c in covers if c < 0.999]
+    return full + rest[: max(0, keep_min - len(full))]
+
+
+# ---------------- identity: is this the same recording? ----------------
+#
+# One decision, one place. Every part of the bot that asks "is this catalogue
+# entry / this YouTube upload the track in front of me?" comes through here,
+# because getting it wrong in *any* of them produces the same symptom: a file
+# whose cover and title describe a song other than the one playing.
+#
+# The rule that caused that: corroboration used to be "title AND (artist OR
+# duration)". Duration alone was accepted - so "Arman Miladi - Friend Zone"
+# (3:35) matched "Adekunle Gold - Friend Zone" (3:35) and the bot replaced the
+# artist, the album and the cover with a stranger's song. Two unrelated tracks
+# sharing a title and a runtime is not a coincidence worth betting on; 3:35 is
+# the most ordinary length a song has. The artist must agree too.
+
+
+def _agree(ours: str, theirs: str, floor: float) -> float | None:
+    """How far two names agree, or None when they plainly do not."""
+    a, b = _norm(ours), _norm(theirs)
+    if not a or not b:
+        return None
+    # Whole-token containment, so "Ama" does not match inside "Amazing" and a
+    # short label name cannot swallow a long credit list.
+    if f" {a} " in f" {b} " or f" {b} " in f" {a} ":
+        return 1.0
+    score = _overlap(ours, theirs)
+    return score if score >= floor else None
+
+
+def _same_recording(
+    *,
+    our_artist: str,
+    our_title: str,
+    our_secs: float,
+    their_artist: str,
+    their_title: str,
+    their_secs: float,
+    artist_floor: float = 0.4,
+) -> float | None:
+    """Confidence that both sides describe one recording; None means they don't.
+
+    `our_artist` may be a whole haystack - a video title plus its channel, say -
+    since the artist is often only named inside the title.
+    """
+    if _is_other_recording(their_title, f"{our_artist} {our_title}"):
+        return None
+
+    title = _agree(our_title, their_title, 0.55)
+    if title is None:
+        return None
+
+    artist = _agree(our_artist, their_artist, artist_floor)
+    if artist is None:
+        return None
+
+    if our_secs and their_secs:
+        delta = abs(our_secs - their_secs)
+        if delta > _DURATION_REJECT:
+            return None  # a different cut: live, extended, or the wrong song
+        duration = 1.0 - delta / _DURATION_REJECT
+    else:
+        duration = 0.0
+
+    return 2.0 * title + 1.5 * artist + 1.5 * duration
 
 
 def _split_artist_title(s: str) -> tuple[str, str]:
@@ -724,11 +817,9 @@ def _itunes_enrich(meta: TrackMeta) -> None:
     channel name, and the cover is a video thumbnail. Look the song up on the
     keyless iTunes Search API and adopt the real name/artist/album/600x600 art.
 
-    Matching is deliberately strict. Accepting a result because the *artist*
-    matched (the previous behaviour) mislabels files: searching
-    "Drake - Something New" returns Drake's other songs, and the first one
-    would win - correct audio, wrong title and wrong cover. The song title
-    must match; duration or artist then confirms it.
+    Nothing is adopted unless the artist agrees as well as the title and the
+    runtime - see _same_recording. Enrichment is an upgrade or it is nothing;
+    it is never allowed to contradict what the source already told us.
     """
     from utils import http
 
@@ -751,7 +842,12 @@ def _itunes_enrich(meta: TrackMeta) -> None:
 
     our_secs = meta.duration_ms / 1000 if meta.duration_ms else 0
     title_hay = guess_title or cleaned
-    artist_hay = guess_artist or (meta.artists[0] if meta.artists else "")
+    # Everything that could name the artist: the split guess, the channel, and
+    # the untouched title - a credit like "(feat. Sami Low, Raha)" lives there
+    # and nowhere else.
+    artist_hay = " ".join(
+        filter(None, [guess_artist, " ".join(meta.artists), meta.match_text or meta.name])
+    )
 
     best: tuple[float, dict] | None = None
     for it in results:
@@ -760,34 +856,16 @@ def _itunes_enrich(meta: TrackMeta) -> None:
         if not track_name:
             continue
 
-        n_track, n_hay = _norm(track_name), _norm(title_hay)
-        title_ok = (
-            n_track in n_hay
-            or n_hay in n_track
-            or _overlap(track_name, title_hay) >= 0.55
+        score = _same_recording(
+            our_artist=artist_hay,
+            our_title=title_hay,
+            our_secs=our_secs,
+            their_artist=artist_name,
+            their_title=track_name,
+            their_secs=(it.get("trackTimeMillis") or 0) / 1000,
         )
-        if not title_ok:
-            continue  # never rename on an artist match alone
-
-        their_secs = (it.get("trackTimeMillis") or 0) / 1000
-        if our_secs and their_secs:
-            delta = abs(our_secs - their_secs)
-            if delta > 25:
-                continue  # different cut: live, remix, extended, or wrong song
-            duration_score = 1.0 - min(delta, 25) / 25
-        else:
-            duration_score = 0.0
-
-        artist_score = max(
-            _overlap(artist_name, artist_hay),
-            1.0 if _norm(artist_name) and _norm(artist_name) in _norm(meta.name) else 0.0,
-        )
-
-        # Require corroboration beyond the title alone.
-        if duration_score == 0.0 and artist_score < 0.3:
+        if score is None:
             continue
-
-        score = _overlap(track_name, title_hay) + duration_score + artist_score
         if best is None or score > best[0]:
             best = (score, it)
 
@@ -822,6 +900,10 @@ def ensure_cover(meta: TrackMeta) -> None:
     arrive with an empty cover. One keyless catalogue lookup by artist+title
     gets the real album art (and album name) - far cheaper than fetching each
     track's own embed page.
+
+    The match has to satisfy the same identity rule as everything else. This
+    checked only the title and the runtime, which is how a song acquired a
+    stranger's album art: plenty of unrelated tracks share both.
     """
     if meta.cover_url:
         return
@@ -832,19 +914,24 @@ def ensure_cover(meta: TrackMeta) -> None:
         log.warning("cover lookup failed for %s: %s", meta.display, e)
         return
 
-    our = meta.duration_ms / 1000 if meta.duration_ms else 0
+    our_secs = meta.duration_ms / 1000 if meta.duration_ms else 0
     for h in hits:
-        if _overlap(h.name, meta.name) < 0.5:
+        if not h.cover_url:
             continue
-        their = h.duration_ms / 1000 if h.duration_ms else 0
-        if our and their and abs(our - their) > 25:
+        if _same_recording(
+            our_artist=f"{artist} {meta.match_text or meta.name}",
+            our_title=meta.name,
+            our_secs=our_secs,
+            their_artist=h.artists[0] if h.artists else "",
+            their_title=h.name,
+            their_secs=h.duration_ms / 1000 if h.duration_ms else 0,
+        ) is None:
             continue
-        if h.cover_url:
-            meta.cover_url = h.cover_url
-            meta.album = meta.album or h.album
-            if not meta.itunes_url and h.itunes_url:
-                meta.itunes_url = h.itunes_url
-            return
+        meta.cover_url = h.cover_url
+        meta.album = meta.album or h.album
+        if not meta.itunes_url and h.itunes_url:
+            meta.itunes_url = h.itunes_url
+        return
 
 
 def _deezer_artist_id(meta: TrackMeta) -> int | None:
@@ -993,6 +1080,7 @@ _VARIANT_WORDS = (
     "live", "concert", "acoustic", "cover", "karaoke", "instrumental",
     "remix", "mashup", "bootleg", "nightcore", "8d", "sped up", "speed up",
     "slowed", "reverb", "snippet", "preview",
+    "اجرای زنده", "کنسرت", "لایو", "ریمیکس", "کاور", "بی کلام", "دمو",
 )
 
 # Not a different cut - not music at all. Persian rap in particular is buried
@@ -1038,51 +1126,31 @@ def _match_youtube_entry(meta: TrackMeta, e: dict, rank: int) -> tuple[float, st
         return None
 
     channel = (e.get("channel") or e.get("uploader") or "").strip()
-    want_title = meta.name
     want_artist = meta.artists[0] if meta.artists else ""
-    want_secs = meta.duration_ms / 1000 if meta.duration_ms else 0.0
-    secs = float(e.get("duration") or 0)
 
-    if _is_other_recording(title, f"{want_artist} {want_title}"):
-        return None
-
-    n_title, n_want = _norm(title), _norm(want_title)
-    # Containment first: "Artist - Song (Official Video)" holds the whole title
-    # but dilutes a token overlap with words the catalogue never carries.
-    title_score = 1.0 if n_want and n_want in n_title else _overlap(title, want_title)
-    if title_score < 0.45:
-        return None
-
-    hay = f"{title} {channel}"
-    n_artist = _norm(want_artist)
-    artist_score = (
-        1.0 if n_artist and n_artist in _norm(hay) else _overlap(want_artist, hay)
+    # The artist is as often inside the video title as it is the channel name,
+    # so both are offered as the haystack the catalogue artist must appear in.
+    score = _same_recording(
+        our_artist=f"{want_artist}",
+        our_title=meta.name,
+        our_secs=meta.duration_ms / 1000 if meta.duration_ms else 0.0,
+        their_artist=f"{title} {channel}",
+        their_title=title,
+        their_secs=float(e.get("duration") or 0),
+        artist_floor=0.3,
     )
-
-    if want_secs and secs:
-        delta = abs(secs - want_secs)
-        if delta > _DURATION_REJECT:
-            return None  # another recording: a live cut, a mix, an hour-long upload
-        duration_score = 1.0 - delta / _DURATION_REJECT
-    else:
-        duration_score = 0.0
-
-    # The title alone is not proof - plenty of unrelated songs share one. Either
-    # the artist or the runtime has to corroborate it.
-    if artist_score < 0.3 and duration_score == 0.0:
+    if score is None:
         return None
 
-    score = (
-        2.0 * title_score
-        + 1.5 * artist_score
-        + 1.5 * duration_score
+    n_artist = _norm(want_artist)
+    score += (
         # "<Artist> - Topic" is YouTube's auto-generated channel: the label's
         # own master, which is exactly the recording the catalogue lists.
-        + (0.8 if channel.lower().endswith("- topic") else 0.0)
+        (0.8 if channel.lower().endswith("- topic") else 0.0)
         # Failing that, the artist's own channel. Re-upload channels routinely
         # pitch-shift or speed up a track to dodge copyright matching, so the
         # official upload is worth preferring even at an equal title score.
-        + (0.5 if n_artist and n_artist in _norm(channel) else 0.0)
+        + (0.5 if n_artist and f" {n_artist} " in f" {_norm(channel)} " else 0.0)
         + 0.3 / (1 + rank)
     )
     return score, vid
