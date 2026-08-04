@@ -57,6 +57,7 @@ class TrackMeta:
     # typed, so ranking has to keep reading the original.
     match_text: str = ""
     credits_done: bool = False  # full artist list already resolved
+    isrc: str = ""  # the recording's global id, when any source will tell us
 
     @property
     def display(self) -> str:
@@ -969,6 +970,40 @@ def _merge_names(*groups: list[str]) -> list[str]:
     return out
 
 
+def _adopt_canonical_duration(meta: TrackMeta, secs) -> None:
+    """
+    Trust the catalogue's runtime for the recording over a listing's.
+
+    Every acceptance in this module is gated on duration - 25 seconds normally,
+    8 when nothing confirms the artist. A runtime that is a few seconds out
+    therefore does not degrade matching, it inverts it: the right upload falls
+    outside the window and a wrong one falls inside. Search listings round and
+    occasionally just disagree, so the per-track record wins.
+    """
+    try:
+        ms = int(float(secs) * 1000)
+    except (TypeError, ValueError):
+        return
+    if ms <= 0 or abs(ms - meta.duration_ms) <= 2000:
+        return
+    log.info("duration corrected for %s: %ds -> %ds",
+             meta.display, meta.duration_ms // 1000, ms // 1000)
+    meta.duration_ms = ms
+
+
+def _isrc_lookup(isrc: str) -> dict:
+    """The Deezer record for an exact recording. {} when it has no such id."""
+    from utils import http
+
+    try:
+        r = http.get(f"https://api.deezer.com/track/isrc:{isrc}", timeout=8)
+        d = r.json() if r.status_code == 200 else {}
+        return d if d.get("id") else {}
+    except Exception as e:
+        log.info("isrc lookup failed for %s: %s", isrc, e)
+        return {}
+
+
 def _ensure_credits(meta: TrackMeta) -> None:
     """
     Name everyone on the track, not just whoever the search endpoint led with.
@@ -1000,6 +1035,38 @@ def _ensure_credits(meta: TrackMeta) -> None:
             version = (d.get("version") or "").strip()
             if version and _norm(version) not in _norm(meta.name):
                 meta.name = f"{meta.name} {version}".strip()
+            # Free, in a request already being made.
+            meta.isrc = meta.isrc or (d.get("isrc") or "").strip()
+            _adopt_canonical_duration(meta, d.get("duration"))
+
+        # A Spotify link carries no ISRC on its embed page and Odesli will not
+        # give one either, so the Web API is the only route - and it needs the
+        # app owner to hold Premium. When it is reachable the payoff is real:
+        # the ISRC pins the exact recording, and Deezer's record for it settles
+        # the runtime and the credits without a single fuzzy comparison.
+        if not meta.isrc and not meta.id.startswith(("yt_", "sc_", "it_", "dz_")):
+            from modules import spotify_api
+
+            meta.isrc = spotify_api.track_isrc(meta.id)
+
+        if meta.isrc:
+            exact = _isrc_lookup(meta.isrc)
+            if exact:
+                names = [
+                    (c.get("name") or "").strip()
+                    for c in (exact.get("contributors") or [])
+                ]
+                if any(names):
+                    meta.artists = _merge_names(
+                        [n for n in names if n], meta.artists
+                    )
+                _adopt_canonical_duration(meta, exact.get("duration"))
+                if not meta.cover_url:
+                    album = exact.get("album") or {}
+                    meta.cover_url = (
+                        album.get("cover_xl") or album.get("cover_big") or ""
+                    )
+                log.info("isrc %s resolved -> %s", meta.isrc, meta.display)
 
         guests = _feat_names(meta.name)
         if guests:

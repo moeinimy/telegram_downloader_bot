@@ -206,6 +206,64 @@ async def recstatus_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.effective_message.reply_text("\n".join(lines))
 
 
+async def srcstatus_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/srcstatus - can each metadata source actually be reached right now.
+
+    The Spotify Web API failing is invisible otherwise: the bot falls back to
+    the embed page and everything keeps working except playlists past ~100
+    tracks, which simply come back short with no error anywhere.
+    """
+    if not _is_admin(update):
+        return
+    import asyncio
+
+    from modules import spotify_api
+
+    lines = ["*وضعیت منابع*", ""]
+
+    if not spotify_api.available():
+        lines.append("⚪️ Spotify Web API: کلید تنظیم نشده (پلی‌لیست تا ۱۰۰ ترک)")
+    else:
+        def probe():
+            try:
+                spotify_api._get("https://api.spotify.com/v1/browse/new-releases",
+                                 {"limit": 1})
+                return ""
+            except Exception:
+                return spotify_api.blocked_reason() or "در دسترس نیست"
+
+        why = await asyncio.to_thread(probe)
+        if why:
+            lines += [
+                "❌ Spotify Web API: " + _md(why),
+                "   ↳ پلی‌لیست‌های بالای ۱۰۰ ترک کار نمی‌کنن.",
+            ]
+        else:
+            lines.append("✅ Spotify Web API: سالم")
+
+    async def check(label, fn):
+        try:
+            return ("✅ " if await asyncio.to_thread(fn) else "❌ ") + label
+        except Exception as e:
+            return f"❌ {label}: {_md(str(e)[:60])}"
+
+    from utils import http
+
+    lines.append(await check(
+        "Deezer", lambda: http.get("https://api.deezer.com/track/3135556",
+                                   timeout=8).status_code == 200))
+    lines.append(await check(
+        "iTunes", lambda: http.get("https://itunes.apple.com/search",
+                                   params={"term": "test", "limit": 1},
+                                   timeout=8).status_code == 200))
+    lines.append(await check(
+        "Odesli", lambda: http.get("https://api.song.link/v1-alpha.1/links",
+                                   params={"url": "spotify:track:0wwPcA6wtMf6HUMpIRdeP7"},
+                                   timeout=12).status_code == 200))
+    await update.effective_message.reply_text(
+        "\n".join(lines), parse_mode="Markdown")
+
+
 async def igtest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/igtest [shortcode] - which cookie-free routes work from THIS server."""
     if not _is_admin(update):
