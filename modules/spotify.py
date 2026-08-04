@@ -1253,6 +1253,18 @@ _DURATION_STRETCH = 60.0
 # matter how many entries it returns, so a wider net is effectively free.
 _SEARCH_POOL = 6
 
+# Where the audio for a catalogue track may be found. yt-dlp ships search
+# support for exactly these two of the music platforms it can extract:
+# Bandcamp, Audiomack, Audius and Radio Javan have no search prefix, and their
+# own APIs are either keyed (Audiomack answers 401) or carry catalogues too
+# thin to have answered any track tested here.
+_AUDIO_SOURCES = ("ytsearch", "scsearch")
+
+# SoundCloud is uploader-driven, so a top placement there says less about
+# being the canonical release than YouTube's does. Small, and only a tie
+# breaker - a better duration or artist match still wins outright.
+_SOURCE_BIAS = {"ytsearch": 0.0, "scsearch": -0.15}
+
 
 def _marks(candidate: str, wanted: str, words: tuple[str, ...]) -> bool:
     """True when the candidate advertises something the request never asked for."""
@@ -1271,10 +1283,24 @@ def _is_other_recording(candidate: str, wanted: str) -> bool:
     return _marks(candidate, wanted, _VARIANT_WORDS + _NON_MUSIC)
 
 
-def _match_youtube_entry(meta: TrackMeta, e: dict, rank: int) -> tuple[float, str] | None:
+def _entry_url(e: dict, source: str) -> str:
+    """The page URL for a flat search hit.
+
+    YouTube ids rebuild into a watch URL; SoundCloud's are numeric and cannot
+    be turned back into anything, so its permalink has to be read off the entry.
+    """
+    url = e.get("url") or e.get("webpage_url") or ""
+    if url.startswith("http"):
+        return url
+    if source == "ytsearch" and e.get("id"):
+        return f"https://www.youtube.com/watch?v={e['id']}"
+    return ""
+
+
+def _match_entry(meta: TrackMeta, e: dict, rank: int, source: str) -> tuple[float, str] | None:
     """Score one search hit against the track we know we want; None = reject."""
-    vid, title = e.get("id"), (e.get("title") or "").strip()
-    if not vid or not title:
+    url, title = _entry_url(e, source), (e.get("title") or "").strip()
+    if not url or not title:
         return None
 
     channel = (e.get("channel") or e.get("uploader") or "").strip()
@@ -1304,13 +1330,17 @@ def _match_youtube_entry(meta: TrackMeta, e: dict, rank: int) -> tuple[float, st
         # official upload is worth preferring even at an equal title score.
         + (0.5 if n_artist and f" {n_artist} " in f" {_norm(channel)} " else 0.0)
         + 0.3 / (1 + rank)
+        # Ranks are per-source, so without this the second source's hits would
+        # be compared against the first's on a scale that no longer means the
+        # same thing. Sources differ in how much a top placement is worth.
+        + _SOURCE_BIAS.get(source, 0.0)
     )
-    return score, vid
+    return score, url
 
 
-def _locate_audio(meta: TrackMeta) -> str:
+def _locate_audio(meta: TrackMeta) -> list[str]:
     """
-    Find the YouTube upload that actually *is* this track.
+    Find the uploads that actually *are* this track, best first.
 
     This used to be `ytsearch1:<artist> <title> audio` handed straight to
     yt-dlp, i.e. whatever came back first was downloaded unverified. For
@@ -1319,38 +1349,56 @@ def _locate_audio(meta: TrackMeta) -> str:
     hour-long compilation, and the result is a file with the right cover and
     the right tags wrapped around the wrong audio.
 
-    Candidates are now checked against the runtime and the title the catalogue
+    Candidates are checked against the runtime and the title the catalogue
     gave us, and nothing credible means an error rather than a wrong song.
+
+    Every source is searched and every candidate scored together, rather than
+    settling for the first source that offers something passable. YouTube alone
+    left real gaps: "UGLY GEMINI - SHY BOY" exists there only as a 3:05 music
+    video, while SoundCloud carries the 2:28 audio release the catalogue
+    actually describes - the better answer, and previously never even looked at.
     """
+    from concurrent.futures import ThreadPoolExecutor
+
     queries = [meta.search_query]
     if meta.album and _norm(meta.album) != _norm(meta.name):
         queries.append(f"{meta.search_query} official audio")
     else:
         queries.append(f"{meta.name} {meta.artists[0] if meta.artists else ''}".strip())
 
-    for q in queries:
+    def hunt(source: str, query: str) -> list[tuple[float, str]]:
         try:
-            entries = _flat_entries(f"ytsearch{_SEARCH_POOL}:{q}")
+            entries = _flat_entries(f"{source}{_SEARCH_POOL}:{query}")
         except Exception as e:
-            log.warning("youtube search failed for %r: %s", q, e)
-            continue
-
-        scored = [
+            log.warning("%s search failed for %r: %s", source, query, e)
+            return []
+        return [
             m
-            for m in (_match_youtube_entry(meta, e, i) for i, e in enumerate(entries))
+            for m in (_match_entry(meta, e, i, source) for i, e in enumerate(entries))
             if m is not None
         ]
+
+    for q in queries:
+        with ThreadPoolExecutor(max_workers=len(_AUDIO_SOURCES)) as pool:
+            futures = {
+                pool.submit(hunt, source, q): source for source in _AUDIO_SOURCES
+            }
+            scored: list[tuple[float, str, str]] = []
+            for fut, source in futures.items():
+                scored += [(s, url, source) for s, url in fut.result()]
+
         if scored:
-            score, vid = max(scored, key=lambda m: m[0])
+            scored.sort(key=lambda m: m[0], reverse=True)
             log.info(
-                "audio match for %s -> %s (score %.2f, %d/%d candidates passed)",
-                meta.display, vid, score, len(scored), len(entries),
+                "audio candidates for %s: %s",
+                meta.display,
+                ", ".join(f"{src}:{s:.2f}" for s, _, src in scored[:4]),
             )
-            return f"https://www.youtube.com/watch?v={vid}"
-        log.info("no credible audio match for %r among %d hits", q, len(entries))
+            return [url for _, url, _ in scored]
+        log.info("no credible audio match for %r on any source", q)
 
     raise RuntimeError(
-        f"نسخه درست «{meta.display}» رو روی یوتیوب پیدا نکردم. "
+        f"نسخه درست «{meta.display}» رو هیچ‌کدوم از منابع نداشتن. "
         "چیزی که بود آهنگ دیگه‌ای بود، برای همین نفرستادمش."
     )
 
@@ -1386,13 +1434,13 @@ def download_track(meta: TrackMeta) -> Path:
         return existing
 
     if meta.id.startswith(("yt_", "sc_")) and meta.spotify_url.startswith("http"):
-        target = meta.spotify_url
+        targets = [meta.spotify_url]
     elif meta.id.startswith("yt_"):
-        target = f"https://www.youtube.com/watch?v={meta.id[3:]}"
+        targets = [f"https://www.youtube.com/watch?v={meta.id[3:]}"]
     else:
         # Spotify / iTunes / Deezer entries carry metadata only - the audio
-        # itself still has to be located on YouTube, and verified.
-        target = _locate_audio(meta)
+        # itself still has to be located, and verified.
+        targets = _locate_audio(meta)
 
     extra = {
         # Highest-bitrate audio available. When it is already AAC, ExtractAudio
@@ -1412,14 +1460,31 @@ def download_track(meta: TrackMeta) -> Path:
         ],
     }
 
-    # `target` is always a concrete URL now: _locate_audio already tried its
-    # alternate queries and refused to guess, so there is nothing left to retry.
-    ytdlp_run(extra, lambda ydl: ydl.download([target]))
+    # Matching a track and being able to fetch it are different questions.
+    # SoundCloud DRM-protects some label uploads, YouTube geo-blocks and
+    # deletes others - and the best match is exactly as likely to be the one
+    # that fails. So the ranked list is walked until something downloads,
+    # instead of one refusal sinking a track we positively identified.
+    last: Exception | None = None
+    out_path = None
+    for i, target in enumerate(targets):
+        try:
+            ytdlp_run(extra, lambda ydl: ydl.download([target]))
+        except Exception as e:
+            last = e
+            log.info("candidate %d/%d unusable (%s) - trying the next",
+                     i + 1, len(targets), str(e)[:120])
+            continue
+        out_path = _find_output(base)
+        if out_path is not None:
+            break
+        log.info("candidate %d/%d produced no file - trying the next",
+                 i + 1, len(targets))
 
-    out_path = _find_output(base)
     if out_path is None:
         raise RuntimeError(
-            f"فایل صوتی برای «{meta.display}» پیدا نشد (رو یوتیوب نبود)."
+            f"فایل صوتی برای «{meta.display}» پیدا نشد"
+            + (f" — {str(last)[:120]}" if last else "")
         )
 
     _embed_cover_and_tags(out_path, meta)
