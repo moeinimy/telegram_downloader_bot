@@ -1384,6 +1384,38 @@ def _match_entry(
     return score, url
 
 
+# Odesli/song.link resolves one release across every major service. Its free
+# API stopped returning YouTube and Apple links, so it cannot point at a file
+# to download - but it answers the question that actually matters when nothing
+# is found: is this track absent from the open web, or did our search miss it?
+_ODESLI = "https://api.song.link/v1-alpha.1/links"
+_PLATFORM_FA = {
+    "spotify": "اسپاتیفای", "tidal": "تایدال", "pandora": "پاندورا",
+    "deezer": "دیزر", "appleMusic": "اپل موزیک", "itunes": "آیتونز",
+    "amazonMusic": "آمازون", "amazonStore": "آمازون", "napster": "نپستر",
+    "anghami": "انغامی", "boomplay": "بوم‌پلی", "audius": "آدیوس",
+    "yandex": "یاندکس", "soundcloud": "ساندکلاد", "youtube": "یوتیوب",
+    "youtubeMusic": "یوتیوب موزیک",
+}
+
+
+def _where_else(meta: TrackMeta) -> list[str]:
+    """Which services carry this exact release. Empty when we cannot tell."""
+    url = meta.spotify_url or meta.itunes_url
+    if not url.startswith("http"):
+        return []
+    try:
+        from utils import http
+
+        r = http.get(_ODESLI, params={"url": url, "userCountry": "US"}, timeout=12)
+        if r.status_code != 200:
+            return []
+        return sorted((r.json().get("linksByPlatform") or {}).keys())
+    except Exception as e:
+        log.info("odesli lookup failed for %s: %s", meta.display, e)
+        return []
+
+
 def _locate_audio(meta: TrackMeta) -> list[str]:
     """
     Find the uploads that actually *are* this track, best first.
@@ -1471,8 +1503,25 @@ def _locate_audio(meta: TrackMeta) -> list[str]:
         )
     else:
         detail = "هیچ منبعی حتی چیزی شبیهش نداشت."
+
+    # Say where the track actually lives. "Not found" reads like a bug in the
+    # bot; "this exists on Spotify, Tidal and Pandora and nowhere else" is the
+    # truth, and tells you retrying later is pointless. One request, and only
+    # on the way to failing anyway.
+    elsewhere = [p for p in _where_else(meta) if p not in ("spotify",)]
+    hint = ""
+    if elsewhere:
+        names = "، ".join(_PLATFORM_FA.get(p, p) for p in elsewhere)
+        reachable = [p for p in elsewhere if p in ("youtube", "youtubeMusic", "soundcloud")]
+        hint = f"\nاین ترک روی {names} هست"
+        hint += (
+            " — یعنی باید پیدا می‌شد؛ سرچ خطا داده."
+            if reachable
+            else " و جای دیگه‌ای نیست. هیچ‌کدوم از این‌ها قابل دانلود نیستن."
+        )
+
     raise RuntimeError(
-        f"«{meta.display}» رو رو یوتیوب و ساندکلاد پیدا نکردم. {detail}\n"
+        f"«{meta.display}» رو رو یوتیوب و ساندکلاد پیدا نکردم. {detail}{hint}\n"
         "اگه لینک مستقیمش رو از یوتیوب یا ساندکلاد داری، همون رو بفرست — "
         "لینک مستقیم بدون این بررسی‌ها دانلود می‌شه."
     )
