@@ -1419,6 +1419,7 @@ def _locate_audio(meta: TrackMeta) -> list[str]:
             log.warning("%s search failed for %r: %s", source, query, e)
             return []
 
+    pools: dict[str, list[dict]] = {}
     for q in queries:
         with ThreadPoolExecutor(max_workers=len(_AUDIO_SOURCES)) as pool:
             pools = {
@@ -1460,9 +1461,20 @@ def _locate_audio(meta: TrackMeta) -> list[str]:
             return [url for _, url, _ in scored]
         log.info("no credible audio match for %r on any source", q)
 
+    # Two different failures wear the same face, and telling them apart is the
+    # difference between "wait and retry" and "this is not out there".
+    looked_at = sum(len(v) for v in (pools or {}).values())
+    if looked_at:
+        detail = (
+            "چیزی که پیدا شد آهنگ‌های دیگه‌ای بودن — نه نسخه‌ای از این ترک، "
+            "برای همین نفرستادمش."
+        )
+    else:
+        detail = "هیچ منبعی حتی چیزی شبیهش نداشت."
     raise RuntimeError(
-        f"نسخه درست «{meta.display}» رو هیچ‌کدوم از منابع نداشتن. "
-        "چیزی که بود آهنگ دیگه‌ای بود، برای همین نفرستادمش."
+        f"«{meta.display}» رو رو یوتیوب و ساندکلاد پیدا نکردم. {detail}\n"
+        "اگه لینک مستقیمش رو از یوتیوب یا ساندکلاد داری، همون رو بفرست — "
+        "لینک مستقیم بدون این بررسی‌ها دانلود می‌شه."
     )
 
 
