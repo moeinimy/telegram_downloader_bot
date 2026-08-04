@@ -725,6 +725,22 @@ def _agree(ours: str, theirs: str, floor: float) -> float | None:
     return score if score >= floor else None
 
 
+def _claims_no_other_artist(their_title: str, our_artist: str) -> bool:
+    """
+    True when the candidate credits nobody who contradicts us.
+
+    An upload titled "Artist - Song" is asserting who made it, and if that is
+    somebody else the track is somebody else's - this is the guard that keeps
+    "Adekunle Gold - Friend Zone" away from Arman Miladi's song of the same
+    name and length. An upload titled plainly "Song" asserts nothing, and a
+    lot of obscure music is uploaded exactly that way.
+    """
+    claimed, rest = _split_artist_title(_strip_noise(their_title))
+    if not claimed or not rest:
+        return True
+    return _agree(our_artist, claimed, 0.3) is not None
+
+
 def _same_recording(
     *,
     our_artist: str,
@@ -734,6 +750,7 @@ def _same_recording(
     their_title: str,
     their_secs: float,
     artist_floor: float = 0.4,
+    unnamed_artist_ok: bool = False,
 ) -> float | None:
     """Confidence that both sides describe one recording; None means they don't.
 
@@ -749,7 +766,23 @@ def _same_recording(
 
     artist = _agree(our_artist, their_artist, artist_floor)
     if artist is None:
-        return None
+        if not (unnamed_artist_ok and _claims_no_other_artist(their_title, our_artist)):
+            return None
+        # Nobody is contradicted and nobody is confirmed, so the title and the
+        # runtime carry the identification alone and both are held to a tighter
+        # bound than usual. The title must be *equal*, not merely contained:
+        # the usual containment rule would read an upload called "Friend" as
+        # "Friend Zone". The runtime then contributes nothing to the score.
+        _, their_song = _split_artist_title(_strip_noise(their_title))
+        if _norm(their_song) != _norm(our_title):
+            return None
+        if not (
+            our_secs
+            and their_secs
+            and abs(our_secs - their_secs) <= _DURATION_UNNAMED
+        ):
+            return None
+        artist = 0.0
 
     if our_secs and their_secs:
         delta = abs(our_secs - their_secs)
@@ -1249,6 +1282,8 @@ _NON_MUSIC = (
 _DURATION_REJECT = 25.0
 # How much longer a music video may run than the audio release it carries.
 _DURATION_STRETCH = 60.0
+# When nothing confirms the artist, the runtime is the whole identification.
+_DURATION_UNNAMED = 8.0
 # Candidates pulled per search. A flat search costs one extraction pass no
 # matter how many entries it returns, so a wider net is effectively free.
 _SEARCH_POOL = 6
@@ -1297,7 +1332,9 @@ def _entry_url(e: dict, source: str) -> str:
     return ""
 
 
-def _match_entry(meta: TrackMeta, e: dict, rank: int, source: str) -> tuple[float, str] | None:
+def _match_entry(
+    meta: TrackMeta, e: dict, rank: int, source: str, *, lenient: bool = False
+) -> tuple[float, str] | None:
     """Score one search hit against the track we know we want; None = reject."""
     url, title = _entry_url(e, source), (e.get("title") or "").strip()
     if not url or not title:
@@ -1306,17 +1343,26 @@ def _match_entry(meta: TrackMeta, e: dict, rank: int, source: str) -> tuple[floa
     channel = (e.get("channel") or e.get("uploader") or "").strip()
     want_artist = meta.artists[0] if meta.artists else ""
 
-    # The artist is as often inside the video title as it is the channel name,
-    # so both are offered as the haystack the catalogue artist must appear in.
-    score = _same_recording(
-        our_artist=f"{want_artist}",
-        our_title=meta.name,
-        our_secs=meta.duration_ms / 1000 if meta.duration_ms else 0.0,
-        their_artist=f"{title} {channel}",
-        their_title=title,
-        their_secs=float(e.get("duration") or 0),
-        artist_floor=0.3,
-    )
+    # Any credited artist identifies the recording, not just the lead. Deezer
+    # lists "Pesare Bad" under Nassim while every upload of it is titled after
+    # Sijal - both are on the track, and checking only artists[0] threw the
+    # song away. This is why the credit list is resolved before locating.
+    score = None
+    for candidate_artist in meta.artists or [""]:
+        # The artist is as often inside the video title as it is the channel
+        # name, so both are offered as the haystack it must appear in.
+        got = _same_recording(
+            our_artist=candidate_artist,
+            our_title=meta.name,
+            our_secs=meta.duration_ms / 1000 if meta.duration_ms else 0.0,
+            their_artist=f"{title} {channel}",
+            their_title=title,
+            their_secs=float(e.get("duration") or 0),
+            artist_floor=0.3,
+            unnamed_artist_ok=lenient,
+        )
+        if got is not None and (score is None or got > score):
+            score = got
     if score is None:
         return None
 
@@ -1366,26 +1412,43 @@ def _locate_audio(meta: TrackMeta) -> list[str]:
     else:
         queries.append(f"{meta.name} {meta.artists[0] if meta.artists else ''}".strip())
 
-    def hunt(source: str, query: str) -> list[tuple[float, str]]:
+    def fetch(source: str, query: str) -> list[dict]:
         try:
-            entries = _flat_entries(f"{source}{_SEARCH_POOL}:{query}")
+            return _flat_entries(f"{source}{_SEARCH_POOL}:{query}")
         except Exception as e:
             log.warning("%s search failed for %r: %s", source, query, e)
             return []
-        return [
-            m
-            for m in (_match_entry(meta, e, i, source) for i, e in enumerate(entries))
-            if m is not None
-        ]
 
     for q in queries:
         with ThreadPoolExecutor(max_workers=len(_AUDIO_SOURCES)) as pool:
-            futures = {
-                pool.submit(hunt, source, q): source for source in _AUDIO_SOURCES
+            pools = {
+                source: fut.result()
+                for source, fut in {
+                    src: pool.submit(fetch, src, q) for src in _AUDIO_SOURCES
+                }.items()
             }
-            scored: list[tuple[float, str, str]] = []
-            for fut, source in futures.items():
-                scored += [(s, url, source) for s, url in fut.result()]
+
+        # Strict first. Only if nothing at all is confirmable is the bar
+        # lowered, so a track that *can* be identified never gets a guess.
+        scored: list[tuple[float, str, str]] = []
+        for lenient in (False, True):
+            for source, entries in pools.items():
+                scored += [
+                    (s, url, source)
+                    for s, url in (
+                        m
+                        for m in (
+                            _match_entry(meta, e, i, source, lenient=lenient)
+                            for i, e in enumerate(entries)
+                        )
+                        if m is not None
+                    )
+                ]
+            if scored:
+                if lenient:
+                    log.info("no confirmable match for %s - accepted on title "
+                             "and runtime alone", meta.display)
+                break
 
         if scored:
             scored.sort(key=lambda m: m[0], reverse=True)
