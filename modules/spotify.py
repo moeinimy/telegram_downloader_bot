@@ -754,8 +754,21 @@ def _same_recording(
     if our_secs and their_secs:
         delta = abs(our_secs - their_secs)
         if delta > _DURATION_REJECT:
-            return None  # a different cut: live, extended, or the wrong song
-        duration = 1.0 - delta / _DURATION_REJECT
+            # One gap is explainable: an official music video of the same song
+            # runs longer than the audio release - intro, dialogue, outro.
+            # "UGLY GEMINI - SHY BOY" is 2:28 on Spotify and 3:05 as a video,
+            # and refusing it left the track undownloadable. So a *longer*
+            # candidate is allowed when nothing else is in any doubt; a shorter
+            # one is not, because a wrong song is as likely to be either.
+            if not (
+                0 < their_secs - our_secs <= _DURATION_STRETCH
+                and title >= 0.99
+                and artist >= 0.99
+            ):
+                return None  # a different cut: live, extended, or the wrong song
+            duration = 0.0  # explainable, but it corroborates nothing
+        else:
+            duration = 1.0 - delta / _DURATION_REJECT
     else:
         duration = 0.0
 
@@ -1213,6 +1226,10 @@ _VARIANT_WORDS = (
     "live", "concert", "acoustic", "cover", "karaoke", "instrumental",
     "remix", "mashup", "bootleg", "nightcore", "8d", "sped up", "speed up",
     "slowed", "reverb", "snippet", "preview",
+    # Not one track at all. These matter most now that a longer candidate can
+    # be accepted as a music video: a compilation is exactly what that
+    # allowance would otherwise let through.
+    "full album", "mix", "megamix", "compilation", "nonstop", "greatest hits",
     "اجرای زنده", "کنسرت", "لایو", "ریمیکس", "کاور", "بی کلام", "دمو",
 )
 
@@ -1230,6 +1247,8 @@ _NON_MUSIC = (
 # How far a candidate's runtime may sit from the catalogue's before it is a
 # different recording. Music videos add an intro, so this is not tight.
 _DURATION_REJECT = 25.0
+# How much longer a music video may run than the audio release it carries.
+_DURATION_STRETCH = 60.0
 # Candidates pulled per search. A flat search costs one extraction pass no
 # matter how many entries it returns, so a wider net is effectively free.
 _SEARCH_POOL = 6
