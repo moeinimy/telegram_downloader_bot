@@ -18,6 +18,7 @@ WELCOME_FA = (
     "🔎 *دنبال یه آهنگی؟*\n"
     "فقط اسمش رو تایپ کن (مثلا `Drake Jaded`) تا نتایج رو با دکمه بدم.\n\n"
     "🎵 هر آهنگی که می‌فرستم دکمه‌ی «متن آهنگ» و «شبیه این» داره.\n"
+    "📸 اینستاگرام دایرکت: /igdirect — تو خود اینستا بفرست، اینجا تحویل بگیر.\n"
     "🌐 تغییر زبان: /lang"
 )
 
@@ -34,6 +35,7 @@ WELCOME_EN = (
     "🔎 *Looking for a song?*\n"
     "Just type its name (e.g. `Drake Jaded`) and pick from the results.\n\n"
     "🎵 Every track comes with “Lyrics” and “Similar” buttons.\n"
+    "📸 Instagram Direct: /igdirect — share inside Instagram, collect it here.\n"
     "🌐 Change language: /lang"
 )
 

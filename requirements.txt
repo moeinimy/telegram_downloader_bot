@@ -12,9 +12,20 @@ yt-dlp
 # Not pinned exactly: old point releases get pulled from PyPI regularly.
 instaloader>=4.14.2
 
-# Music recognition (Shazam). Pulls its own aiofiles/aiohttp/numpy/pydantic -
+# Music recognition (Shazam). Pulls its own aiofiles/numpy/pydantic -
 # do NOT pin those here or the resolver conflicts.
 shazamio
+
+# Serves the Instagram Direct webhook. It arrives via shazamio anyway, but
+# the bot's only internet-facing endpoint should not depend on another
+# package's dependency list staying the way it is today. Unpinned for the
+# same resolver reason as shazamio.
+aiohttp
+
+# Instagram Direct standby source (instagrapi) is deliberately NOT here: it
+# pins pydantic and fights shazamio's resolver, so a failure installing it
+# would break every update for a feature that is optional. Install it on its
+# own with:  botctl igdirect
 
 # Audio / image processing (metadata, album art, mp3 tags)
 mutagen==1.47.0

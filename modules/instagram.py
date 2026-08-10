@@ -232,6 +232,21 @@ def fetch_post(shortcode: str) -> list[Path]:
             raise _friendly_error(e) from e
 
 
+@run_in_thread(heavy=True)
+def fetch_direct_url(url: str, name: str) -> list[Path]:
+    """Save a CDN url handed to us by a DM attachment.
+
+    The last resort for a share that carries no permalink and no media id.
+    These urls are signed and expire within minutes, which is why this is
+    called the moment the message arrives rather than queued.
+    """
+    target = settings.download_dir / "instagram" / f"dm_{safe_filename(name)}"
+    try:
+        return _download_urls([url], target)
+    except Exception as e:
+        raise _friendly_error(e) from e
+
+
 @run_in_thread
 def fetch_profile_pic(username: str) -> Path:
     target = settings.download_dir / "instagram" / f"profile_{username}"
@@ -328,6 +343,27 @@ def _shortcode_to_media_id(shortcode: str) -> int:
     for ch in shortcode.split("?")[0]:
         n = n * 64 + _SHORTCODE_ALPHABET.index(ch)
     return n
+
+
+def media_id_to_shortcode(media_id: str) -> str:
+    """The inverse of _shortcode_to_media_id.
+
+    Needed by the DM bridge: Meta's ig_reel attachment identifies the reel by
+    numeric media id and gives no permalink, but every route in this module is
+    addressed by shortcode. Ids arrive either bare or as "<pk>_<owner_id>";
+    only the pk is encoded in the shortcode.
+    """
+    raw = str(media_id or "").split("_")[0].strip()
+    if not raw.isdigit():
+        return ""
+    n = int(raw)
+    if n <= 0:
+        return ""
+    out: list[str] = []
+    while n:
+        n, rem = divmod(n, 64)
+        out.append(_SHORTCODE_ALPHABET[rem])
+    return "".join(reversed(out))
 
 
 def _media_urls_from_node(node: dict) -> list[str]:

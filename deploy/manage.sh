@@ -132,7 +132,34 @@ fix_perms() {
 syntax_check() {
     "$PROJECT_DIR/.venv/bin/python" -m py_compile \
         "$PROJECT_DIR"/main.py "$PROJECT_DIR"/config.py \
-        "$PROJECT_DIR"/modules/*.py "$PROJECT_DIR"/handlers/*.py "$PROJECT_DIR"/utils/*.py
+        "$PROJECT_DIR"/modules/*.py "$PROJECT_DIR"/handlers/*.py \
+        "$PROJECT_DIR"/utils/*.py "$PROJECT_DIR"/web/*.py
+}
+
+set_env() {
+    # Upsert a key in .env. Done in python rather than sed because these
+    # values are URLs and secrets: a sed delimiter that happens to appear in
+    # the value, or a bare & in a replacement, silently writes the wrong
+    # thing - and a mangled app secret fails as "bad signature" much later.
+    local key="$1" val="$2"
+    python3 - "$PROJECT_DIR/.env" "$key" "$val" <<'PY'
+import sys
+from pathlib import Path
+
+path, key, value = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+for i, line in enumerate(lines):
+    if line.startswith(f"{key}="):
+        lines[i] = f"{key}={value}"
+        break
+else:
+    lines.append(f"{key}={value}")
+path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+PY
+}
+
+get_env() {
+    grep -E "^$1=" "$PROJECT_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-
 }
 
 is_git_repo() { [[ -d "$PROJECT_DIR/.git" ]]; }
@@ -603,6 +630,170 @@ do_instagram() {
     ok "ذخیره شد - استوری حالا فعاله"
 }
 
+ensure_caddy() {
+    if command -v caddy &>/dev/null; then
+        ok "Caddy از قبل نصبه"
+        return 0
+    fi
+    info "نصب Caddy..."
+    apt-get install -y -qq debian-keyring debian-archive-keyring apt-transport-https curl gnupg
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
+        | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
+        > /etc/apt/sources.list.d/caddy-stable.list
+    apt-get update -qq
+    apt-get install -y -qq caddy || { err "نصب Caddy شکست خورد"; return 1; }
+    ok "Caddy نصب شد"
+}
+
+_caddy_site() {
+    # Written as its own file, never into the main Caddyfile: the box may
+    # already be serving something else and clobbering that config would take
+    # an unrelated site down.
+    local domain="$1" port="$2"
+    mkdir -p /etc/caddy/Caddyfile.d
+    cat > /etc/caddy/Caddyfile.d/telegram-bot.caddy <<EOF
+$domain {
+    reverse_proxy 127.0.0.1:$port
+}
+EOF
+    touch /etc/caddy/Caddyfile
+    grep -q 'Caddyfile.d' /etc/caddy/Caddyfile \
+        || echo 'import /etc/caddy/Caddyfile.d/*.caddy' >> /etc/caddy/Caddyfile
+
+    if ! caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile &>/dev/null; then
+        err "کانفیگ Caddy معتبر نیست:"
+        caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+        return 1
+    fi
+    systemctl enable -q --now caddy
+    systemctl reload caddy || systemctl restart caddy
+    ok "Caddy برای $domain تنظیم شد"
+}
+
+do_igdirect() {
+    echo; info "=== اینستاگرام دایرکت (دایرکت اینستا -> تلگرام) ==="; echo
+    warn "قبلش این‌ها رو خودت باید انجام داده باشی:"
+    echo "  • اکانت اینستاگرام بات روی Professional باشه"
+    echo "  • تو اپ اینستا: Settings > Messages > اجازه دسترسی ابزارهای متصل"
+    echo "  • یه اپ روی developers.facebook.com با محصول Instagram"
+    echo "  • یه ساب‌دامنه که رکورد A ش به همین سرور اشاره کنه"
+    echo
+    read -rp "ادامه بدم؟ (y/n) " a
+    [[ "$a" != "y" ]] && return 0
+
+    # --- 1. domain + TLS ---
+    echo; info "--- ۱) دامنه و TLS ---"
+    local domain
+    read -rp "ساب‌دامنه (مثلا ig.example.com): " domain
+    [[ -z "$domain" ]] && { err "دامنه لازمه - متا به IP خالی وب‌هوک نمی‌فرسته"; return 1; }
+
+    local resolved server_ip
+    resolved=$(getent hosts "$domain" 2>/dev/null | awk '{print $1}' | head -1)
+    server_ip=$(curl -s --max-time 8 https://ifconfig.me 2>/dev/null)
+    if [[ -z "$resolved" ]]; then
+        warn "$domain اصلا resolve نمی‌شه. تا DNS پخش نشه Let's Encrypt سرتیفیکیت نمی‌ده."
+        read -rp "بازم ادامه بدم؟ (y/n) " a
+        [[ "$a" != "y" ]] && return 1
+    elif [[ -n "$server_ip" && "$resolved" != "$server_ip" ]]; then
+        warn "$domain به $resolved اشاره می‌کنه ولی IP این سرور $server_ip ـه."
+        read -rp "بازم ادامه بدم؟ (y/n) " a
+        [[ "$a" != "y" ]] && return 1
+    else
+        ok "DNS درسته: $domain -> $resolved"
+    fi
+
+    if ss -lntp 2>/dev/null | grep -qE ':(80|443)\s' && ! ss -lntp 2>/dev/null | grep -qE ':(80|443)\s.*caddy'; then
+        warn "پورت ۸۰/۴۴۳ رو یه سرویس دیگه گرفته (nginx؟). Caddy نمی‌تونه سرتیفیکیت بگیره."
+        ss -lntp | grep -E ':(80|443)\s'
+        read -rp "بازم ادامه بدم؟ (y/n) " a
+        [[ "$a" != "y" ]] && return 1
+    fi
+
+    local port path
+    port=$(get_env IG_WEBHOOK_PORT); port="${port:-8088}"
+    path=$(get_env IG_WEBHOOK_PATH); path="${path:-/ig/webhook}"
+
+    ensure_caddy || return 1
+    _caddy_site "$domain" "$port" || return 1
+
+    # --- 2. Meta credentials ---
+    echo; info "--- ۲) کلیدهای متا ---"
+    warn "این‌ها رو من نمی‌بینم؛ مستقیم تو .env همین سرور ذخیره می‌شن."
+    local app_id app_secret token verify
+    read -rp "App ID: " app_id
+    read -rsp "App Secret: " app_secret; echo
+    read -rsp "Long-lived Access Token: " token; echo
+    verify=$(get_env IG_VERIFY_TOKEN)
+    if [[ -z "$verify" ]]; then
+        verify=$(openssl rand -hex 16)
+        info "Verify token ساخته شد: $verify"
+    fi
+
+    [[ -z "$app_secret" ]] && { err "App Secret لازمه - بدونش هر درخواستی رد می‌شه"; return 1; }
+    [[ -z "$token" ]] && { err "Access Token لازمه"; return 1; }
+
+    set_env IG_APP_ID        "$app_id"
+    set_env IG_APP_SECRET    "$app_secret"
+    set_env IG_ACCESS_TOKEN  "$token"
+    set_env IG_VERIFY_TOKEN  "$verify"
+    set_env IG_WEBHOOK_PORT  "$port"
+    set_env IG_WEBHOOK_PATH  "$path"
+    set_env IG_PUBLIC_URL    "https://$domain$path"
+    set_env IG_WEBHOOK_HOST  "127.0.0.1"
+
+    # --- 3. optional standby ---
+    echo; info "--- ۳) مسیر پشتیبان (instagrapi) ---"
+    warn "غیررسمیه و شرایط اینستاگرام رو نقض می‌کنه. فقط وقتی مسیر رسمی بیفته بیدار می‌شه."
+    warn "ترجیحا یه اکانت دوم بده، نه همون اکانتی که توکن رسمی روشه."
+    read -rp "نصبش کنم؟ (y/n) " a
+    if [[ "$a" == "y" ]]; then
+        # Deliberately not in requirements.txt: instagrapi pins pydantic and
+        # fights shazamio's resolver, so a bad day here must not be able to
+        # break a working venv on every update.
+        if sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/pip" install --progress-bar off instagrapi; then
+            ok "instagrapi نصب شد"
+            local dm_user dm_pass
+            read -rp  "یوزرنیم اکانت دایرکت: " dm_user
+            read -rsp "پسورد اکانت دایرکت: " dm_pass; echo
+            set_env IG_DM_USERNAME "$dm_user"
+            set_env IG_DM_PASSWORD "$dm_pass"
+        else
+            err "نصب instagrapi شکست خورد - بات بدون مسیر پشتیبان بالا میاد"
+            set_env IG_DIRECT_SOURCES "webhook"
+        fi
+    else
+        set_env IG_DIRECT_SOURCES "webhook"
+    fi
+
+    chmod 600 "$PROJECT_DIR/.env"
+    chown "$BOT_USER:$BOT_USER" "$PROJECT_DIR/.env"
+    systemctl restart "$SERVICE_NAME"
+    sleep 3
+
+    echo; info "--- تست محلی ---"
+    if curl -sf --max-time 5 "http://127.0.0.1:$port/healthz" >/dev/null; then
+        ok "لیسنر بالاست"
+    else
+        err "لیسنر جواب نمی‌ده - لاگ:"
+        journalctl -u "$SERVICE_NAME" --no-pager -n 20
+    fi
+    if curl -sf --max-time 15 "https://$domain/healthz" >/dev/null; then
+        ok "از بیرون هم با HTTPS در دسترسه"
+    else
+        warn "از بیرون جواب نداد. سرتیفیکیت شاید هنوز صادر نشده: journalctl -u caddy -n 30"
+    fi
+
+    echo
+    ok "حالا تو داشبورد متا این دو تا رو بذار:"
+    echo -e "   ${B}Callback URL:${N}  https://$domain$path"
+    echo -e "   ${B}Verify Token:${N}  $verify"
+    echo -e "   ${B}Webhook field:${N} messages"
+    echo
+    warn "یادت باشه: با Standard Access فقط اکانت‌هایی که تو App Dashboard نقش دارن"
+    warn "پیامشون میاد. برای بقیه باید App Review بزنی."
+}
+
 _botapi_grant_read() {
     # The server writes new media with its own umask, so a one-off chmod only
     # fixes files that already exist - the next video is unreadable again and
@@ -928,7 +1119,8 @@ menu() {
     echo " 19) کانال اجباری (قفل عضویت)"
     echo " 20) وضعیت اینستاگرام"
     echo " 21) موتورهای تشخیص آهنگ"
-    echo " 22) نصب مجدد از صفر (پاک کردن همه چی)"
+    echo " 22) اینستاگرام دایرکت (دایرکت اینستا -> تلگرام)"
+    echo " 23) نصب مجدد از صفر (پاک کردن همه چی)"
     echo "  0) خروج"
     echo
 }
@@ -945,6 +1137,7 @@ case "${1:-}" in
     spotify) do_spotify; exit $? ;;
     channel) do_channel; exit $? ;;
     igcheck) do_igcheck; exit 0 ;;
+    igdirect) do_igdirect; exit $? ;;
     engines) do_engines; exit $? ;;
     update)  do_update;  exit $? ;;
     restart) systemctl restart "$SERVICE_NAME"; exit $? ;;
@@ -981,7 +1174,8 @@ while true; do
         19) do_channel; pause ;;
         20) do_igcheck; pause ;;
         21) do_engines; pause ;;
-        22) do_reset; pause ;;
+        22) do_igdirect; pause ;;
+        23) do_reset; pause ;;
         0)  echo; exit 0 ;;
         *)  err "گزینه نامعتبر"; sleep 1 ;;
     esac

@@ -243,6 +243,46 @@ _EN: dict[str, str] = {
     "این کاربر الان استوری فعالی نداره.":
         "This user has no active stories right now.",
 
+    # --- instagram direct (DM -> Telegram bridge) ---
+    "📸 اینستاگرام دایرکت هنوز روی این سرور فعال نشده.":
+        "📸 Instagram Direct is not enabled on this server yet.",
+    "📸 *اینستاگرام دایرکت*\n\n"
+    "به‌جای کپی‌کردن لینک، مستقیم تو خود اینستاگرام برامون بفرست و "
+    "همین‌جا تحویل بگیر.\n\n"
+    "🔒 فقط شناسه‌ی عددی اکانت اینستاگرامت ذخیره می‌شه — نه اسم، نه پروفایل، "
+    "نه پیام‌هات. قطع اتصال هم یه دکمه‌ست.":
+        "📸 *Instagram Direct*\n\n"
+        "Instead of copying links, share straight to us inside Instagram and "
+        "pick it up here.\n\n"
+        "🔒 Only your Instagram account's numeric id is stored — no name, no "
+        "profile, none of your messages. Unlinking is one tap.",
+    "📸 *اینستاگرام دایرکت*\n\n✅ وصله (از {date}).\n\nهرچی تو دایرکت اینستاگرام برای ما بفرستی — ریلز، پست، استوری — همین‌جا دانلودشده برات میاد.":
+        "📸 *Instagram Direct*\n\n✅ Connected (since {date}).\n\nAnything you share to our Instagram DMs — reels, posts, stories — comes back here already downloaded.",
+    "🔗 وصل کردن اکانت": "🔗 Connect my account",
+    "🔌 قطع اتصال": "🔌 Disconnect",
+    "اکانت اینستاگرام بات": "the bot's Instagram account",
+    "🔗 *وصل کردن اکانت*\n\n"
+    "۱. برو به اینستاگرام\n"
+    "۲. به {target} دایرکت بده\n"
+    "۳. دقیقا همین کد رو بفرست:\n\n"
+    "`{token}`\n\n"
+    "⏳ این کد {minutes} دقیقه اعتبار داره و یک‌بار مصرفه.":
+        "🔗 *Connect your account*\n\n"
+        "1. Open Instagram\n"
+        "2. Send a DM to {target}\n"
+        "3. Send exactly this code:\n\n"
+        "`{token}`\n\n"
+        "⏳ It is valid for {minutes} minutes and can only be used once.",
+    "🔌 اتصال قطع شد. شناسه‌ی اینستاگرامت پاک شد.":
+        "🔌 Disconnected. Your Instagram id has been deleted.",
+    "اتصالی برقرار نبود.": "Nothing was connected.",
+    "✅ اکانت اینستاگرامت وصل شد.\n\nحالا هر ریلز یا پستی رو تو دایرکت اینستاگرام برامون بفرست تا همین‌جا دانلودشده تحویل بگیری.":
+        "✅ Your Instagram account is connected.\n\nShare any reel or post to our Instagram DMs and it will arrive here, already downloaded.",
+    "📥 از دایرکت اینستاگرام گرفتمش — دارم دانلود می‌کنم…":
+        "📥 Got it from your Instagram DM — downloading…",
+    "برای استفاده از بات باید اول تو کانال ما عضو بشی. تو تلگرام /start بزن.":
+        "You need to join our channel before using the bot. Send /start in Telegram.",
+
     # --- recognition service ---
     "⏳ سرویس تشخیص آهنگ الان جواب نمی‌ده. چند دقیقه دیگه دوباره امتحان کن.":
         "⏳ The music-recognition service is not responding right now. "

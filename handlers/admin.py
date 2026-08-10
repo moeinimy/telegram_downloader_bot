@@ -260,8 +260,60 @@ async def srcstatus_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "Odesli", lambda: http.get("https://api.song.link/v1-alpha.1/links",
                                    params={"url": "spotify:track:0wwPcA6wtMf6HUMpIRdeP7"},
                                    timeout=12).status_code == 200))
+    lines += _ig_direct_lines()
     await update.effective_message.reply_text(
         "\n".join(lines), parse_mode="Markdown")
+
+
+def _ig_direct_lines() -> list[str]:
+    """Health of the Instagram Direct bridge.
+
+    Worth its own block because every failure mode here is silent: a dead
+    token, a dropped webhook subscription and an App Review that has not
+    landed all look identical from the outside - the DMs simply stop arriving.
+    """
+    import time
+
+    from modules import ig_direct, ig_graph
+
+    snapshot = ig_direct.status()
+    lines = ["", "*اینستاگرام دایرکت*"]
+
+    if not snapshot["enabled"]:
+        lines.append("⚪️ فعال نیست")
+        return lines
+
+    def ago(ts: float) -> str:
+        if not ts:
+            return "هیچ‌وقت"
+        mins = (time.time() - ts) / 60
+        return f"{mins:.0f} دقیقه پیش" if mins < 90 else f"{mins / 60:.0f} ساعت پیش"
+
+    for name, state in snapshot["sources"].items():
+        if not state["configured"]:
+            continue
+        if state["healthy"] is None:
+            icon = "⚪️"
+        else:
+            icon = "✅" if state["healthy"] else "❌"
+        role = "فعال" if state["running"] else "آماده‌باش"
+        lines.append(f"{icon} {name} ({role}): {_md(state['detail'] or '-')}")
+        lines.append(f"   ↳ {state['events']} پیام · آخری {ago(state['last_event'])}")
+
+    left = ig_graph.days_left()
+    if left is not None:
+        lines.append(
+            ("⚠️ " if left < 10 else "🔑 ") + f"انقضای توکن: {left:.0f} روز دیگه"
+        )
+    if ig_graph.last_error:
+        lines.append("⚠️ آخرین خطای تمدید: " + _md(ig_graph.last_error[:80]))
+
+    lines.append(f"🔗 {snapshot['links']} اتصال فعال · {snapshot['pending']} در انتظار")
+    if snapshot["public_url"]:
+        lines.append("🌐 " + _md(snapshot["public_url"]))
+    else:
+        lines.append("⚠️ IG_PUBLIC_URL ست نشده — برای App Review لازمه")
+    return lines
 
 
 async def igtest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

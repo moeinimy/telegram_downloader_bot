@@ -63,6 +63,16 @@ def _prompt(chat_id: int) -> tuple[str, InlineKeyboardMarkup]:
 
 
 async def is_member(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
+    return await is_member_bot(context.bot, user_id)
+
+
+async def is_member_bot(bot, user_id: int) -> bool:
+    """The check itself, addressed by bot rather than by handler context.
+
+    The Instagram Direct bridge has no Update and therefore no context - it is
+    triggered by a DM - but a paired user who left the channel must still hit
+    the same gate as everyone else.
+    """
     if not settings.required_channel:
         return True
     if user_id in settings.admin_ids:
@@ -71,7 +81,7 @@ async def is_member(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
         return True
 
     try:
-        member = await context.bot.get_chat_member(settings.required_channel, user_id)
+        member = await bot.get_chat_member(settings.required_channel, user_id)
         joined = member.status in _JOINED
     except Exception as e:
         # Usually "chat not found" or the bot is not an admin there. Blocking

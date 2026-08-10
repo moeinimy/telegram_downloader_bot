@@ -118,24 +118,43 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 # ---------- media sending ----------
 
-async def _send_media(msg, files: list[Path]) -> None:
-    """Send single file directly; send multiple as media group(s) of <=10."""
+async def deliver(bot, chat_id: int, files: list[Path], caption: str | None = None) -> None:
+    """Upload downloaded Instagram media to a chat.
+
+    Addressed by bot + chat_id rather than by a Message, because the DM bridge
+    has no incoming Telegram message to reply to - the trigger was an
+    Instagram DM. The link-paste flow goes through _send_media, which is a thin
+    wrapper over this, so both paths share one upload implementation.
+    """
+    from contextlib import ExitStack
+
     if len(files) == 1:
         f = files[0]
-        if f.suffix.lower() in _VIDEO_EXTS:
-            await msg.reply_video(video=f.open("rb"))
-        else:
-            await msg.reply_photo(photo=f.open("rb"))
+        with f.open("rb") as handle:
+            if f.suffix.lower() in _VIDEO_EXTS:
+                await bot.send_video(chat_id=chat_id, video=handle, caption=caption)
+            else:
+                await bot.send_photo(chat_id=chat_id, photo=handle, caption=caption)
         return
 
     # batch into groups of 10 (Telegram limit)
     for i in range(0, len(files), 10):
         chunk = files[i : i + 10]
-        media = []
-        for f in chunk:
-            handle = f.open("rb")
-            if f.suffix.lower() in _VIDEO_EXTS:
-                media.append(InputMediaVideo(media=handle))
-            else:
-                media.append(InputMediaPhoto(media=handle))
-        await msg.reply_media_group(media=media)
+        # Every handle has to stay open until send_media_group has read them
+        # all, so they are closed together once the call returns.
+        with ExitStack() as stack:
+            media = []
+            for index, f in enumerate(chunk):
+                handle = stack.enter_context(f.open("rb"))
+                # Telegram shows only the first item's caption for a group.
+                text = caption if (i == 0 and index == 0) else None
+                if f.suffix.lower() in _VIDEO_EXTS:
+                    media.append(InputMediaVideo(media=handle, caption=text))
+                else:
+                    media.append(InputMediaPhoto(media=handle, caption=text))
+            await bot.send_media_group(chat_id=chat_id, media=media)
+
+
+async def _send_media(msg, files: list[Path]) -> None:
+    """Send single file directly; send multiple as media group(s) of <=10."""
+    await deliver(msg.get_bot(), msg.chat_id, files)

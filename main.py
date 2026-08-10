@@ -23,6 +23,7 @@ from config import settings, setup_logging
 from handlers import (
     admin,
     gate,
+    ig_direct_handler,
     instagram_handler,
     lyrics_handler,
     recognize_handler,
@@ -80,6 +81,11 @@ def build_app() -> Application:
         .write_timeout(60)
         .media_write_timeout(600)
         .pool_timeout(30)
+        # The Instagram Direct bridge is not driven by updates: its webhook
+        # listener and standby poller are started once the loop is running,
+        # and torn down with it.
+        .post_init(ig_direct_handler.on_startup)
+        .post_shutdown(ig_direct_handler.on_shutdown)
     )
 
     # Route through a local Bot API server when configured - lifts the
@@ -127,6 +133,7 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("igtest", admin.igtest_cmd))
     app.add_handler(CommandHandler("recstatus", admin.recstatus_cmd))
     app.add_handler(CommandHandler("srcstatus", admin.srcstatus_cmd))
+    app.add_handler(CommandHandler("igdirect", ig_direct_handler.igdirect_cmd))
 
     # Any video/audio the user sends or forwards -> identify its music.
     # Document.* covers files sent "as file" (no compression), which arrive as
@@ -151,6 +158,7 @@ def build_app() -> Application:
     # Inline button callbacks — namespaced by prefix so each module handles its own
     app.add_handler(CallbackQueryHandler(youtube_handler.on_callback, pattern=r"^yt:"))
     app.add_handler(CallbackQueryHandler(instagram_handler.on_callback, pattern=r"^ig:"))
+    app.add_handler(CallbackQueryHandler(ig_direct_handler.on_callback, pattern=r"^igd:"))
     app.add_handler(CallbackQueryHandler(spotify_handler.on_callback, pattern=r"^sp:"))
     app.add_handler(CallbackQueryHandler(lyrics_handler.on_callback, pattern=r"^lyr:"))
     app.add_handler(CallbackQueryHandler(admin.on_callback, pattern=r"^adm:"))

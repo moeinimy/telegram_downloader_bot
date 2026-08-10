@@ -48,6 +48,28 @@ class Settings:
     ig_csrftoken: str
     ig_ds_user_id: str
 
+    # Instagram Direct: media shared to OUR Instagram DMs comes back to the
+    # sharer in Telegram. Two independent ways to read that inbox, tried in
+    # the order given by IG_DIRECT_SOURCES:
+    #   webhook - Meta's official Instagram Platform API. Needs a public HTTPS
+    #             endpoint and, for anyone who is not an app tester, App Review.
+    #   poll    - instagrapi logged in as the account. Works for everyone
+    #             immediately but violates Instagram's terms, so it is only
+    #             woken up when the official path stops answering.
+    ig_direct_sources: tuple[str, ...]
+    ig_app_id: str
+    ig_app_secret: str
+    ig_access_token: str
+    ig_verify_token: str
+    ig_webhook_host: str
+    ig_webhook_port: int
+    ig_webhook_path: str
+    ig_public_url: str
+    ig_health_minutes: int
+    ig_dm_username: str
+    ig_dm_password: str
+    ig_dm_poll_seconds: int
+
     # Optional: local Bot API server (https://github.com/tdlib/telegram-bot-api)
     # e.g. http://127.0.0.1:8081 - raises the upload limit from 50MB to 2GB.
     bot_api_base_url: str
@@ -90,6 +112,25 @@ class Settings:
     def has_instagram_session(self) -> bool:
         return bool(self.ig_sessionid and self.instagram_username)
 
+    @property
+    def has_ig_webhook(self) -> bool:
+        """Every piece the official path needs. The verify token is included
+        because without it Meta's subscription handshake can never complete,
+        so a half-configured webhook would sit there answering 403 forever."""
+        return bool(self.ig_app_secret and self.ig_access_token and self.ig_verify_token)
+
+    @property
+    def has_ig_private(self) -> bool:
+        return bool(self.ig_dm_username and self.ig_dm_password)
+
+    @property
+    def ig_direct_enabled(self) -> bool:
+        """True when at least one configured source is also switched on."""
+        return bool(
+            ("webhook" in self.ig_direct_sources and self.has_ig_webhook)
+            or ("poll" in self.ig_direct_sources and self.has_ig_private)
+        )
+
 
 def _admin_ids() -> frozenset[int]:
     """Parse ADMIN_IDS ("123,456"). Anything unparseable is dropped with a
@@ -115,6 +156,26 @@ def _channel_name() -> str:
     return raw if raw.startswith(("@", "-100")) else f"@{raw}"
 
 
+def _int(name: str, default: int) -> int:
+    """An unparseable number must not stop the bot from starting: the whole
+    point of these knobs is that they have working defaults."""
+    raw = _get(name)
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logging.getLogger(__name__).warning("%s=%r is not a number - using %d", name, raw, default)
+        return default
+
+
+def _webhook_path() -> str:
+    """Meta stores the callback URL verbatim, so a path that lost its leading
+    slash would register as a different endpoint than the one aiohttp serves."""
+    path = _get("IG_WEBHOOK_PATH", "/ig/webhook") or "/ig/webhook"
+    return path if path.startswith("/") else f"/{path}"
+
+
 def _cookies_path() -> str:
     """Ignore a configured cookies file that doesn't actually exist, so a
     stale default path can't break every YouTube download."""
@@ -135,6 +196,21 @@ settings = Settings(
     ig_sessionid=_get("IG_SESSIONID"),
     ig_csrftoken=_get("IG_CSRFTOKEN"),
     ig_ds_user_id=_get("IG_DS_USER_ID"),
+    ig_direct_sources=tuple(
+        s for s in _get("IG_DIRECT_SOURCES", "webhook,poll").replace(" ", "").lower().split(",") if s
+    ),
+    ig_app_id=_get("IG_APP_ID"),
+    ig_app_secret=_get("IG_APP_SECRET"),
+    ig_access_token=_get("IG_ACCESS_TOKEN"),
+    ig_verify_token=_get("IG_VERIFY_TOKEN"),
+    ig_webhook_host=_get("IG_WEBHOOK_HOST", "127.0.0.1") or "127.0.0.1",
+    ig_webhook_port=_int("IG_WEBHOOK_PORT", 8088),
+    ig_webhook_path=_webhook_path(),
+    ig_public_url=_get("IG_PUBLIC_URL").rstrip("/"),
+    ig_health_minutes=_int("IG_HEALTH_MINUTES", 10),
+    ig_dm_username=_get("IG_DM_USERNAME"),
+    ig_dm_password=_get("IG_DM_PASSWORD"),
+    ig_dm_poll_seconds=_int("IG_DM_POLL_SECONDS", 45),
     bot_api_base_url=_get("BOT_API_BASE_URL"),
     download_dir=Path(_get("DOWNLOAD_DIR", "./downloads")).resolve(),
     max_upload_mb=int(_get("MAX_UPLOAD_MB", "50") or 50),
@@ -156,6 +232,13 @@ settings = Settings(
 if settings.audio_format not in ("m4a", "mp3", "flac"):
     raise RuntimeError(
         f"AUDIO_FORMAT={settings.audio_format!r} is not one of: m4a, mp3, flac"
+    )
+
+_unknown_sources = set(settings.ig_direct_sources) - {"webhook", "poll"}
+if _unknown_sources:
+    raise RuntimeError(
+        f"IG_DIRECT_SOURCES contains unknown source(s): {', '.join(sorted(_unknown_sources))}. "
+        "Valid names are: webhook, poll"
     )
 
 settings.download_dir.mkdir(parents=True, exist_ok=True)
