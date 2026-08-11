@@ -24,8 +24,10 @@ from handlers import (
     admin,
     gate,
     ig_direct_handler,
+    ig_post_menu,
     instagram_handler,
     lyrics_handler,
+    menu,
     recognize_handler,
     router,
     spotify_handler,
@@ -67,6 +69,12 @@ def _local_api_reachable(base: str, attempts: int = 10, delay: float = 3.0) -> b
     return False
 
 
+async def _on_startup(application: Application) -> None:
+    """Everything that needs a running loop and a live bot object."""
+    await menu.setup_commands(application)
+    await ig_direct_handler.on_startup(application)
+
+
 def build_app() -> Application:
     builder = (
         Application.builder()
@@ -84,7 +92,7 @@ def build_app() -> Application:
         # The Instagram Direct bridge is not driven by updates: its webhook
         # listener and standby poller are started once the loop is running,
         # and torn down with it.
-        .post_init(ig_direct_handler.on_startup)
+        .post_init(_on_startup)
         .post_shutdown(ig_direct_handler.on_shutdown)
     )
 
@@ -166,6 +174,7 @@ def build_app() -> Application:
     app.add_handler(CallbackQueryHandler(youtube_handler.on_callback, pattern=r"^yt:"))
     app.add_handler(CallbackQueryHandler(instagram_handler.on_callback, pattern=r"^ig:"))
     app.add_handler(CallbackQueryHandler(ig_direct_handler.on_callback, pattern=r"^igd:"))
+    app.add_handler(CallbackQueryHandler(ig_post_menu.on_callback, pattern=r"^igp:"))
     app.add_handler(CallbackQueryHandler(spotify_handler.on_callback, pattern=r"^sp:"))
     app.add_handler(CallbackQueryHandler(lyrics_handler.on_callback, pattern=r"^lyr:"))
     app.add_handler(CallbackQueryHandler(admin.on_callback, pattern=r"^adm:"))

@@ -59,14 +59,43 @@ async def handle_url(
     await _send_media(msg, files)
     await status.delete()
 
-    # If the post contains video, offer to identify its music.
     video = next((f for f in files if f.suffix.lower() in _VIDEO_EXTS), None)
-    if video:
-        context.chat_data.setdefault("ig_rec", {})[route.resource_id] = str(video)
-        kb = InlineKeyboardMarkup(
-            [[InlineKeyboardButton(t(msg.chat_id, "🎧 پیدا کردن آهنگ این ویدیو"), callback_data=f"ig:rec:{route.resource_id}")]]
+    if kind in (InstagramKind.POST, InstagramKind.REEL, InstagramKind.IGTV):
+        await post_menu(
+            msg.get_bot(), msg.chat_id, route.resource_id, route.url, video,
+            offer_music=bool(video),
         )
-        await msg.reply_text(t(msg.chat_id, "آهنگ این ویدیو رو برات پیدا کنم؟"), reply_markup=kb)
+        if video:
+            context.chat_data.setdefault("ig_rec", {})[route.resource_id] = str(video)
+
+
+async def post_menu(bot, chat_id: int, shortcode: str, permalink: str,
+                    video: Path | None, offer_music: bool = True) -> None:
+    """The button strip under a delivered post.
+
+    Shared by the pasted-link flow and the DM bridge, so the two differ only
+    in what triggered them. Music identification stays a separate row because
+    it is the one action that reads the file rather than the post.
+    """
+    from handlers import ig_post_menu
+
+    if video:
+        ig_post_menu.remember_video(shortcode, video)
+
+    rows = list(ig_post_menu.keyboard(chat_id, shortcode, permalink).inline_keyboard)
+    if offer_music:
+        rows.append([InlineKeyboardButton(
+            t(chat_id, "🎧 پیدا کردن آهنگ این ویدیو"), callback_data=f"ig:rec:{shortcode}"
+        )])
+
+    try:
+        await bot.send_message(
+            chat_id,
+            t(chat_id, "چیکار دیگه‌ای برات بکنم؟"),
+            reply_markup=InlineKeyboardMarkup(rows),
+        )
+    except Exception as e:
+        log.info("could not attach the post menu in %s: %s", chat_id, e)
 
 
 async def _profile_menu(msg, username: str, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -91,8 +120,15 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if action == "rec":
         from handlers.recognize_handler import recognize_from_file
 
+        from handlers import ig_post_menu
+
         shortcode = username  # third segment is the shortcode here
-        path_str = context.chat_data.get("ig_rec", {}).get(shortcode)
+        # chat_data covers the pasted-link flow; the module cache covers the
+        # DM bridge, which has no chat_data to write into.
+        path_str = (
+            context.chat_data.get("ig_rec", {}).get(shortcode)
+            or ig_post_menu._video_cache.get(shortcode)
+        )
         if not path_str or not Path(path_str).exists():
             await query.message.reply_text(t(query.message.chat_id, "⌛ فایل ویدیو دیگه موجود نیست. دوباره لینک رو بفرست."))
             return

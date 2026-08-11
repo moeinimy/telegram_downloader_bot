@@ -23,6 +23,13 @@ os.environ["IG_APP_SECRET"] = "correct-horse-battery-staple"
 os.environ["IG_VERIFY_TOKEN"] = "verify-me"
 os.environ["IG_ACCESS_TOKEN"] = "tok"
 
+# Findings are Persian UI strings. A Windows console defaults to cp1252 and
+# would crash on the first one - hiding the very failure it is reporting.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 failures = []
 def check(name, ok, detail=""):
     print(f"{'PASS' if ok else 'FAIL'}  {name}" + (f"  -- {detail}" if detail else ""))

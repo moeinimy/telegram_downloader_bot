@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import logging
 import time
-from pathlib import Path
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
@@ -38,11 +37,6 @@ _VIDEO_EXTS = {".mp4", ".mov"}
 
 # Set once at startup; the DM path has no handler context to get a bot from.
 _app = None
-
-# Videos delivered over the DM bridge, so the "identify the music" button has
-# something to work with. Bounded, because nothing here is ever cleaned up by
-# a conversation ending.
-_recent_videos: BoundedDict = BoundedDict(300)
 
 _account_name_cache: str = ""
 
@@ -110,6 +104,8 @@ async def _screen(chat_id: int) -> tuple[str, InlineKeyboardMarkup]:
         "📸 *اینستاگرام دایرکت*\n\n"
         "به‌جای کپی‌کردن لینک، مستقیم تو خود اینستاگرام برامون بفرست و "
         "همین‌جا تحویل بگیر.\n\n"
+        "⚠️ *اول باید پیج ما رو فالو کنی.* اگه فالو نکنی، دایرکتت می‌ره تو "
+        "بخش «درخواست پیام» اینستاگرام و ممکنه اصلا به دستمون نرسه.\n\n"
         "🔒 فقط شناسه‌ی عددی اکانت اینستاگرامت ذخیره می‌شه — نه اسم، نه پروفایل، "
         "نه پیام‌هات. قطع اتصال هم یه دکمه‌ست.",
     )
@@ -147,8 +143,9 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             t(
                 chat_id,
                 "🔗 *وصل کردن اکانت*\n\n"
-                "۱. برو به اینستاگرام\n"
-                "۲. به {target} دایرکت بده\n"
+                "۱. برو به اینستاگرام و {target} رو *فالو کن* (بدون فالو، دایرکتت "
+                "می‌ره تو «درخواست پیام» و ممکنه به دستمون نرسه)\n"
+                "۲. بهش دایرکت بده\n"
                 "۳. دقیقا همین کد رو بفرست:\n\n"
                 "`{token}`\n\n"
                 "⏳ این کد {minutes} دقیقه اعتبار داره و یک‌بار مصرفه.",
@@ -166,17 +163,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
-    if action == "rec":
-        shortcode = query.data.split(":", 2)[2]
-        path = _recent_videos.get(shortcode)
-        if not path or not Path(path).exists():
-            await query.message.reply_text(
-                t(chat_id, "⌛ فایل ویدیو دیگه موجود نیست. دوباره لینک رو بفرست.")
-            )
-            return
-        from handlers.recognize_handler import recognize_from_file
-
-        await recognize_from_file(query.message, Path(path))
 
 
 # --------------------------------------------------------------------------
@@ -186,9 +172,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 _PAIR_HELP_FA = (
     "سلام! برای اینکه چیزایی که اینجا می‌فرستی رو تو تلگرام برات دانلود کنم، "
     "اول باید اکانتت رو وصل کنی:\n\n"
-    "۱. تو تلگرام بات رو باز کن و /igdirect بزن\n"
-    "۲. دکمه «وصل کردن اکانت» رو بزن\n"
-    "۳. کدی که می‌ده رو همین‌جا برام بفرست"
+    "۱. این پیج رو فالو کن\n"
+    "۲. تو تلگرام بات رو باز کن و /igdirect بزن\n"
+    "۳. دکمه «وصل کردن اکانت» رو بزن\n"
+    "۴. کدی که می‌ده رو همین‌جا برام بفرست"
 )
 
 
@@ -298,20 +285,12 @@ async def _fetch_and_send(dm: ig_direct.DirectMessage, chat_id: int, shortcode: 
     limits.sweep_downloads(settings.download_dir)
 
     video = next((f for f in files if f.suffix.lower() in _VIDEO_EXTS), None)
-    if video and shortcode:
-        _recent_videos[shortcode] = str(video)
-        kb = InlineKeyboardMarkup(
-            [[InlineKeyboardButton(
-                t(chat_id, "🎧 پیدا کردن آهنگ این ویدیو"),
-                callback_data=f"igd:rec:{shortcode}",
-            )]]
+    if shortcode:
+        # The same strip a pasted link gets. A share should not be a
+        # second-class way of asking for the same post.
+        await instagram_handler.post_menu(
+            bot, chat_id, shortcode, permalink, video, offer_music=bool(video)
         )
-        try:
-            await bot.send_message(
-                chat_id, t(chat_id, "آهنگ این ویدیو رو برات پیدا کنم؟"), reply_markup=kb
-            )
-        except Exception:
-            pass
 
 
 # --------------------------------------------------------------------------

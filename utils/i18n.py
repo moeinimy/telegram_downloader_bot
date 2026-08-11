@@ -283,6 +283,57 @@ _EN: dict[str, str] = {
     "برای استفاده از بات باید اول تو کانال ما عضو بشی. تو تلگرام /start بزن.":
         "You need to join our channel before using the bot. Send /start in Telegram.",
 
+    # --- instagram post menu ---
+    "چیکار دیگه‌ای برات بکنم؟": "Anything else?",
+    "👁 مشاهده در اینستاگرام": "👁 View on Instagram",
+    "🔄 بروزرسانی اطلاعات": "🔄 Refresh post info",
+    "🎬 همه کیفیت‌ها": "🎬 All qualities",
+    "🎧 فقط صدا": "🎧 Audio only",
+    "🔗 لینک مستقیم": "🔗 Direct link",
+    "📝 کپشن": "📝 Caption",
+    "📊 *اطلاعات پست*\n\n{stats}": "📊 *Post info*\n\n{stats}",
+    "اطلاعاتی در دسترس نیست.": "No information available.",
+    "این پست کپشن نداره.": "This post has no caption.",
+    "لینک مستقیمی پیدا نکردم.": "I couldn't find a direct link.",
+    "🔗 *لینک مستقیم*\n\n{links}\n\n⏳ این لینک‌ها امضا شدن و تا چند ساعت بیشتر کار نمی‌کنن.":
+        "🔗 *Direct link*\n\n{links}\n\n⏳ These are signed URLs and stop working after a few hours.",
+    "این پست ویدیو نیست یا فقط یه کیفیت داره.":
+        "This post isn't a video, or has only one quality.",
+    "🎬 کیفیت رو انتخاب کن:": "🎬 Pick a quality:",
+    "⬇️ در حال دانلود {label}…": "⬇️ Downloading {label}…",
+    "🎧 در حال جدا کردن صدا…": "🎧 Extracting the audio…",
+    "این پست ویدیو نیست.": "This post isn't a video.",
+
+    # --- instagram direct: pairing screens ---
+    "📸 *اینستاگرام دایرکت*\n\n"
+    "به‌جای کپی‌کردن لینک، مستقیم تو خود اینستاگرام برامون بفرست و "
+    "همین‌جا تحویل بگیر.\n\n"
+    "⚠️ *اول باید پیج ما رو فالو کنی.* اگه فالو نکنی، دایرکتت می‌ره تو "
+    "بخش «درخواست پیام» اینستاگرام و ممکنه اصلا به دستمون نرسه.\n\n"
+    "🔒 فقط شناسه‌ی عددی اکانت اینستاگرامت ذخیره می‌شه — نه اسم، نه پروفایل، "
+    "نه پیام‌هات. قطع اتصال هم یه دکمه‌ست.":
+        "📸 *Instagram Direct*\n\n"
+        "Instead of copying links, share straight to us inside Instagram and "
+        "pick it up here.\n\n"
+        "⚠️ *You must follow our page first.* Without that, your DM lands in "
+        "Instagram's message requests and may never reach us.\n\n"
+        "🔒 Only your Instagram account's numeric id is stored — no name, no "
+        "profile, none of your messages. Unlinking is one tap.",
+    "🔗 *وصل کردن اکانت*\n\n"
+    "۱. برو به اینستاگرام و {target} رو *فالو کن* (بدون فالو، دایرکتت "
+    "می‌ره تو «درخواست پیام» و ممکنه به دستمون نرسه)\n"
+    "۲. بهش دایرکت بده\n"
+    "۳. دقیقا همین کد رو بفرست:\n\n"
+    "`{token}`\n\n"
+    "⏳ این کد {minutes} دقیقه اعتبار داره و یک‌بار مصرفه.":
+        "🔗 *Connect your account*\n\n"
+        "1. Open Instagram and *follow* {target} (without that your DM lands "
+        "in message requests and may never reach us)\n"
+        "2. Send it a DM\n"
+        "3. Send exactly this code:\n\n"
+        "`{token}`\n\n"
+        "⏳ It is valid for {minutes} minutes and can only be used once.",
+
     # --- recognition service ---
     "⏳ سرویس تشخیص آهنگ الان جواب نمی‌ده. چند دقیقه دیگه دوباره امتحان کن.":
         "⏳ The music-recognition service is not responding right now. "

@@ -31,6 +31,11 @@ _TTL = 300.0
 
 _JOINED = ("member", "administrator", "creator", "owner")
 
+# The request each locked-out user was making when the gate stopped them, so
+# joining resumes it instead of asking them to send it again.
+_pending: BoundedDict = BoundedDict(2000)
+_PENDING_TTL = 3600.0
+
 # Why the last membership check could not be answered, "" when it could.
 last_error: str = ""
 
@@ -174,6 +179,14 @@ async def guard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if await is_member(context, user.id):
         return
 
+    # Hold on to what they were actually trying to do. Being told to join a
+    # channel mid-request and then having to find and resend the link is the
+    # kind of friction that loses the user at exactly the wrong moment.
+    # Messages only. A callback query expires within about a minute, so
+    # replaying one after a trip to the channel would just fail on answer().
+    if update.effective_message and not update.callback_query:
+        _pending[user.id] = (time.monotonic(), update)
+
     text, kb = _prompt(user.id)
     try:
         if update.callback_query:
@@ -188,6 +201,31 @@ async def guard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     raise ApplicationHandlerStop
 
 
+async def _resume(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
+    """Re-run whatever the user was blocked on. True if there was something.
+
+    The update is fed back through the application, so it takes exactly the
+    path it would have taken had the gate not been there - no duplicate
+    routing logic that could drift from the real one. It cannot loop: by the
+    time this runs, membership has been confirmed and cached, so guard returns
+    early on the second pass.
+    """
+    held = _pending.pop(user_id, None)
+    if not held:
+        return False
+
+    stamp, update = held
+    if time.monotonic() - stamp > _PENDING_TTL:
+        return False
+
+    try:
+        await context.application.process_update(update)
+        return True
+    except Exception as e:
+        log.warning("could not resume the held request for %s: %s", user_id, e)
+        return False
+
+
 async def on_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """The '✅ I joined' button."""
     query = update.callback_query
@@ -197,11 +235,18 @@ async def on_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if await is_member(context, user_id):
         await query.answer()
         fa = i18n.get_lang(user_id) != i18n.EN
+        resumed = await _resume(context, user_id)
         try:
-            await query.edit_message_text(
-                "✅ عضویتت تایید شد. حالا می‌تونی استفاده کنی."
-                if fa else "✅ Membership confirmed. You're good to go."
-            )
+            if resumed:
+                await query.edit_message_text(
+                    "✅ عضویتت تایید شد. درخواست قبلیت رو ادامه می‌دم…"
+                    if fa else "✅ Membership confirmed. Picking up where you left off…"
+                )
+            else:
+                await query.edit_message_text(
+                    "✅ عضویتت تایید شد. حالا می‌تونی استفاده کنی."
+                    if fa else "✅ Membership confirmed. You're good to go."
+                )
         except Exception:
             pass
         return

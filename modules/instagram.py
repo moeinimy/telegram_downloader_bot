@@ -26,6 +26,7 @@ import re
 import shutil
 import threading
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from config import settings
@@ -509,6 +510,152 @@ def _ensure_anon_cookies() -> str:
     except Exception as e:
         log.info("instagram cookie bootstrap failed: %s", e)
     return client.cookies.get("csrftoken") or ""
+
+
+# --------------------------------------------------------------------------
+# Post metadata
+#
+# Everything the post menu offers - caption, stats, quality list, direct links
+# - comes out of one media-info call. i.instagram.com/api/v1/media/<id>/info/
+# and the authenticated client return the SAME item shape, so one parser
+# serves both and the logged-in path is just a better-authorised caller.
+# --------------------------------------------------------------------------
+
+@dataclass
+class PostInfo:
+    shortcode: str
+    username: str = ""
+    caption: str = ""
+    likes: int = 0
+    comments: int = 0
+    views: int = 0
+    taken_at: float = 0.0
+    is_video: bool = False
+    # (label, url), best first. Empty for a photo-only post.
+    qualities: list[tuple[str, str]] = field(default_factory=list)
+    urls: list[str] = field(default_factory=list)
+
+    @property
+    def permalink(self) -> str:
+        kind = "reel" if self.is_video else "p"
+        return f"https://www.instagram.com/{kind}/{self.shortcode}/"
+
+
+def _parse_media_item(item: dict, shortcode: str) -> PostInfo:
+    caption = ((item.get("caption") or {}) or {}).get("text") or ""
+    user = item.get("user") or {}
+
+    def versions(node: dict) -> list[tuple[str, str]]:
+        out = []
+        for v in node.get("video_versions") or []:
+            url = v.get("url")
+            if url:
+                height = v.get("height") or 0
+                out.append((f"{height}p" if height else "?", url))
+        # Instagram lists these best-first already, but it has not always.
+        out.sort(key=lambda pair: int(pair[0][:-1] or 0) if pair[0].endswith("p") else 0,
+                 reverse=True)
+        return out
+
+    def stills(node: dict) -> list[str]:
+        candidates = ((node.get("image_versions2") or {}).get("candidates")) or []
+        return [candidates[0]["url"]] if candidates and candidates[0].get("url") else []
+
+    carousel = item.get("carousel_media") or []
+    nodes = carousel or [item]
+
+    urls: list[str] = []
+    qualities: list[tuple[str, str]] = []
+    for node in nodes:
+        node_versions = versions(node)
+        if node_versions:
+            urls.append(node_versions[0][1])
+            if not carousel:
+                qualities = node_versions
+        else:
+            urls += stills(node)
+
+    return PostInfo(
+        shortcode=shortcode,
+        username=user.get("username") or "",
+        caption=caption,
+        likes=int(item.get("like_count") or 0),
+        comments=int(item.get("comment_count") or 0),
+        views=int(item.get("play_count") or item.get("view_count") or 0),
+        taken_at=float(item.get("taken_at") or 0),
+        is_video=bool(qualities or any(n.get("video_versions") for n in nodes)),
+        qualities=qualities,
+        urls=[u for u in urls if u],
+    )
+
+
+@run_in_thread
+def fetch_info(shortcode: str) -> PostInfo:
+    """Caption, counters and every available quality for one post.
+
+    Tries the logged-in client first for the same reason the download ladder
+    does: logged out, Instagram withholds this for anything it considers
+    restricted, and returns a login page rather than an error.
+    """
+    from modules import ig_private
+
+    if ig_private.usable():
+        try:
+            client = ig_private.client()
+            pk = client.media_pk_from_code(shortcode)
+            data = client.private_request(f"media/{pk}/info/")
+            items = data.get("items") or []
+            if items:
+                return _parse_media_item(items[0], shortcode)
+        except Exception as e:
+            log.info("instagram: authenticated media info failed for %s: %s", shortcode, e)
+
+    from utils import http
+
+    r = http.get(
+        f"https://i.instagram.com/api/v1/media/{_shortcode_to_media_id(shortcode)}/info/",
+        headers={"User-Agent": "Instagram 219.0.0.12.117 Android", "X-IG-App-ID": _APP_ID},
+    )
+    if r.status_code != 200:
+        raise _friendly_error(RuntimeError(f"HTTP{r.status_code}"))
+    items = (r.json().get("items") or [])
+    if not items:
+        raise _friendly_error(RuntimeError("no media"))
+    return _parse_media_item(items[0], shortcode)
+
+
+@run_in_thread(heavy=True)
+def fetch_quality(shortcode: str, url: str, label: str) -> Path:
+    """One specific video rendition, straight from its CDN url."""
+    target = settings.download_dir / "instagram" / shortcode / "q"
+    return _download_urls([url], target / safe_filename(label))[0]
+
+
+@run_in_thread(heavy=True)
+def extract_audio(video: Path) -> Path:
+    """Strip the audio track out of an already-downloaded video.
+
+    Copies the stream rather than re-encoding whenever the container allows
+    it: Instagram audio is AAC, m4a is an AAC container, so the common case
+    is a remux that takes milliseconds instead of a full transcode.
+    """
+    import subprocess
+
+    fmt = settings.audio_format
+    out = video.with_name(f"{video.stem}_audio.{'m4a' if fmt == 'm4a' else fmt}")
+    if out.exists():
+        return out
+
+    codec = ["-c:a", "copy"] if fmt == "m4a" else (
+        ["-c:a", "libmp3lame", "-q:a", "2"] if fmt == "mp3" else ["-c:a", "flac"]
+    )
+    result = subprocess.run(
+        ["ffmpeg", "-y", "-loglevel", "error", "-i", str(video), "-vn", *codec, str(out)],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0 or not out.exists():
+        raise RuntimeError(f"ffmpeg: {(result.stderr or '')[:120]}")
+    return out
 
 
 def _urls_from_instagrapi(media) -> list[str]:
