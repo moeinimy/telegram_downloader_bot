@@ -630,6 +630,36 @@ do_instagram() {
     ok "ذخیره شد - استوری حالا فعاله"
 }
 
+_looks_like_ipv4() {
+    [[ "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
+}
+
+_server_ips() {
+    # The interface first. A VPS carries its public address locally, and that
+    # answer cannot be blocked, rate-limited, or - as actually happened here -
+    # replaced by an HTML 403 page that then gets compared against a real IP.
+    ip -4 -o addr show scope global 2>/dev/null | awk '{split($4, a, "/"); print a[1]}'
+
+    # Only useful behind NAT, where the local address is private. Several
+    # echo services, because any one of them can refuse a datacenter IP, and
+    # every answer is validated before it is trusted.
+    local url answer
+    for url in https://api.ipify.org https://ifconfig.me/ip https://icanhazip.com; do
+        answer=$(curl -sf --max-time 6 "$url" 2>/dev/null | tr -d '[:space:]')
+        if _looks_like_ipv4 "$answer"; then
+            echo "$answer"
+            return 0
+        fi
+    done
+}
+
+_resolve_a() {
+    local out
+    out=$(getent ahostsv4 "$1" 2>/dev/null | awk '{print $1}' | head -1)
+    [[ -z "$out" ]] && out=$(getent hosts "$1" 2>/dev/null | awk '{print $1}' | head -1)
+    _looks_like_ipv4 "$out" && echo "$out"
+}
+
 ensure_caddy() {
     if command -v caddy &>/dev/null; then
         ok "Caddy از قبل نصبه"
@@ -680,19 +710,28 @@ _igdirect_official() {
     read -rp "ساب‌دامنه (مثلا ig.example.com): " domain
     [[ -z "$domain" ]] && { err "دامنه لازمه - متا به IP خالی وب‌هوک نمی‌فرسته"; return 1; }
 
-    local resolved server_ip
-    resolved=$(getent hosts "$domain" 2>/dev/null | awk '{print $1}' | head -1)
-    server_ip=$(curl -s --max-time 8 https://ifconfig.me 2>/dev/null)
+    local resolved ips candidate matched=0
+    resolved=$(_resolve_a "$domain")
+    ips=$(_server_ips)
+    for candidate in $ips; do
+        [[ "$candidate" == "$resolved" ]] && { matched=1; break; }
+    done
+
     if [[ -z "$resolved" ]]; then
         warn "$domain اصلا resolve نمی‌شه. تا DNS پخش نشه Let's Encrypt سرتیفیکیت نمی‌ده."
         read -rp "بازم ادامه بدم؟ (y/n) " a
         [[ "$a" != "y" ]] && return 1
-    elif [[ -n "$server_ip" && "$resolved" != "$server_ip" ]]; then
-        warn "$domain به $resolved اشاره می‌کنه ولی IP این سرور $server_ip ـه."
+    elif (( matched )); then
+        ok "DNS درسته: $domain -> $resolved"
+    elif [[ -z "$ips" ]]; then
+        # Not a reason to stop: Caddy's own ACME challenge is the real test,
+        # and this check failing says nothing about whether DNS is right.
+        warn "IP این سرور رو نتونستم تشخیص بدم - از چک DNS رد می‌شم."
+        ok "$domain -> $resolved"
+    else
+        warn "$domain به $resolved اشاره می‌کنه، ولی IP این سرور: $(echo $ips | tr '\n' ' ')"
         read -rp "بازم ادامه بدم؟ (y/n) " a
         [[ "$a" != "y" ]] && return 1
-    else
-        ok "DNS درسته: $domain -> $resolved"
     fi
 
     if ss -lntp 2>/dev/null | grep -qE ':(80|443)\s' && ! ss -lntp 2>/dev/null | grep -qE ':(80|443)\s.*caddy'; then
