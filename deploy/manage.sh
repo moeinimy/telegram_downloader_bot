@@ -671,19 +671,11 @@ EOF
     ok "Caddy برای $domain تنظیم شد"
 }
 
-do_igdirect() {
-    echo; info "=== اینستاگرام دایرکت (دایرکت اینستا -> تلگرام) ==="; echo
-    warn "قبلش این‌ها رو خودت باید انجام داده باشی:"
-    echo "  • اکانت اینستاگرام بات روی Professional باشه"
-    echo "  • تو اپ اینستا: Settings > Messages > اجازه دسترسی ابزارهای متصل"
-    echo "  • یه اپ روی developers.facebook.com با محصول Instagram"
-    echo "  • یه ساب‌دامنه که رکورد A ش به همین سرور اشاره کنه"
-    echo
-    read -rp "ادامه بدم؟ (y/n) " a
-    [[ "$a" != "y" ]] && return 0
-
-    # --- 1. domain + TLS ---
-    echo; info "--- ۱) دامنه و TLS ---"
+# The official path needs a verified Meta developer account, a domain and,
+# for anyone who is not an app tester, App Review. That is a wall a lot of
+# people cannot get over, so it is one option here rather than the only one.
+_igdirect_official() {
+    echo; info "--- دامنه و TLS ---"
     local domain
     read -rp "ساب‌دامنه (مثلا ig.example.com): " domain
     [[ -z "$domain" ]] && { err "دامنه لازمه - متا به IP خالی وب‌هوک نمی‌فرسته"; return 1; }
@@ -717,8 +709,8 @@ do_igdirect() {
     ensure_caddy || return 1
     _caddy_site "$domain" "$port" || return 1
 
-    # --- 2. Meta credentials ---
-    echo; info "--- ۲) کلیدهای متا ---"
+    # --- Meta credentials ---
+    echo; info "--- کلیدهای متا ---"
     warn "این‌ها رو من نمی‌بینم؛ مستقیم تو .env همین سرور ذخیره می‌شن."
     local app_id app_secret token verify
     read -rp "App ID: " app_id
@@ -742,28 +734,91 @@ do_igdirect() {
     set_env IG_PUBLIC_URL    "https://$domain$path"
     set_env IG_WEBHOOK_HOST  "127.0.0.1"
 
-    # --- 3. optional standby ---
-    echo; info "--- ۳) مسیر پشتیبان (instagrapi) ---"
-    warn "غیررسمیه و شرایط اینستاگرام رو نقض می‌کنه. فقط وقتی مسیر رسمی بیفته بیدار می‌شه."
-    warn "ترجیحا یه اکانت دوم بده، نه همون اکانتی که توکن رسمی روشه."
-    read -rp "نصبش کنم؟ (y/n) " a
-    if [[ "$a" == "y" ]]; then
-        # Deliberately not in requirements.txt: instagrapi pins pydantic and
-        # fights shazamio's resolver, so a bad day here must not be able to
-        # break a working venv on every update.
-        if sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/pip" install --progress-bar off instagrapi; then
-            ok "instagrapi نصب شد"
-            local dm_user dm_pass
-            read -rp  "یوزرنیم اکانت دایرکت: " dm_user
-            read -rsp "پسورد اکانت دایرکت: " dm_pass; echo
-            set_env IG_DM_USERNAME "$dm_user"
-            set_env IG_DM_PASSWORD "$dm_pass"
-        else
-            err "نصب instagrapi شکست خورد - بات بدون مسیر پشتیبان بالا میاد"
-            set_env IG_DIRECT_SOURCES "webhook"
-        fi
-    else
+    IGD_DOMAIN="$domain"
+    IGD_PATH="$path"
+    IGD_PORT="$port"
+    IGD_VERIFY="$verify"
+    return 0
+}
+
+_igdirect_standby() {
+    echo; info "--- مسیر پشتیبان (instagrapi) ---"
+    warn "این مسیر غیررسمیه و شرایط استفاده‌ی اینستاگرام رو نقض می‌کنه."
+    warn "اکانت می‌تونه بدون هشدار و بدون امکان اعتراض بسته بشه."
+    warn "حتما یه اکانت جدا بساز - نه اکانت اصلیت، نه اکانتی که توکن رسمی روشه."
+    echo
+    read -rp "ادامه بدم؟ (y/n) " a
+    [[ "$a" != "y" ]] && return 1
+
+    # Deliberately not in requirements.txt: instagrapi pins pydantic and
+    # fights shazamio's resolver, so a bad day here must not be able to break
+    # a working venv on every update.
+    if ! sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/pip" install --progress-bar off instagrapi; then
+        err "نصب instagrapi شکست خورد"
+        return 1
+    fi
+    ok "instagrapi نصب شد"
+
+    local dm_user dm_pass
+    read -rp  "یوزرنیم اکانت دایرکت: " dm_user
+    read -rsp "پسورد اکانت دایرکت: " dm_pass; echo
+    [[ -z "$dm_user" || -z "$dm_pass" ]] && { err "یوزرنیم و پسورد لازمه"; return 1; }
+
+    set_env IG_DM_USERNAME "$dm_user"
+    set_env IG_DM_PASSWORD "$dm_pass"
+    return 0
+}
+
+do_igdirect() {
+    echo; info "=== اینستاگرام دایرکت (دایرکت اینستا -> تلگرام) ==="; echo
+    echo "  1) رسمی (وب‌هوک متا)"
+    echo "     نیاز: اکانت دولوپر وریفای‌شده‌ی متا + دامنه + App Review"
+    echo "     بدون App Review فقط ۲۵ اکانت تستر کار می‌کنن."
+    echo
+    echo "  2) فقط پشتیبان (instagrapi)"
+    echo "     نیاز: هیچی از متا. از روز اول برای همه‌ی کاربرها کار می‌کنه."
+    echo "     ریسک: نقض شرایط اینستاگرام، احتمال بسته شدن اکانت."
+    echo
+    echo "  3) هر دو - رسمی اصلی، پشتیبان وقتی رسمی بیفته بیدار می‌شه"
+    echo "  0) انصراف"
+    echo
+    read -rp "انتخاب: " mode
+
+    local want_official=0 want_standby=0
+    case "$mode" in
+        1) want_official=1 ;;
+        2) want_standby=1 ;;
+        3) want_official=1; want_standby=1 ;;
+        *) return 0 ;;
+    esac
+
+    IGD_DOMAIN=""; IGD_PATH=""; IGD_PORT=""; IGD_VERIFY=""
+
+    if (( want_official )); then
+        warn "قبلش این‌ها باید انجام شده باشه:"
+        echo "  • اکانت اینستاگرام بات روی Professional باشه"
+        echo "  • تو اپ اینستا: Settings > Messages > اجازه دسترسی ابزارهای متصل"
+        echo "  • یه اپ روی developers.facebook.com با محصول Instagram"
+        echo "  • یه ساب‌دامنه که رکورد A ش به همین سرور اشاره کنه"
+        echo
+        read -rp "ادامه بدم؟ (y/n) " a
+        [[ "$a" != "y" ]] && return 0
+        _igdirect_official || return 1
+    fi
+
+    if (( want_standby )); then
+        _igdirect_standby || want_standby=0
+    fi
+
+    if (( want_official && want_standby )); then
+        set_env IG_DIRECT_SOURCES "webhook,poll"
+    elif (( want_official )); then
         set_env IG_DIRECT_SOURCES "webhook"
+    elif (( want_standby )); then
+        set_env IG_DIRECT_SOURCES "poll"
+    else
+        err "هیچ مسیری تنظیم نشد"
+        return 1
     fi
 
     chmod 600 "$PROJECT_DIR/.env"
@@ -771,27 +826,46 @@ do_igdirect() {
     systemctl restart "$SERVICE_NAME"
     sleep 3
 
-    echo; info "--- تست محلی ---"
-    if curl -sf --max-time 5 "http://127.0.0.1:$port/healthz" >/dev/null; then
-        ok "لیسنر بالاست"
-    else
-        err "لیسنر جواب نمی‌ده - لاگ:"
-        journalctl -u "$SERVICE_NAME" --no-pager -n 20
+    echo; info "--- تست ---"
+    if ! systemctl is-active --quiet "$SERVICE_NAME"; then
+        err "بات بالا نیومد - لاگ:"
+        journalctl -u "$SERVICE_NAME" --no-pager -n 25
+        return 1
     fi
-    if curl -sf --max-time 15 "https://$domain/healthz" >/dev/null; then
-        ok "از بیرون هم با HTTPS در دسترسه"
-    else
-        warn "از بیرون جواب نداد. سرتیفیکیت شاید هنوز صادر نشده: journalctl -u caddy -n 30"
+    ok "بات بالاست"
+
+    if (( want_official )); then
+        if curl -sf --max-time 5 "http://127.0.0.1:$IGD_PORT/healthz" >/dev/null; then
+            ok "لیسنر بالاست"
+        else
+            err "لیسنر جواب نمی‌ده - لاگ:"
+            journalctl -u "$SERVICE_NAME" --no-pager -n 20
+        fi
+        if curl -sf --max-time 15 "https://$IGD_DOMAIN/healthz" >/dev/null; then
+            ok "از بیرون هم با HTTPS در دسترسه"
+        else
+            warn "از بیرون جواب نداد. سرتیفیکیت شاید هنوز صادر نشده: journalctl -u caddy -n 30"
+        fi
+
+        echo
+        ok "حالا تو داشبورد متا این‌ها رو بذار:"
+        echo -e "   ${B}Callback URL:${N}  https://$IGD_DOMAIN$IGD_PATH"
+        echo -e "   ${B}Verify Token:${N}  $IGD_VERIFY"
+        echo -e "   ${B}Webhook field:${N} messages"
+        echo
+        warn "یادت باشه: با Standard Access فقط اکانت‌هایی که تو App Dashboard نقش دارن"
+        warn "پیامشون میاد. برای بقیه باید App Review بزنی."
+    fi
+
+    if (( want_standby )); then
+        echo
+        info "مسیر پشتیبان تنظیم شد. اولین لاگین چند ثانیه طول می‌کشه."
+        info "اگه اینستاگرام چالش یا کد تایید خواست، تو لاگ می‌بینیش:  botctl logs"
+        info "کاربرها باید به @$(get_env IG_DM_USERNAME) دایرکت بدن."
     fi
 
     echo
-    ok "حالا تو داشبورد متا این دو تا رو بذار:"
-    echo -e "   ${B}Callback URL:${N}  https://$domain$path"
-    echo -e "   ${B}Verify Token:${N}  $verify"
-    echo -e "   ${B}Webhook field:${N} messages"
-    echo
-    warn "یادت باشه: با Standard Access فقط اکانت‌هایی که تو App Dashboard نقش دارن"
-    warn "پیامشون میاد. برای بقیه باید App Review بزنی."
+    info "وضعیت رو تو بات با /srcstatus ببین."
 }
 
 _botapi_grant_read() {

@@ -369,7 +369,12 @@ async def _check_and_failover() -> None:
 
         # Anything shared while the official path was down is still sitting in
         # the inbox; the webhook can never replay it, so sweep for it here.
-        if poll.catch_up:
+        #
+        # Only when there IS an official path to have missed something. With
+        # the poller as the primary there is no gap to recover, and sweeping
+        # would instead walk a day of pre-existing inbox history and DM
+        # pairing instructions to everyone who ever messaged the account.
+        if webhook and poll.catch_up:
             try:
                 found = await poll.catch_up(_dispatch)
                 log.info("ig direct: catch-up sweep recovered %d message(s)", found)

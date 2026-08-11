@@ -46,6 +46,13 @@ _recent_videos: BoundedDict = BoundedDict(300)
 
 _account_name_cache: str = ""
 
+# When each stranger was last told how to pair. Somebody who sends five
+# messages before reading the reply should not get five identical DMs back -
+# that reads as a broken bot and, on the unofficial path, looks exactly like
+# the spam behaviour that gets an account banned.
+_help_sent: BoundedDict = BoundedDict(1000)
+_HELP_COOLDOWN = 3600.0
+
 
 def bind(application) -> None:
     global _app
@@ -196,9 +203,12 @@ async def on_direct_message(dm: ig_direct.DirectMessage) -> None:
         return
 
     # 2. Still a stranger. Say how to pair rather than dropping it silently -
-    #    from their side an ignored DM is indistinguishable from a dead bot.
+    #    from their side an ignored DM is indistinguishable from a dead bot -
+    #    but at most once an hour.
     if chat_id is None:
-        await ig_direct.reply_dm(dm, _PAIR_HELP_FA)
+        if time.time() - _help_sent.get(identity, 0.0) > _HELP_COOLDOWN:
+            _help_sent[identity] = time.time()
+            await ig_direct.reply_dm(dm, _PAIR_HELP_FA)
         return
 
     # 3. Paired, but this is chat rather than a share.

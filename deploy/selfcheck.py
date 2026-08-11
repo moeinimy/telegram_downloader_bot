@@ -1,0 +1,233 @@
+"""Verification for the Instagram Direct feature (brief section 7)."""
+
+import ast
+import builtins
+import hashlib
+import hmac
+import json
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+ROOT = Path(r"D:\claude projects\telegram_downloader_bot")
+os.chdir(ROOT)
+sys.path.insert(0, str(ROOT))
+
+# Keep the real downloads/ directory out of this: the dedup test writes a
+# seen-store, and polluting the live one would silently swallow a real message.
+_TMP = tempfile.mkdtemp(prefix="igverify-")
+os.environ["DOWNLOAD_DIR"] = _TMP
+os.environ.setdefault("TELEGRAM_BOT_TOKEN", "0:verify")
+os.environ["IG_APP_SECRET"] = "correct-horse-battery-staple"
+os.environ["IG_VERIFY_TOKEN"] = "verify-me"
+os.environ["IG_ACCESS_TOKEN"] = "tok"
+
+failures = []
+def check(name, ok, detail=""):
+    print(f"{'PASS' if ok else 'FAIL'}  {name}" + (f"  -- {detail}" if detail else ""))
+    if not ok:
+        failures.append(name)
+
+
+# ---------------------------------------------------------------- 2. AST undefined names
+SOURCES = sorted(
+    p for d in ("modules", "handlers", "utils", "web") for p in Path(d).glob("*.py")
+) + [Path("main.py"), Path("config.py")]
+
+
+def undefined_names(path: Path) -> list[str]:
+    """Names loaded at module or function level that were never bound anywhere
+    in the file. Catches the NameError class of typo that only fires on the
+    error path, long after deploy."""
+    tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+    bound = set(dir(builtins)) | {"__name__", "__file__", "__doc__", "self", "cls"}
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bound.add(node.name)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            a = node.args
+            for arg in [*a.posonlyargs, *a.args, *a.kwonlyargs, a.vararg, a.kwarg]:
+                if arg:
+                    bound.add(arg.arg)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                bound.add((alias.asname or alias.name).split(".")[0])
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            bound.add(node.id)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            bound.add(node.name)
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            bound.update(node.names)
+        elif isinstance(node, ast.comprehension):
+            for sub in ast.walk(node.target):
+                if isinstance(sub, ast.Name):
+                    bound.add(sub.id)
+
+    return sorted({
+        n.id for n in ast.walk(tree)
+        if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) and n.id not in bound
+    })
+
+
+bad = {str(p): u for p in SOURCES if (u := undefined_names(p))}
+check("AST undefined-name sweep", not bad, json.dumps(bad, ensure_ascii=False) if bad else f"{len(SOURCES)} files clean")
+
+
+# ---------------------------------------------------------------- 3. i18n completeness
+from utils.i18n import _EN  # noqa: E402
+
+used: set[str] = set()
+for path in SOURCES:
+    tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "t"
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+            and isinstance(node.args[1].value, str)
+        ):
+            used.add(node.args[1].value)
+
+missing = sorted(s for s in used if s not in _EN)
+check("i18n: every t() string has an English entry", not missing,
+      f"{len(used)} strings checked" if not missing else f"MISSING: {missing}")
+
+untranslated = sorted(k for k, v in _EN.items() if k == v and not k.startswith(("🎤", "🎵 A", "🌐")))
+check("i18n: no accidental identity translations", not untranslated,
+      "" if not untranslated else str(untranslated))
+
+
+# ---------------------------------------------------------------- 4. signature verification
+from web import webhook  # noqa: E402
+
+body = b'{"object":"instagram","entry":[]}'
+good = hmac.new(b"correct-horse-battery-staple", body, hashlib.sha256).hexdigest()
+wrong = hmac.new(b"wrong-secret", body, hashlib.sha256).hexdigest()
+
+check("signature: correct secret accepted", webhook.verify_signature(body, f"sha256={good}"))
+check("signature: WRONG secret rejected", not webhook.verify_signature(body, f"sha256={wrong}"))
+check("signature: missing header rejected", not webhook.verify_signature(body, None))
+check("signature: unprefixed digest rejected", not webhook.verify_signature(body, good))
+check("signature: sha1 prefix rejected", not webhook.verify_signature(body, f"sha1={good}"))
+check("signature: tampered body rejected", not webhook.verify_signature(body + b" ", f"sha256={good}"))
+
+
+# ---------------------------------------------------------------- 5. duplicate mid replay
+from modules import ig_direct  # noqa: E402
+
+payload = {
+    "object": "instagram",
+    "entry": [{
+        "id": "17841400000000000",
+        "time": 1754900000,
+        "messaging": [{
+            "sender": {"id": "IGSID-USER"},
+            "recipient": {"id": "IGSID-US"},
+            "timestamp": 1754900000000,
+            "message": {
+                "mid": "aWc6MTIz",
+                "attachments": [{
+                    "type": "ig_reel",
+                    "payload": {"reel_video_id": "3123456789012345678",
+                                "title": "a reel",
+                                "url": "https://lookaside.fbsbx.com/x.mp4"},
+                }],
+            },
+        }],
+    }],
+}
+
+first = webhook.parse_entries(payload)
+second = webhook.parse_entries(payload)  # Meta's retry: byte-identical
+check("parse: one attachment -> one message", len(first) == 1, f"got {len(first)}")
+
+seen_1 = ig_direct.already_seen(first[0])
+seen_2 = ig_direct.already_seen(second[0])
+check("dedup: first delivery is new", not seen_1)
+check("dedup: replayed mid is suppressed", seen_2)
+
+# The failover case: the same share seen by the OTHER source, under an id from
+# a different id space entirely.
+poll_view = ig_direct.DirectMessage(
+    igsid="IGSID-USER",
+    mid="29999999999999999",          # instagrapi's item id, unrelated to mid
+    media_id="3123456789012345678",
+    timestamp=first[0].timestamp,
+    source="poll",
+)
+check("dedup: cross-source duplicate suppressed", ig_direct.already_seen(poll_view))
+
+fresh = ig_direct.DirectMessage(
+    igsid="IGSID-USER",
+    mid="different",
+    media_id="3123456789012345678",
+    timestamp=first[0].timestamp + 3600,   # an hour later = a real second request
+    source="webhook",
+)
+check("dedup: same reel an hour later is NOT suppressed", not ig_direct.already_seen(fresh))
+
+
+# ---------------------------------------------------------------- shortcode round trip
+from modules.instagram import _shortcode_to_media_id, media_id_to_shortcode  # noqa: E402
+
+check("shortcode: media_id -> shortcode round trip",
+      media_id_to_shortcode(str(_shortcode_to_media_id("DZfwtaiob79"))) == "DZfwtaiob79",
+      media_id_to_shortcode(str(_shortcode_to_media_id("DZfwtaiob79"))))
+check("shortcode: owner-suffixed id handled",
+      media_id_to_shortcode(f"{_shortcode_to_media_id('DZfwtaiob79')}_17841400000") == "DZfwtaiob79")
+check("shortcode: from ig_reel attachment",
+      first[0].shortcode() == media_id_to_shortcode("3123456789012345678"),
+      first[0].shortcode())
+check("shortcode: permalink in text wins", ig_direct.DirectMessage(
+    igsid="x", text="ببین https://www.instagram.com/reel/ABC123xyz/ خفنه", source="webhook"
+).shortcode() == "ABC123xyz")
+check("shortcode: junk id yields nothing", media_id_to_shortcode("not-a-number") == "")
+
+
+# ---------------------------------------------------------------- pairing store
+from modules import ig_pairing  # noqa: E402
+
+tok = ig_pairing.issue(555)
+check("pairing: token looks like a token", ig_pairing.looks_like_token(tok), tok)
+check("pairing: lowercase + no prefix still redeems",
+      ig_pairing.redeem(tok.replace("IG-", "").lower(), "ig:111") == 555)
+check("pairing: token is single use", ig_pairing.redeem(tok, "ig:222") is None)
+check("pairing: reverse lookup", ig_pairing.chat_for("ig:111") == 555)
+
+tok2 = ig_pairing.issue(555)
+ig_pairing.redeem(tok2, "pk:999")
+check("pairing: both namespaces coexist for one chat",
+      sorted(ig_pairing.linked_ids(555)) == ["ig:111", "pk:999"],
+      str(sorted(ig_pairing.linked_ids(555))))
+
+tok3 = ig_pairing.issue(555)
+ig_pairing.redeem(tok3, "ig:333")
+check("pairing: re-pairing replaces within a namespace only",
+      sorted(ig_pairing.linked_ids(555)) == ["ig:333", "pk:999"],
+      str(sorted(ig_pairing.linked_ids(555))))
+
+check("pairing: issuing twice invalidates the older token",
+      (lambda a, b: (ig_pairing.redeem(a, "ig:444") is None) and (ig_pairing.redeem(b, "ig:444") == 777))(
+          ig_pairing.issue(777), ig_pairing.issue(777)))
+
+check("pairing: unlink removes every namespace", ig_pairing.unlink(555) and not ig_pairing.linked_ids(555))
+check("pairing: alphabet excludes lookalikes",
+      not (set("01IOLl") & set(ig_pairing._ALPHABET)))
+
+# Survives a restart: the store is reloaded from disk, not from memory.
+ig_pairing._data = None
+check("pairing: persisted across a reload", ig_pairing.chat_for("ig:444") == 777)
+
+ig_direct._seen = None
+check("dedup: seen-store persisted across a reload", ig_direct.already_seen(second[0]))
+
+
+print()
+if failures:
+    print(f"=== {len(failures)} CHECK(S) FAILED: {failures} ===")
+    sys.exit(1)
+print("=== ALL CHECKS PASSED ===")
