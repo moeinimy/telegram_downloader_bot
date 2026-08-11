@@ -888,16 +888,28 @@ do_igdirect() {
         _igdirect_standby || want_standby=0
     fi
 
-    if (( want_official && want_standby )); then
-        set_env IG_DIRECT_SOURCES "webhook,poll"
-    elif (( want_official )); then
-        set_env IG_DIRECT_SOURCES "webhook"
-    elif (( want_standby )); then
-        set_env IG_DIRECT_SOURCES "poll"
-    else
+    # The web source counts as configured once all three browser cookies are
+    # present. _igdirect_standby already set IG_DIRECT_SOURCES when it
+    # collected them, and this block used to overwrite that with a bare
+    # "poll" - so the web reader was set up correctly and then switched off
+    # one line later.
+    local sources=""
+    if [[ -n "$(get_env IG_DM_CSRFTOKEN)" && -n "$(get_env IG_DM_DS_USER_ID)" ]]; then
+        sources="web"
+    fi
+    if (( want_standby )); then
+        sources="${sources:+$sources,}poll"
+    fi
+    if (( want_official )); then
+        sources="webhook${sources:+,$sources}"
+    fi
+
+    if [[ -z "$sources" ]]; then
         err "هیچ مسیری تنظیم نشد"
         return 1
     fi
+    set_env IG_DIRECT_SOURCES "$sources"
+    ok "منابع: $sources"
 
     chmod 600 "$PROJECT_DIR/.env"
     chown "$BOT_USER:$BOT_USER" "$PROJECT_DIR/.env"
@@ -1043,7 +1055,7 @@ do_proxy() {
     # arrived by some other route than the WARP path above.
     if [[ "$p" == socks* ]]; then
         sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/pip" install -q --progress-bar off \
-            "aiohttp-socks" "requests[socks]" 2>/dev/null || \
+            "aiohttp-socks" "requests[socks]" "httpx[socks]" 2>/dev/null || \
             warn "نصب کتابخونه‌های socks شکست خورد - ممکنه پروکسی نادیده گرفته بشه"
     fi
     set_env SHAZAM_PROXY "$p"
@@ -1107,12 +1119,15 @@ _proxy_warp() {
     # refused to start binding the same port twice, and every request through
     # it failed with connection refused.
     info "نصب کتابخونه‌های SOCKS (به‌جای privoxy)..."
+    # One per http library in use: aiohttp for shazamio, requests for
+    # instagrapi, httpx for the web inbox reader. Missing any one of them
+    # makes that path ignore the proxy or refuse the url outright.
     if ! sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/pip" install --progress-bar off \
-            "aiohttp-socks" "requests[socks]"; then
-        err "نصب aiohttp-socks/pysocks شکست خورد"
+            "aiohttp-socks" "requests[socks]" "httpx[socks]"; then
+        err "نصب کتابخونه‌های socks شکست خورد"
         return 1
     fi
-    ok "نصب شد - شزم و اینستاگرام هر دو مستقیم socks5 می‌زنن"
+    ok "نصب شد - شزم، اینستاگرام و API وب هر سه مستقیم socks5 می‌زنن"
 
     # Prove the venv itself can reach out through the proxy, not just curl.
     if sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/python" - <<'PY'

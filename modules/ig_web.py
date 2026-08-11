@@ -87,10 +87,30 @@ def _headers() -> dict:
     }
 
 
+def _proxy_url() -> str | None:
+    """The proxy, in the spelling httpx accepts.
+
+    Same trap as aiohttp-socks: httpx does not know the "h" suffix and raises
+
+        ValueError: Unknown scheme for proxy URL URL('socks5h://...')
+
+    before any request is made. curl and requests use socks5h to mean "resolve
+    DNS at the proxy"; httpx's socks transport does that anyway, so the suffix
+    is dropped rather than translated.
+    """
+    proxy = settings.ig_dm_proxy
+    if not proxy:
+        return None
+    for suffix, plain in (("socks5h://", "socks5://"), ("socks4a://", "socks4://")):
+        if proxy.lower().startswith(suffix):
+            return plain + proxy[len(suffix):]
+    return proxy
+
+
 def _client():
     import httpx
 
-    proxy = settings.ig_dm_proxy or None
+    proxy = _proxy_url()
     # httpx names it `proxy` from 0.26 and `proxies` before that.
     try:
         return httpx.Client(timeout=25, follow_redirects=True, proxy=proxy)

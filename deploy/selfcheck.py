@@ -624,6 +624,28 @@ check("ig poll: the hand-built inbox request is gone",
 check("ig items: the poller uses the shared parser",
       _priv._media_from_item is _items.media_from_item)
 
+# socks5h is what curl and requests want; aiohttp-socks and httpx both reject
+# it outright, before any request is made:
+#     ValueError: Unknown scheme for proxy URL URL('socks5h://...')
+# The suffix means "resolve DNS at the proxy", which both do anyway, so it is
+# dropped rather than translated.
+import modules.ig_web as _web  # noqa: E402
+
+_saved_proxy = _web.settings.ig_dm_proxy
+try:
+    for raw, want in [
+        ("socks5h://127.0.0.1:40000", "socks5://127.0.0.1:40000"),
+        ("socks5://127.0.0.1:40000", "socks5://127.0.0.1:40000"),
+        ("socks4a://host:1080", "socks4://host:1080"),
+        ("http://127.0.0.1:8118", "http://127.0.0.1:8118"),
+        ("", None),
+    ]:
+        object.__setattr__(_web.settings, "ig_dm_proxy", raw)
+        got = _web._proxy_url()
+        check(f"proxy: httpx accepts {raw or '(unset)'}", got == want, str(got))
+finally:
+    object.__setattr__(_web.settings, "ig_dm_proxy", _saved_proxy)
+
 # The device fingerprint must survive a session reset. Losing it is what made
 # the direct endpoints start refusing an account that was otherwise fine.
 check("ig poll: the device file is protected from the sweeper",
