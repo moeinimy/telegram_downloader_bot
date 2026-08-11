@@ -578,6 +578,24 @@ for exc, want, label in [
     check(f"recognize: {label} -> outage={want}", _rec._is_transient(exc) is want,
           f"{type(exc).__name__}: {exc}")
 
+# The account got blocked at ~1s polling, and the loop then hammered the
+# blocked account every 9 seconds indefinitely - a 403 was not in the throttle
+# markers, so it fell to the flat retry delay.
+_REAL_403 = (
+    '{"action":"item_ack","message":"We\'re sorry, but something went wrong. '
+    'Please try again.","status":"fail","payload":{"client_context":null,'
+    '"error_code":1404006},"status_code":"403"}'
+)
+for text, want, label in [
+    (_REAL_403, True, "the reported 403 / 1404006"),
+    ("challenge_required", True, "a challenge"),
+    ("checkpoint_required", True, "a checkpoint"),
+    ("feedback_required", True, "an action block"),
+    ("Please wait a few minutes before you try again", False, "ordinary throttling"),
+    ("Cannot connect to host i.instagram.com", False, "a network drop"),
+]:
+    check(f"ig poll: {label} -> stop={want}", _priv._is_blocked(text) is want, text[:60])
+
 check("recognize: the last error is recorded for /recstatus",
       (_rec._note_error(_FailedDecodeJson("Failed to decode json")) is None)
       and "FailedDecodeJson" in _rec.last_error,

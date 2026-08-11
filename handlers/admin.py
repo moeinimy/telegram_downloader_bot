@@ -214,7 +214,10 @@ async def recstatus_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         if "decode" in recognize.last_error.lower() or "403" in recognize.last_error:
             lines.append("   ↳ شزم به IP این سرور جواب JSON نمی‌ده. SHAZAM_PROXY رو ست کن.")
     if settings.shazam_proxy:
-        lines.append("   🔀 از پروکسی استفاده می‌شه")
+        if settings.shazam_proxy.lower().startswith("socks"):
+            lines.append("   ❌ SHAZAM_PROXY از نوع SOCKS ـه و نادیده گرفته می‌شه — باید http باشه")
+        else:
+            lines.append("   🔀 از پروکسی استفاده می‌شه")
 
     lines += engines.status()
 
@@ -337,6 +340,19 @@ def _ig_direct_lines() -> list[str]:
         role = "فعال" if state["running"] else "آماده‌باش"
         lines.append(f"{icon} {name} ({role}): {_md(state['detail'] or '-')}")
         lines.append(f"   ↳ {state['events']} پیام · آخری {ago(state['last_event'])}")
+
+    try:
+        from modules import ig_private
+
+        if ig_private.blocked_reason:
+            import time as _t
+
+            hours = (_t.time() - ig_private.blocked_at) / 3600
+            lines.append(f"🚫 اکانت بلاک شده ({hours:.1f} ساعت پیش) — پولینگ متوقفه")
+            lines.append("   ↳ " + _md(ig_private.blocked_reason[:110]))
+            lines.append("   ↳ تو اپ اینستا لاگین کن، بعد: botctl igreset")
+    except Exception:
+        pass
 
     if snapshot["sources"].get("poll", {}).get("running"):
         try:

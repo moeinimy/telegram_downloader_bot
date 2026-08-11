@@ -456,6 +456,33 @@ async def _sweep(
 _throttled = 0
 _THROTTLE_MARKERS = ("wait a few minutes", "429", "rate", "throttl", "please wait")
 
+# Instagram refusing the session outright rather than asking us to slow down.
+# 1404006 with a 403 is what a flagged account gets on every private call;
+# the rest are the named forms of the same thing.
+_BLOCK_MARKERS = (
+    "1404006", "challenge_required", "checkpoint", "login_required",
+    "consent_required", "feedback_required", "user_has_logged_out",
+    '"status_code":"403"', "'status_code': '403'",
+)
+
+# Set when the account is refused. Retrying past this point cannot succeed and
+# makes the flag worse, so the loop stops and says so instead.
+blocked_reason: str = ""
+blocked_at: float = 0.0
+
+_alert = None
+
+
+def set_alert(fn) -> None:
+    """Where to shout when the account gets blocked. Wired to the admin chat."""
+    global _alert
+    _alert = fn
+
+
+def _is_blocked(text: str) -> bool:
+    lowered = text.lower()
+    return any(marker.lower() in lowered for marker in _BLOCK_MARKERS)
+
 
 async def _loop(dispatch: Dispatch) -> None:
     """Poll fast while the user is active, slowly while they are not.
@@ -506,20 +533,48 @@ async def _loop(dispatch: Dispatch) -> None:
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            # A challenge, a changed endpoint, or Instagram telling us to slow
-            # down. Back off hard and keep backing off: continuing at the same
-            # rate into a throttle is what turns it into a ban.
-            text = str(e).lower()
-            if any(marker in text for marker in _THROTTLE_MARKERS):
-                _throttled += 1
-                penalty = min(300, idle * (2 ** _throttled))
-                log.warning(
-                    "ig poll: throttled by Instagram (%s) - backing off to %ds", e, penalty
+            global blocked_reason, blocked_at
+
+            text = str(e)
+
+            # Refused, not throttled. No interval fixes this: every further
+            # request is another automated call from an address Instagram has
+            # already decided about. The first version treated a 403 as an
+            # ordinary error and retried every 9 seconds indefinitely, which
+            # is the opposite of what a flagged account needs.
+            if _is_blocked(text):
+                blocked_reason, blocked_at = text[:300], time.time()
+                log.error(
+                    "ig poll: Instagram has BLOCKED this account - stopping the poller.\n"
+                    "  %s\n"
+                    "  Recovery: open the account in the Instagram app, clear any "
+                    "security prompt, then run 'botctl igreset'.",
+                    text[:300],
                 )
-                await asyncio.sleep(penalty)
+                if _alert:
+                    try:
+                        await _alert(
+                            "🚫 اکانت اینستاگرام دایرکت بلاک شد.\n\n"
+                            "پولینگ متوقف شد تا وضعیت بدتر نشه.\n\n"
+                            "۱. با همون اکانت تو اپ اینستاگرام لاگین کن\n"
+                            "۲. اگه پیام امنیتی داد تاییدش کن\n"
+                            "۳. رو سرور: botctl igreset\n\n"
+                            f"جزئیات: {text[:150]}"
+                        )
+                    except Exception:
+                        pass
+                return  # the loop ends here, deliberately
+
+            _throttled += 1
+            penalty = min(600, idle * (2 ** _throttled))
+            if any(marker in text.lower() for marker in _THROTTLE_MARKERS):
+                log.warning("ig poll: throttled by Instagram (%s) - backing off to %ds", e, penalty)
             else:
-                log.warning("ig poll: sweep failed (%s) - backing off", e)
-                await asyncio.sleep(idle * 4)
+                # Everything unrecognised backs off too, and keeps backing
+                # off. A flat retry delay on a persistent failure is just a
+                # slower infinite loop.
+                log.warning("ig poll: sweep failed (%s) - backing off to %ds", e, penalty)
+            await asyncio.sleep(penalty)
             continue
 
         # Paced from the START of the cycle, not the end. Sleeping the full
@@ -537,9 +592,21 @@ async def start(dispatch: Dispatch) -> None:
 
     if not available():
         raise RuntimeError("instagrapi is not installed (botctl igdirect)")
+    if blocked_reason:
+        raise RuntimeError(f"account is blocked by Instagram: {blocked_reason[:120]}")
 
     if _task is None or _task.done():
         _task = asyncio.create_task(_loop(dispatch))
+
+
+def clear_block() -> None:
+    """Called after a human has cleared the flag in the Instagram app. Drops
+    the cached client too, so the next call logs in fresh."""
+    global blocked_reason, blocked_at, _client, _throttled
+
+    blocked_reason, blocked_at, _throttled = "", 0.0, 0
+    with _client_lock:
+        _client = None
 
 
 async def stop() -> None:
@@ -562,6 +629,8 @@ async def catch_up(dispatch: Dispatch) -> int:
 
 
 async def health() -> tuple[bool, str]:
+    if blocked_reason:
+        return False, f"BLOCKED by Instagram - {blocked_reason[:120]}"
     if not available():
         return False, "instagrapi not installed"
     try:

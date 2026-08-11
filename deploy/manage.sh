@@ -907,6 +907,50 @@ do_igdirect() {
     info "وضعیت رو تو بات با /srcstatus ببین."
 }
 
+do_igreset() {
+    echo; info "=== ریست سشن اینستاگرام دایرکت ==="; echo
+    warn "این کار سشن ذخیره‌شده رو پاک می‌کنه و بات دوباره لاگین می‌کنه."
+    warn "قبلش حتما این‌ها رو انجام بده وگرنه دوباره بلاک می‌شه:"
+    echo "  1. با همون اکانت تو اپ موبایل اینستاگرام لاگین کن"
+    echo "  2. اگه پیام امنیتی/تایید داد، تاییدش کن"
+    echo "  3. چند دقیقه عادی باهاش کار کن (اسکرول، لایک)"
+    echo
+    read -rp "انجام دادی؟ (y/n) " a
+    [[ "$a" != "y" ]] && { warn "لغو شد"; return 0; }
+
+    rm -f "$PROJECT_DIR/downloads/ig_private_session.json"
+    ok "سشن پاک شد"
+
+    local cur
+    cur=$(get_env IG_DM_POLL_SECONDS)
+    echo
+    info "فاصله پولینگ فعلی: ${cur:-8}s"
+    warn "پولینگ سریع همون چیزیه که اکانت رو بلاک کرد."
+    read -rp "بذارمش روی ۱۵ ثانیه (امن‌تر)؟ (y/n) " a
+    if [[ "$a" == "y" ]]; then
+        set_env IG_DM_POLL_SECONDS 15
+        set_env IG_DM_FAST_SECONDS 5
+        ok "روی ۱۵/۵ ثانیه تنظیم شد"
+    fi
+
+    chown -R "$BOT_USER:$BOT_USER" "$PROJECT_DIR/downloads"
+    systemctl restart "$SERVICE_NAME"
+    sleep 4
+    info "لاگ:"
+    journalctl -u "$SERVICE_NAME" --no-pager -n 15 | grep -iE "ig poll|blocked" || echo "  (چیزی نیست - خوبه)"
+    echo
+    warn "اگه دوباره ۴۰۳ داد، اکانت هنوز فلگه. یکی دو روز دست بهش نزن."
+}
+
+do_shazamtest() {
+    echo; info "=== تست زنده‌ی شزم ==="
+    # "FailedDecodeJson" only says the body was not json. Whether that body
+    # was a block page, a 403, a captcha or an empty response wants different
+    # answers, and none of them are visible from the bot's error message.
+    sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/python" \
+        "$PROJECT_DIR/deploy/shazamtest.py" "${1:-}"
+}
+
 do_deps() {
     echo; info "=== وضعیت پکیج‌ها و دیسک ==="; echo
 
@@ -1396,7 +1440,9 @@ menu() {
     echo " 22) اینستاگرام دایرکت (دایرکت اینستا -> تلگرام)"
     echo " 23) زیرنویس ویدیو (faster-whisper)"
     echo " 24) وضعیت پکیج‌ها و تضادها"
-    echo " 25) نصب مجدد از صفر (پاک کردن همه چی)"
+    echo " 25) تست زنده‌ی شزم"
+    echo " 26) ریست سشن اینستاگرام (بعد از بلاک)"
+    echo " 27) نصب مجدد از صفر (پاک کردن همه چی)"
     echo "  0) خروج"
     echo
 }
@@ -1416,6 +1462,8 @@ case "${1:-}" in
     igdirect) do_igdirect; exit $? ;;
     whisper) do_whisper; exit $? ;;
     deps)    do_deps;    exit 0 ;;
+    shazamtest) do_shazamtest "${2:-}"; exit $? ;;
+    igreset) do_igreset; exit $? ;;
     engines) do_engines; exit $? ;;
     update)  do_update;  exit $? ;;
     restart) systemctl restart "$SERVICE_NAME"; exit $? ;;
@@ -1455,7 +1503,9 @@ while true; do
         22) do_igdirect; pause ;;
         23) do_whisper; pause ;;
         24) do_deps; pause ;;
-        25) do_reset; pause ;;
+        25) do_shazamtest; pause ;;
+        26) do_igreset; pause ;;
+        27) do_reset; pause ;;
         0)  echo; exit 0 ;;
         *)  err "گزینه نامعتبر"; sleep 1 ;;
     esac

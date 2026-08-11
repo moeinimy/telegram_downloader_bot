@@ -46,9 +46,23 @@ def _client():
     if _shazam is None:
         from shazamio import Shazam
 
-        if settings.shazam_proxy:
+        proxy = settings.shazam_proxy
+        if proxy and proxy.lower().startswith("socks"):
+            # aiohttp, which shazamio is built on, only speaks http proxies.
+            # A socks url is accepted silently and then ignored, so the
+            # symptom is identical to having set no proxy at all - which is
+            # the worst possible outcome for something bought to fix a block.
+            log.error(
+                "SHAZAM_PROXY=%s is a SOCKS proxy and aiohttp cannot use one. "
+                "Put an http bridge in front of it (privoxy) and point this at "
+                "the bridge, or use an http:// proxy.",
+                proxy.split("@")[-1],
+            )
+            proxy = ""
+
+        if proxy:
             try:
-                _shazam = Shazam(proxy=settings.shazam_proxy)
+                _shazam = Shazam(proxy=proxy)
                 log.info("shazam: routing through the configured proxy")
             except TypeError:
                 # Older shazamio has no proxy argument.

@@ -239,8 +239,9 @@ settings = Settings(
     ig_health_minutes=_int("IG_HEALTH_MINUTES", 10),
     ig_dm_username=_get("IG_DM_USERNAME"),
     ig_dm_password=_get("IG_DM_PASSWORD"),
-    ig_dm_poll_seconds=_float("IG_DM_POLL_SECONDS", 2),
-    ig_dm_fast_seconds=_float("IG_DM_FAST_SECONDS", 1),
+    # Raised after the account was blocked at ~1s polling. See .env.example.
+    ig_dm_poll_seconds=_float("IG_DM_POLL_SECONDS", 8),
+    ig_dm_fast_seconds=_float("IG_DM_FAST_SECONDS", 3),
     ig_dm_fast_window=_int("IG_DM_FAST_WINDOW", 120),
     bot_api_base_url=_get("BOT_API_BASE_URL"),
     download_dir=Path(_get("DOWNLOAD_DIR", "./downloads")).resolve(),
