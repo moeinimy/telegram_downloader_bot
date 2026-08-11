@@ -72,6 +72,9 @@ class Settings:
     # Preferred over the password: a password login originating from this
     # server is a login context Instagram does not trust and usually refuses.
     ig_dm_sessionid: str
+    # Route instagrapi through a proxy. Unlike SHAZAM_PROXY this one accepts
+    # socks5:// as well - instagrapi uses requests, which speaks SOCKS.
+    ig_dm_proxy: str
     # Floats: the poll interval IS the DM latency, so sub-second settings are
     # meaningful here even though nothing else in this file needs them.
     ig_dm_poll_seconds: float
@@ -246,6 +249,7 @@ settings = Settings(
     ig_dm_username=_get("IG_DM_USERNAME"),
     ig_dm_password=_get("IG_DM_PASSWORD"),
     ig_dm_sessionid=_get("IG_DM_SESSIONID"),
+    ig_dm_proxy=_get("IG_DM_PROXY"),
     # Raised after the account was blocked at ~1s polling. See .env.example.
     ig_dm_poll_seconds=_float("IG_DM_POLL_SECONDS", 8),
     ig_dm_fast_seconds=_float("IG_DM_FAST_SECONDS", 3),

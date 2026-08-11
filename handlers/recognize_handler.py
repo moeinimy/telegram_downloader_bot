@@ -23,6 +23,33 @@ from telegram.ext import ContextTypes
 
 from config import settings
 from handlers.spotify_handler import _send_and_download_track
+
+
+def _outage_text(chat_id: int) -> str:
+    """The outage message, with the reason attached for whoever can fix it.
+
+    Falling through to the other engines already happens - the log says
+    "falling through to the others" - but with neither ACOUSTID_API_KEY nor
+    AUDD_API_TOKEN set there is nothing to fall through TO, so the fallback
+    runs, finds no engines, and the user sees the same outage message as
+    before. From the outside that is indistinguishable from the fallback not
+    existing, which is exactly how it was reported.
+    """
+    from utils.i18n import t as _t
+
+    text = _t(chat_id, "⏳ سرویس تشخیص آهنگ الان جواب نمی‌ده. چند دقیقه دیگه دوباره امتحان کن.")
+
+    if chat_id in settings.admin_ids and not (settings.acoustid_key or settings.audd_token):
+        text += (
+            "\n\n———\n"
+            "👤 فقط تو (ادمین) اینو می‌بینی:\n\n"
+            "شزم به IP این سرور ۴۰۳ می‌ده، و *هیچ موتور جایگزینی ست نشده* — "
+            "پس چیزی برای سوییچ کردن وجود نداره.\n\n"
+            "• کلید رایگان AcoustID (بدون سقف عملی):\n"
+            "  acoustid.org/new-application → botctl engines\n"
+            "• یا پروکسی برای خود شزم: SHAZAM_PROXY"
+        )
+    return text
 from modules import recognize as rec
 from modules import spotify as sp
 from utils.i18n import t
@@ -50,7 +77,7 @@ async def recognize_from_url(msg, url: str) -> None:
         except rec.RecognitionUnavailable:
             snippet.unlink(missing_ok=True)
             await status.edit_text(
-                t(msg.chat_id, "⏳ سرویس تشخیص آهنگ الان جواب نمی‌ده. چند دقیقه دیگه دوباره امتحان کن.")
+                _outage_text(msg.chat_id)
             )
             return
         finally:
@@ -74,7 +101,7 @@ async def _recognize_and_send(msg, status, audio_path: Path, *, cleanup: bool) -
         candidates = await rec.recognize_candidates(audio_path)
     except rec.RecognitionUnavailable:
         await status.edit_text(
-            t(msg.chat_id, "⏳ سرویس تشخیص آهنگ الان جواب نمی‌ده. چند دقیقه دیگه دوباره امتحان کن.")
+            _outage_text(msg.chat_id)
         )
         return
     except Exception as e:

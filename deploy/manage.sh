@@ -932,6 +932,47 @@ do_igdirect() {
     info "وضعیت رو تو بات با /srcstatus ببین."
 }
 
+do_proxy() {
+    echo; info "=== پروکسی (وقتی IP سرور رد شده) ==="; echo
+    warn "نشانه‌ش اینه که سرویس‌های بی‌ربط هم‌زمان ۴۰۳ HTML می‌دن:"
+    echo "  • شزم:      403 Forbidden از amp.shazam.com"
+    echo "  • اینستاگرام: 403 Forbidden از i.instagram.com"
+    echo "  اگه هر دو با هم خرابن، مشکل IP ـه نه کد."
+    echo
+    info "تست فعلی از این سرور:"
+    local sc
+    sc=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://amp.shazam.com/ 2>/dev/null)
+    echo "  amp.shazam.com     -> HTTP ${sc:-timeout}"
+    sc=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://i.instagram.com/api/v1/ 2>/dev/null)
+    echo "  i.instagram.com    -> HTTP ${sc:-timeout}"
+    echo
+
+    warn "شزم فقط http:// قبول می‌کنه (aiohttp سوکس نمی‌فهمه)."
+    warn "اینستاگرام هم http:// و هم socks5:// قبول می‌کنه."
+    echo
+    info "اگه فقط socks5 داری، با privoxy پل بزن:"
+    echo "  apt install -y privoxy"
+    echo "  echo 'forward-socks5 / 127.0.0.1:1080 .' >> /etc/privoxy/config"
+    echo "  systemctl restart privoxy      # بعدش http://127.0.0.1:8118"
+    echo
+
+    local p
+    read -rp "پروکسی http برای شزم (خالی = بدون تغییر): " p
+    [[ -n "$p" ]] && { set_env SHAZAM_PROXY "$p"; ok "SHAZAM_PROXY ست شد"; }
+
+    read -rp "پروکسی برای اینستاگرام (خالی = همون بالا): " p
+    if [[ -z "$p" ]]; then
+        p=$(get_env SHAZAM_PROXY)
+    fi
+    [[ -n "$p" ]] && { set_env IG_DM_PROXY "$p"; ok "IG_DM_PROXY ست شد"; }
+
+    chmod 600 "$PROJECT_DIR/.env"
+    chown "$BOT_USER:$BOT_USER" "$PROJECT_DIR/.env"
+    systemctl restart "$SERVICE_NAME"
+    sleep 3
+    ok "ریستارت شد. تست:  botctl shazamtest"
+}
+
 do_igreset() {
     echo; info "=== ریست سشن اینستاگرام دایرکت ==="; echo
     warn "این کار سشن ذخیره‌شده رو پاک می‌کنه و بات دوباره لاگین می‌کنه."
@@ -1482,7 +1523,8 @@ menu() {
     echo " 24) وضعیت پکیج‌ها و تضادها"
     echo " 25) تست زنده‌ی شزم"
     echo " 26) ریست سشن اینستاگرام (بعد از بلاک)"
-    echo " 27) نصب مجدد از صفر (پاک کردن همه چی)"
+    echo " 27) پروکسی (شزم / اینستاگرام)"
+    echo " 28) نصب مجدد از صفر (پاک کردن همه چی)"
     echo "  0) خروج"
     echo
 }
@@ -1504,6 +1546,7 @@ case "${1:-}" in
     deps)    do_deps;    exit 0 ;;
     shazamtest) do_shazamtest "${2:-}"; exit $? ;;
     igreset) do_igreset; exit $? ;;
+    proxy)   do_proxy;   exit $? ;;
     engines) do_engines; exit $? ;;
     update)  do_update;  exit $? ;;
     restart) systemctl restart "$SERVICE_NAME"; exit $? ;;
@@ -1545,7 +1588,8 @@ while true; do
         24) do_deps; pause ;;
         25) do_shazamtest; pause ;;
         26) do_igreset; pause ;;
-        27) do_reset; pause ;;
+        27) do_proxy; pause ;;
+        28) do_reset; pause ;;
         0)  echo; exit 0 ;;
         *)  err "گزینه نامعتبر"; sleep 1 ;;
     esac

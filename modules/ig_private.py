@@ -151,6 +151,19 @@ def _new_client():
     client = Client()
     _make_responsive(client)
     _apply_device(client)
+
+    # This server's address is refused by Instagram outright - even
+    # users/<id>/info/ during login comes back as a 403 html page, and the
+    # same host answers Shazam's endpoint with an identical 403. Two
+    # unrelated services refusing one IP is the IP, not the code, and no
+    # retry or credential changes where a request comes from.
+    if settings.ig_dm_proxy:
+        try:
+            client.set_proxy(settings.ig_dm_proxy)
+            log.info("ig poll: routing through the configured proxy")
+        except Exception as e:
+            log.error("ig poll: IG_DM_PROXY rejected (%s) - continuing direct", e)
+
     return client
 
 
