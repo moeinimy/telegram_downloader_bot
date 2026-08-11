@@ -83,12 +83,35 @@ def _make_responsive(client) -> None:
     client.delay_range = [0, 0]
 
 
-def _login():
-    """Reuse the stored session; only fall back to a password login.
+def _save(client) -> None:
+    try:
+        client.dump_settings(str(_SESSION_PATH))
+        _SESSION_PATH.chmod(0o600)
+    except Exception as e:
+        log.warning("ig poll: could not save the session (%s)", e)
 
-    Every password login is a fresh device fingerprint to Instagram and a good
-    way to trigger a challenge, so the session file is the normal path and the
-    password is the recovery path.
+
+def _login():
+    """Get a working client, trying the least risky route first.
+
+    Three routes, in this order:
+
+      1. the stored session file
+      2. IG_DM_SESSIONID - a sessionid cookie taken from a browser where the
+         account is already signed in
+      3. a username/password login from this server
+
+    Route 3 is last because on a datacenter address it usually loses. It sends
+    a device fingerprint Instagram has never seen from an IP it does not
+    trust, and the answer is:
+
+        BadPassword: We can send you an email to help you get back into your
+        account. This can also happen when Instagram rejects the proxy/IP,
+        device fingerprint, or login context, even if the password is correct.
+
+    The password was correct. The login context was the problem. Route 2
+    avoids it entirely: the sign-in already happened somewhere Instagram
+    trusts, and the server only carries the result.
     """
     global _client
 
@@ -98,34 +121,42 @@ def _login():
 
         from instagrapi import Client
 
-        client = Client()
-        _make_responsive(client)
-
         if _SESSION_PATH.exists():
+            client = Client()
+            _make_responsive(client)
             try:
                 client.load_settings(str(_SESSION_PATH))
-                client.login(settings.ig_dm_username, settings.ig_dm_password)
+                if settings.ig_dm_sessionid:
+                    client.login_by_sessionid(settings.ig_dm_sessionid)
+                elif settings.ig_dm_password:
+                    client.login(settings.ig_dm_username, settings.ig_dm_password)
                 client.get_timeline_feed()  # proves the session is really live
                 _client = client
                 log.info("ig poll: reused the stored session")
                 return _client
             except Exception as e:
-                log.warning("ig poll: stored session rejected (%s) - logging in fresh", e)
-                client = Client()
-                # This branch used to leave instagrapi's defaults in place for
-                # the rest of the process, so one rejected session quietly
-                # restored the slow path for good.
-                _make_responsive(client)
+                log.warning("ig poll: stored session rejected (%s)", e)
 
+        if settings.ig_dm_sessionid:
+            client = Client()
+            _make_responsive(client)
+            client.login_by_sessionid(settings.ig_dm_sessionid)
+            _save(client)
+            _client = client
+            log.info("ig poll: signed in with the sessionid cookie")
+            return _client
+
+        if not settings.ig_dm_password:
+            raise RuntimeError(
+                "no IG_DM_SESSIONID and no IG_DM_PASSWORD - run 'botctl igdirect'"
+            )
+
+        client = Client()
+        _make_responsive(client)
         client.login(settings.ig_dm_username, settings.ig_dm_password)
-        try:
-            client.dump_settings(str(_SESSION_PATH))
-            _SESSION_PATH.chmod(0o600)
-        except Exception as e:
-            log.warning("ig poll: could not save the session (%s)", e)
-
+        _save(client)
         _client = client
-        log.info("ig poll: logged in as %s", settings.ig_dm_username)
+        log.info("ig poll: logged in with a password as %s", settings.ig_dm_username)
         return _client
 
 
@@ -325,18 +356,56 @@ def _inbox(client, endpoint: str, params: dict) -> dict:
     return client.private_request(endpoint, params=params) or client.last_json or {}
 
 
+def _inbox_params(limit: int, message_limit: int) -> dict:
+    """Exactly the parameter set instagrapi's own direct_threads() sends.
+
+    Dropping to private_request kept the endpoint and lost the parameters,
+    and Instagram cares about the difference. The first version sent four of
+    these eleven and got:
+
+        {"action":"item_ack","status":"fail",
+         "payload":{"error_code":1404006},"status_code":"403"}
+
+    which is the generic direct-messaging refusal, not an account problem -
+    the same account signed in fine on a phone throughout. A request that
+    does not look like the app gets refused; fetch_reason and the tracking id
+    are part of looking like the app.
+    """
+    import uuid
+
+    return {
+        "visual_message_return_type": "unseen",
+        "thread_message_limit": message_limit,
+        "persistentBadging": "true",
+        "limit": limit,
+        "is_prefetching": "false",
+        "fetch_reason": "initial_snapshot",
+        "eb_device_id": "0",
+        "igd_request_log_tracking_id": str(uuid.uuid4()),
+        "include_old_mrs": "false",
+        "no_pending_badge": "true",
+        "push_disabled": "true",
+    }
+
+
+def _pending_params() -> dict:
+    import uuid
+
+    return {
+        "visual_message_return_type": "unseen",
+        "persistentBadging": "true",
+        "is_prefetching": "false",
+        "request_session_id": str(uuid.uuid4()),
+    }
+
+
 @run_in_thread
 def _collect(threads_wanted: int, since: float, with_pending: bool = True) -> list[DirectMessage]:
     """One synchronous sweep of the inbox. Returns what is newer than `since`."""
     client = _login()
     out: list[DirectMessage] = []
 
-    data = _inbox(client, "direct_v2/inbox/", {
-        "visual_message_return_type": "unseen",
-        "thread_message_limit": 5,
-        "persistentBadging": "true",
-        "limit": threads_wanted,
-    })
+    data = _inbox(client, "direct_v2/inbox/", _inbox_params(threads_wanted, 5))
     threads = list(((data.get("inbox") or {}).get("threads")) or [])
 
     if with_pending:
@@ -344,10 +413,7 @@ def _collect(threads_wanted: int, since: float, with_pending: bool = True) -> li
             # Message requests from people who have never messaged us before
             # land here rather than in the inbox, and a first-time sharer is
             # exactly the case that matters.
-            pending = _inbox(client, "direct_v2/pending_inbox/", {
-                "visual_message_return_type": "unseen",
-                "persistentBadging": "true",
-            })
+            pending = _inbox(client, "direct_v2/pending_inbox/", _pending_params())
             threads += ((pending.get("inbox") or {}).get("threads")) or []
         except Exception as e:
             log.info("ig poll: pending inbox unavailable (%s)", e)
@@ -459,23 +525,36 @@ _THROTTLE_MARKERS = ("wait a few minutes", "429", "rate", "throttl", "please wai
 # Instagram refusing the session outright rather than asking us to slow down.
 # 1404006 with a 403 is what a flagged account gets on every private call;
 # the rest are the named forms of the same thing.
+# Instagram refusing to let this client in at all. A human has to act, so the
+# poller stops rather than retrying something that cannot start succeeding.
+#
+# NOT in this list, deliberately: error_code 1404006 and a bare 403. Those are
+# the generic direct-messaging refusal, and treating them as an account ban
+# was wrong - the account signed in fine on a phone the whole time. It was our
+# request that was malformed, not the account that was banned.
 _BLOCK_MARKERS = (
-    "1404006", "challenge_required", "checkpoint", "login_required",
-    "consent_required", "feedback_required", "user_has_logged_out",
-    '"status_code":"403"', "'status_code': '403'",
-    # instagrapi's exception class names, matched because the wording below
-    # does not always contain the machine-readable form.
+    "challenge_required", "checkpoint", "login_required", "consent_required",
+    "feedback_required", "user_has_logged_out",
+    # instagrapi's exception class names, matched because the prose does not
+    # always contain the machine-readable form.
     "challengerequired", "loginrequired", "checkpointrequired",
-    "badpassword", "clientforbidden", "pleasewaitfewminutes",
-    # And the prose it actually printed, which matched none of the above and
-    # so was retried as if it were a network blip:
-    #
-    #   We can send you an email to help you get back into your account. This
-    #   can also happen when Instagram rejects the proxy/IP, device
-    #   fingerprint, or login context, even if the password is correct.
+    "badpassword", "twofactorrequired",
     "get back into your account", "rejects the proxy", "device fingerprint",
     "two-factor", "verification code",
 )
+
+# A refused sign-in and a disabled account need completely different answers,
+# and telling someone their account is banned when it is not sends them to fix
+# the wrong thing.
+_LOGIN_MARKERS = (
+    "badpassword", "get back into your account", "rejects the proxy",
+    "device fingerprint", "login context",
+)
+
+
+def _is_login_problem(text: str) -> bool:
+    lowered = text.lower()
+    return any(marker in lowered for marker in _LOGIN_MARKERS)
 
 # Set when the account is refused. Retrying past this point cannot succeed and
 # makes the flag worse, so the loop stops and says so instead.
@@ -567,15 +646,27 @@ async def _loop(dispatch: Dispatch) -> None:
                     text[:300],
                 )
                 if _alert:
-                    try:
-                        await _alert(
-                            "🚫 اکانت اینستاگرام دایرکت بلاک شد.\n\n"
+                    if _is_login_problem(text):
+                        message = (
+                            "🔑 اینستاگرام لاگین بات رو رد کرد.\n\n"
+                            "این یعنی اکانت بن نیست — لاگین *از این سرور* قبول نشد. "
+                            "پسورد هم معمولا درسته؛ اینستاگرام به IP دیتاسنتر "
+                            "اعتماد نمی‌کنه.\n\n"
+                            "راه‌حل: به‌جای پسورد، کوکی sessionid بده.\n"
+                            "رو سرور:  botctl igdirect  → گزینه ۲\n\n"
+                            f"جزئیات: {text[:150]}"
+                        )
+                    else:
+                        message = (
+                            "🚫 اینستاگرام دسترسی اکانت رو محدود کرده.\n\n"
                             "پولینگ متوقف شد تا وضعیت بدتر نشه.\n\n"
                             "۱. با همون اکانت تو اپ اینستاگرام لاگین کن\n"
                             "۲. اگه پیام امنیتی داد تاییدش کن\n"
                             "۳. رو سرور: botctl igreset\n\n"
                             f"جزئیات: {text[:150]}"
                         )
+                    try:
+                        await _alert(message)
                     except Exception:
                         pass
                 return  # the loop ends here, deliberately

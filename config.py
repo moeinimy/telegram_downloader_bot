@@ -68,6 +68,10 @@ class Settings:
     ig_health_minutes: int
     ig_dm_username: str
     ig_dm_password: str
+    # A sessionid cookie from a browser already signed in as that account.
+    # Preferred over the password: a password login originating from this
+    # server is a login context Instagram does not trust and usually refuses.
+    ig_dm_sessionid: str
     # Floats: the poll interval IS the DM latency, so sub-second settings are
     # meaningful here even though nothing else in this file needs them.
     ig_dm_poll_seconds: float
@@ -139,7 +143,9 @@ class Settings:
 
     @property
     def has_ig_private(self) -> bool:
-        return bool(self.ig_dm_username and self.ig_dm_password)
+        """Either credential will do; the sessionid is the one that works from
+        a datacenter address."""
+        return bool(self.ig_dm_username and (self.ig_dm_sessionid or self.ig_dm_password))
 
     @property
     def ig_direct_enabled(self) -> bool:
@@ -239,6 +245,7 @@ settings = Settings(
     ig_health_minutes=_int("IG_HEALTH_MINUTES", 10),
     ig_dm_username=_get("IG_DM_USERNAME"),
     ig_dm_password=_get("IG_DM_PASSWORD"),
+    ig_dm_sessionid=_get("IG_DM_SESSIONID"),
     # Raised after the account was blocked at ~1s polling. See .env.example.
     ig_dm_poll_seconds=_float("IG_DM_POLL_SECONDS", 8),
     ig_dm_fast_seconds=_float("IG_DM_FAST_SECONDS", 3),

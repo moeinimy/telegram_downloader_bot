@@ -587,7 +587,6 @@ _REAL_403 = (
     '"error_code":1404006},"status_code":"403"}'
 )
 for text, want, label in [
-    (_REAL_403, True, "the reported 403 / 1404006"),
     ("challenge_required", True, "a challenge"),
     ("checkpoint_required", True, "a checkpoint"),
     ("feedback_required", True, "an action block"),
@@ -603,6 +602,30 @@ for text, want, label in [
     ("TimeoutError: read timed out", False, "a timeout"),
 ]:
     check(f"ig poll: {label} -> stop={want}", _priv._is_blocked(text) is want, text[:60])
+
+# error_code 1404006 was misread as a banned account and reported as one. The
+# account signed in fine on a phone throughout - the request was malformed,
+# because the rewrite to raw private_request kept the endpoint and dropped
+# seven of the eleven parameters instagrapi sends.
+check("ig poll: 1404006 is NOT called an account ban",
+      not _priv._is_blocked(_REAL_403), "it would stop the poller")
+
+params = _priv._inbox_params(5, 5)
+for required in ("fetch_reason", "is_prefetching", "eb_device_id",
+                 "igd_request_log_tracking_id", "include_old_mrs",
+                 "no_pending_badge", "push_disabled", "thread_message_limit",
+                 "visual_message_return_type", "persistentBadging", "limit"):
+    check(f"ig poll: inbox request sends {required}", required in params)
+check("ig poll: the tracking id is per-request",
+      _priv._inbox_params(5, 5)["igd_request_log_tracking_id"]
+      != _priv._inbox_params(5, 5)["igd_request_log_tracking_id"])
+
+# A refused sign-in and a disabled account need different answers, and being
+# told the account is banned sends you to fix the wrong thing.
+check("ig poll: BadPassword reads as a login problem",
+      _priv._is_login_problem("BadPassword: ... rejects the proxy/IP ..."))
+check("ig poll: a checkpoint does not read as a login problem",
+      not _priv._is_login_problem("checkpoint_required"))
 
 check("recognize: the last error is recorded for /recstatus",
       (_rec._note_error(_FailedDecodeJson("Failed to decode json")) is None)

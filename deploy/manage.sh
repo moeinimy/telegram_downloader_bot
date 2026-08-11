@@ -798,13 +798,38 @@ _igdirect_standby() {
     fi
     ok "instagrapi نصب شد"
 
-    local dm_user dm_pass
-    read -rp  "یوزرنیم اکانت دایرکت: " dm_user
-    read -rsp "پسورد اکانت دایرکت: " dm_pass; echo
-    [[ -z "$dm_user" || -z "$dm_pass" ]] && { err "یوزرنیم و پسورد لازمه"; return 1; }
-
+    local dm_user
+    read -rp "یوزرنیم اکانت دایرکت: " dm_user
+    [[ -z "$dm_user" ]] && { err "یوزرنیم لازمه"; return 1; }
     set_env IG_DM_USERNAME "$dm_user"
-    set_env IG_DM_PASSWORD "$dm_pass"
+
+    echo
+    echo "  1) کوکی sessionid (پیشنهادی)"
+    echo "     لاگین تو مرورگر خودت انجام می‌شه، سرور فقط نتیجه رو نگه می‌داره."
+    echo "  2) پسورد"
+    echo "     لاگین از خود سرور. اینستاگرام معمولا از IP دیتاسنتر ردش می‌کنه"
+    echo "     با BadPassword — حتی وقتی پسورد درسته."
+    echo
+    read -rp "انتخاب: [1] " how
+    how="${how:-1}"
+
+    if [[ "$how" == "1" ]]; then
+        echo
+        info "تو مرورگر با همین اکانت وارد instagram.com شو، بعد:"
+        echo "  F12 → Application → Cookies → instagram.com → sessionid"
+        warn "این کوکی رو من نمی‌بینم؛ مستقیم تو .env همین سرور ذخیره می‌شه."
+        local sid
+        read -rsp "sessionid: " sid; echo
+        [[ -z "$sid" ]] && { err "خالی بود"; return 1; }
+        set_env IG_DM_SESSIONID "$sid"
+        set_env IG_DM_PASSWORD ""
+    else
+        local dm_pass
+        read -rsp "پسورد اکانت دایرکت: " dm_pass; echo
+        [[ -z "$dm_pass" ]] && { err "پسورد لازمه"; return 1; }
+        set_env IG_DM_PASSWORD "$dm_pass"
+        set_env IG_DM_SESSIONID ""
+    fi
     return 0
 }
 
