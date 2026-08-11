@@ -907,6 +907,32 @@ do_igdirect() {
     info "وضعیت رو تو بات با /srcstatus ببین."
 }
 
+do_whisper() {
+    echo; info "=== زیرنویس ویدیو (faster-whisper) ==="; echo
+    warn "روی CPU اجرا می‌شه. برای ریلز چند ثانیه‌ای مناسبه."
+    echo "  tiny   سریع‌ترین، فقط برای انگلیسی واضح"
+    echo "  base   پیش‌فرض — فارسی و انگلیسی، تعادل خوب"
+    echo "  small  دقیق‌تر، حدود ۳ برابر کندتر"
+    echo
+    warn "بار اول مدل دانلود می‌شه (base حدود ۱۵۰ مگ)."
+    read -rp "کدوم مدل؟ (tiny/base/small) [base]: " model
+    model="${model:-base}"
+    case "$model" in tiny|base|small|medium) ;; *) err "مدل نامعتبر"; return 1 ;; esac
+
+    # Deliberately not in requirements.txt: it pulls ctranslate2 and a model
+    # download, and that must not be able to break a working venv on update.
+    if ! sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/pip" install --progress-bar off faster-whisper; then
+        err "نصب faster-whisper شکست خورد - بات بدون زیرنویس کار می‌کنه"
+        return 1
+    fi
+
+    set_env WHISPER_MODEL "$model"
+    chown -R "$BOT_USER:$BOT_USER" "$PROJECT_DIR/downloads"
+    systemctl restart "$SERVICE_NAME"
+    ok "نصب شد. دکمه «زیرنویس ویدیو» فعاله."
+    warn "اولین استفاده مدل رو دانلود می‌کنه و کند‌تره."
+}
+
 _botapi_grant_read() {
     # The server writes new media with its own umask, so a one-off chmod only
     # fixes files that already exist - the next video is unreadable again and
@@ -1233,7 +1259,8 @@ menu() {
     echo " 20) وضعیت اینستاگرام"
     echo " 21) موتورهای تشخیص آهنگ"
     echo " 22) اینستاگرام دایرکت (دایرکت اینستا -> تلگرام)"
-    echo " 23) نصب مجدد از صفر (پاک کردن همه چی)"
+    echo " 23) زیرنویس ویدیو (faster-whisper)"
+    echo " 24) نصب مجدد از صفر (پاک کردن همه چی)"
     echo "  0) خروج"
     echo
 }
@@ -1251,6 +1278,7 @@ case "${1:-}" in
     channel) do_channel; exit $? ;;
     igcheck) do_igcheck; exit 0 ;;
     igdirect) do_igdirect; exit $? ;;
+    whisper) do_whisper; exit $? ;;
     engines) do_engines; exit $? ;;
     update)  do_update;  exit $? ;;
     restart) systemctl restart "$SERVICE_NAME"; exit $? ;;
@@ -1288,7 +1316,8 @@ while true; do
         20) do_igcheck; pause ;;
         21) do_engines; pause ;;
         22) do_igdirect; pause ;;
-        23) do_reset; pause ;;
+        23) do_whisper; pause ;;
+        24) do_reset; pause ;;
         0)  echo; exit 0 ;;
         *)  err "گزینه نامعتبر"; sleep 1 ;;
     esac

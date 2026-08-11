@@ -26,6 +26,7 @@ from telegram.ext import ContextTypes
 
 from modules import instagram as ig
 from utils import limits
+from utils.helpers import fmt_duration
 from utils.i18n import t
 from utils.limits import BoundedDict
 
@@ -42,14 +43,39 @@ def remember_video(shortcode: str, path: Path) -> None:
     _video_cache[shortcode] = str(path)
 
 
+def public_link(shortcode: str, permalink: str = "", info: ig.PostInfo | None = None) -> str:
+    """The post's address, never invented.
+
+    A url was being built as /reel/<shortcode> whenever no permalink was
+    passed. For a photo post that is the wrong path, and for a story it was
+    fabricated twice over - the "shortcode" was itself derived from a story
+    pk that has no shortcode - so a shared story arrived captioned with a
+    reel link to nothing.
+    """
+    clean = (permalink or "").split("?")[0]
+    if clean:
+        return clean
+    if not shortcode:
+        return ""
+    kind = "p" if (info and not info.is_video) else "reel"
+    return f"https://www.instagram.com/{kind}/{shortcode}/"
+
+
 def keyboard(chat_id: int, shortcode: str, permalink: str = "") -> InlineKeyboardMarkup:
-    link = permalink or f"https://www.instagram.com/reel/{shortcode}/"
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(t(chat_id, "👁 مشاهده در اینستاگرام"), url=link),
-            InlineKeyboardButton(t(chat_id, "🔄 بروزرسانی اطلاعات"),
-                                 callback_data=f"{PREFIX}:info:{shortcode}"),
-        ],
+    link = public_link(shortcode, permalink, _info_cache.get(shortcode))
+
+    rows = []
+    top = []
+    if link:
+        top.append(InlineKeyboardButton(t(chat_id, "👁 مشاهده در اینستاگرام"), url=link))
+    top.append(InlineKeyboardButton(t(chat_id, "🔄 بروزرسانی اطلاعات"),
+                                    callback_data=f"{PREFIX}:info:{shortcode}"))
+    rows.append(top)
+    return InlineKeyboardMarkup(rows + _action_rows(chat_id, shortcode))
+
+
+def _action_rows(chat_id: int, shortcode: str) -> list[list[InlineKeyboardButton]]:
+    return [
         [
             InlineKeyboardButton(t(chat_id, "🎬 همه کیفیت‌ها"),
                                  callback_data=f"{PREFIX}:q:{shortcode}"),
@@ -62,7 +88,11 @@ def keyboard(chat_id: int, shortcode: str, permalink: str = "") -> InlineKeyboar
             InlineKeyboardButton(t(chat_id, "📝 کپشن"),
                                  callback_data=f"{PREFIX}:cap:{shortcode}"),
         ],
-    ])
+        [
+            InlineKeyboardButton(t(chat_id, "💬 زیرنویس ویدیو (آزمایشی)"),
+                                 callback_data=f"{PREFIX}:sub:{shortcode}"),
+        ],
+    ]
 
 
 async def _info(shortcode: str, refresh: bool = False) -> ig.PostInfo:
@@ -110,21 +140,30 @@ async def caption_for(chat_id: int, shortcode: str, permalink: str = "") -> str:
     cache the buttons read from, so "caption" and "direct link" answer without
     a round trip.
     """
-    clean = (permalink or "").split("?")[0] or f"https://www.instagram.com/reel/{shortcode}/"
-
     try:
         info = await _info(shortcode)
     except Exception as e:
         log.info("ig post menu: no info for %s (%s) - plain link caption", shortcode, e)
-        return clean
+        return public_link(shortcode, permalink)
+
+    clean = public_link(shortcode, permalink, info)
 
     parts = []
+    head = []
     if info.username:
-        parts.append(f"👤 @{info.username}")
+        head.append(f"👤 @{info.username}")
+    if info.duration:
+        head.append(f"⏱ {fmt_duration(info.duration)}")
+    if info.taken_at:
+        head.append("🗓 " + time.strftime("%Y-%m-%d", time.localtime(info.taken_at)))
+    if head:
+        parts.append("  ".join(head))
 
     counters = []
     if info.likes:
         counters.append(f"❤️ {_num(info.likes)}")
+    if info.comments:
+        counters.append(f"💬 {_num(info.comments)}")
     if info.views:
         counters.append(f"▶️ {_num(info.views)}")
     if counters:
@@ -136,7 +175,8 @@ async def caption_for(chat_id: int, shortcode: str, permalink: str = "") -> str:
         # is one button away anyway.
         parts.append(head[:180] + ("…" if len(head) > 180 else ""))
 
-    parts.append(clean)
+    if clean:
+        parts.append(clean)
     return "\n".join(parts)
 
 
@@ -153,6 +193,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "q": _do_qualities,
         "pick": _do_pick,
         "aud": _do_audio,
+        "sub": _do_subtitles,
     }
     handler = handlers.get(action)
     if handler is None:
@@ -238,23 +279,70 @@ async def _do_pick(query, chat_id: int, shortcode: str, parts) -> None:
     await status.delete()
 
 
-async def _do_audio(query, chat_id: int, shortcode: str, _parts) -> None:
+async def _local_video(chat_id: int, shortcode: str):
+    """The delivered file, re-fetching the smallest rendition if the disk
+    sweeper has already removed it. None when the post has no video."""
+    from pathlib import Path as _Path
+
     source = _video_cache.get(shortcode)
+    if source and _Path(source).exists():
+        return _Path(source)
+
+    info = await _info(shortcode)
+    if not info.qualities:
+        return None
+    label, url = info.qualities[-1]  # smallest is plenty for audio work
+    path = await ig.fetch_quality(shortcode, url, label)
+    _video_cache[shortcode] = str(path)
+    return path
+
+
+async def _do_subtitles(query, chat_id: int, shortcode: str, _parts) -> None:
+    from modules import transcribe
+
+    if not transcribe.available():
+        await query.message.reply_text(
+            t(chat_id, "💬 زیرنویس هنوز روی این سرور نصب نشده.\n\nادمین: `botctl whisper`"),
+            parse_mode="Markdown",
+        )
+        return
+
+    status = await query.message.reply_text(t(chat_id, "💬 دارم به ویدیو گوش می‌دم…"))
+    async with limits.download_slot(chat_id):
+        video = await _local_video(chat_id, shortcode)
+        if video is None:
+            await status.edit_text(t(chat_id, "این پست ویدیو نیست."))
+            return
+        # Transcribing the extracted audio rather than the video: whisper
+        # would shell out to ffmpeg for the same conversion anyway, and this
+        # way it reuses the file the "audio only" button already made.
+        audio = await ig.extract_audio(video)
+        text, language = await transcribe.transcribe(audio)
+
+    if not text:
+        await status.edit_text(
+            t(chat_id, "💬 حرفی توش نشنیدم — احتمالا فقط موزیکه.")
+        )
+        return
+
+    await status.delete()
+    header = t(chat_id, "💬 *زیرنویس* (زبان: {lang})\n\n").format(language=language, lang=language)
+    body = header + text
+    for i in range(0, len(body), 3900):
+        await query.message.reply_text(
+            body[i : i + 3900], parse_mode="Markdown" if i == 0 else None
+        )
+
+
+async def _do_audio(query, chat_id: int, shortcode: str, _parts) -> None:
     status = await query.message.reply_text(t(chat_id, "🎧 در حال جدا کردن صدا…"))
 
     async with limits.download_slot(chat_id):
-        if not source or not Path(source).exists():
-            # The delivered file has been swept off disk, or the button was
-            # pressed on a post this process never downloaded.
-            info = await _info(shortcode)
-            if not info.qualities:
-                await status.edit_text(t(chat_id, "این پست ویدیو نیست."))
-                return
-            label, url = info.qualities[-1]  # smallest is plenty for audio
-            source = str(await ig.fetch_quality(shortcode, url, label))
-            _video_cache[shortcode] = source
-
-        audio = await ig.extract_audio(Path(source))
+        video = await _local_video(chat_id, shortcode)
+        if video is None:
+            await status.edit_text(t(chat_id, "این پست ویدیو نیست."))
+            return
+        audio = await ig.extract_audio(video)
 
     info = _info_cache.get(shortcode)
     title = f"@{info.username} · {shortcode}" if info and info.username else shortcode

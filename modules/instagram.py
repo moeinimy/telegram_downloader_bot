@@ -530,6 +530,7 @@ class PostInfo:
     comments: int = 0
     views: int = 0
     taken_at: float = 0.0
+    duration: float = 0.0
     is_video: bool = False
     # (label, url), best first. Empty for a photo-only post.
     qualities: list[tuple[str, str]] = field(default_factory=list)
@@ -583,6 +584,7 @@ def _parse_media_item(item: dict, shortcode: str) -> PostInfo:
         comments=int(item.get("comment_count") or 0),
         views=int(item.get("play_count") or item.get("view_count") or 0),
         taken_at=float(item.get("taken_at") or 0),
+        duration=float(item.get("video_duration") or 0),
         is_video=bool(qualities or any(n.get("video_versions") for n in nodes)),
         qualities=qualities,
         urls=[u for u in urls if u],

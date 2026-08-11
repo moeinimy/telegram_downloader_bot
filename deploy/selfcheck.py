@@ -464,6 +464,23 @@ story_dm = ig_direct.DirectMessage(
 check("dm: a story permalink is not treated as a shortcode",
       story_dm.shortcode() == "", story_dm.shortcode())
 
+# A url was being invented as /reel/<shortcode> whenever none was passed, so
+# a story arrived captioned with a reel link to a post that does not exist.
+from handlers.ig_post_menu import public_link  # noqa: E402
+from modules.instagram import PostInfo  # noqa: E402
+
+check("link: nothing to build from means no link",
+      public_link("", "") == "", public_link("", ""))
+check("link: a real permalink is used as given",
+      public_link("abc", "https://www.instagram.com/reel/XYZ/?igsh=1")
+      == "https://www.instagram.com/reel/XYZ/")
+check("link: a photo post is /p/ not /reel/",
+      public_link("ABC12", "", PostInfo(shortcode="ABC12", is_video=False))
+      == "https://www.instagram.com/p/ABC12/")
+check("link: a video post is /reel/",
+      public_link("ABC12", "", PostInfo(shortcode="ABC12", is_video=True))
+      == "https://www.instagram.com/reel/ABC12/")
+
 
 print()
 if failures:
