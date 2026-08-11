@@ -96,12 +96,23 @@ def _install_proxy(proxy: str) -> None:
             )
             return
 
+        # aiohttp-socks does not know the "h" suffix and raises
+        #     ValueError: Invalid scheme component: socks5h
+        # before any request leaves. curl and requests use socks5h to mean
+        # "resolve DNS at the proxy"; aiohttp-socks does that by default, so
+        # the suffix is simply dropped rather than translated.
+        url = proxy
+        for suffix, plain in (("socks5h://", "socks5://"), ("socks4a://", "socks4://")):
+            if url.lower().startswith(suffix):
+                url = plain + url[len(suffix):]
+                break
+
         original_init = aiohttp.ClientSession.__init__
 
         def __init__(self, *args, **kwargs):
             # Only when the caller did not bring its own connector.
             if not kwargs.get("connector"):
-                kwargs["connector"] = ProxyConnector.from_url(proxy)
+                kwargs["connector"] = ProxyConnector.from_url(url)
             original_init(self, *args, **kwargs)
 
         aiohttp.ClientSession.__init__ = __init__

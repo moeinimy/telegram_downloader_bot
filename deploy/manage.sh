@@ -1040,7 +1040,20 @@ do_proxy() {
     chown "$BOT_USER:$BOT_USER" "$PROJECT_DIR/.env"
     systemctl restart "$SERVICE_NAME"
     sleep 3
-    ok "ریستارت شد. تست نهایی:  botctl shazamtest"
+    ok "ریستارت شد."
+
+    # A sessionid is tied to the address it was issued to. Changing the proxy
+    # changes the exit country, and Instagram invalidates the cookie for it -
+    # a login that worked directly stops working the moment a proxy is added,
+    # and it looks like the proxy is broken when it is not.
+    if [[ -n "$(get_env IG_DM_SESSIONID)" ]]; then
+        echo
+        warn "کوکی sessionid فعلی با IP قبلی ساخته شده و حالا کشور خروجی عوض شده."
+        warn "اینستاگرام معمولا همون‌جا باطلش می‌کنه. یه sessionid تازه بگیر:"
+        echo "    botctl igdirect  →  گزینه ۲  →  sessionid جدید"
+    fi
+    echo
+    ok "تست:  botctl shazamtest   و   botctl igtest2"
 }
 
 _proxy_warp() {

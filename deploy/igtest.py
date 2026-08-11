@@ -98,10 +98,21 @@ def main() -> int:
         client = ig_private.client()
         print(f"  {OK}لاگین موفق. user_id={getattr(client, 'user_id', '?')}")
     except Exception as e:
-        print(f"  {BAD}{type(e).__name__}: {str(e)[:300]}")
-        if ig_private._is_login_problem(f"{type(e).__name__}: {e}"):
-            print("      ↳ لاگین رد شد، نه اکانت. معمولا یعنی IP سرور قبول نیست.")
-            print("        raه‌حل: sessionid تازه از مرورگر + پروکسی")
+        text = f"{type(e).__name__}: {e}"
+        print(f"  {BAD}{text[:300]}")
+        print()
+        if settings.ig_dm_sessionid and settings.ig_dm_proxy:
+            print("      ↳ کوکی sessionid به IP‌ای که باهاش ساخته شده گره می‌خوره.")
+            print("        اگه قبل از ست کردن پروکسی کار می‌کرد و حالا نه، کوکی")
+            print("        باطل شده چون کشور خروجی عوض شده - نه اینکه پروکسی خرابه.")
+            print()
+            print("        کاری که باید بکنی، به همین ترتیب:")
+            print("          ۱. پروکسی رو نگه دار (همین که هست)")
+            print("          ۲. یه sessionid *تازه* از مرورگر بگیر")
+            print("          ۳. botctl igdirect → گزینه ۲ → sessionid جدید")
+        elif "403" in text or "login_required" in text:
+            print("      ↳ لاگین رد شد، نه اکانت.")
+            print("        اگه پروکسی نداری: IP این سرور قبول نیست → botctl proxy")
         return 1
 
     # ---- 3. the call that actually matters ----
