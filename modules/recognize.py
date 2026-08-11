@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,13 +35,34 @@ _shazam = None
 def _client():
     """One Shazam client for the process: a fresh instance per window opened a
     new HTTP session each time, which is both slower and more likely to trip
-    rate limiting."""
+    rate limiting.
+
+    SHAZAM_PROXY exists because the endpoint refuses some datacenter
+    addresses outright - it answers with an HTML block page, shazamio cannot
+    parse it, and every window fails. No amount of retrying fixes an IP the
+    other end has decided about; the request has to leave from somewhere else.
+    """
     global _shazam
     if _shazam is None:
         from shazamio import Shazam
 
-        _shazam = Shazam()
+        if settings.shazam_proxy:
+            try:
+                _shazam = Shazam(proxy=settings.shazam_proxy)
+                log.info("shazam: routing through the configured proxy")
+            except TypeError:
+                # Older shazamio has no proxy argument.
+                log.warning("shazam: this shazamio version ignores SHAZAM_PROXY")
+                _shazam = Shazam()
+        else:
+            _shazam = Shazam()
     return _shazam
+
+
+def reset_client() -> None:
+    """Drop the cached client so a settings change takes effect."""
+    global _shazam
+    _shazam = None
 
 
 class RecognitionUnavailable(RuntimeError):
@@ -57,12 +79,36 @@ _TRANSIENT_MARKERS = (
     "cannot connect", "connection", "timeout", "timed out", "temporarily",
     "too many requests", "429", "502", "503", "504", "reset by peer",
     "ssl", "dns", "unreachable",
+    # Shazam answering with something that is not JSON. Observed in
+    # production as:
+    #
+    #     Shazam error on 00.mp4: FailedDecodeJson: Failed to decode json
+    #
+    # It means an HTML challenge, a block page or an empty body came back
+    # where the result should be - a datacenter IP being refused, not a track
+    # that is missing from the catalogue. Unclassified it fell to the generic
+    # branch, returned None, and reached the user as "no music found", which
+    # is why this looked like an accuracy problem for days.
+    "faileddecodejson", "failed to decode", "forbidden", "403", "captcha",
+    "blocked", "cloudflare", "expecting value",
 )
+
+# The last thing Shazam did wrong, for /recstatus. A silent outage that
+# presents as poor accuracy needs somewhere to be visible.
+last_error: str = ""
+last_error_at: float = 0.0
 
 
 def _is_transient(e: Exception) -> bool:
     text = f"{type(e).__name__} {e}".lower()
     return any(m in text for m in _TRANSIENT_MARKERS)
+
+
+def _note_error(e: Exception) -> None:
+    global last_error, last_error_at
+
+    last_error = f"{type(e).__name__}: {e}"[:160]
+    last_error_at = time.time()
 
 
 # Windows fingerprinted at once. Three keeps the wall-clock down without
@@ -92,6 +138,7 @@ async def _recognize_once(path: Path, attempts: int = 2) -> RecognizedSong | Non
                 )
                 await asyncio.sleep(0.8 * attempt)
                 continue
+            _note_error(e)
             if _is_transient(e):
                 log.warning("Shazam unreachable after %d tries: %s", attempts, e)
                 raise RecognitionUnavailable(str(e)) from e
@@ -320,34 +367,53 @@ async def recognize_candidates(path: Path) -> list[tuple[RecognizedSong, int]]:
                     return True
         return False
 
-    if await sweep(normalise=True, label="n", points=offsets):
-        ranked = sorted(votes.items(), key=lambda kv: kv[1], reverse=True)
-        return [(songs[k], n) for k, n in ranked]
+    # Shazam being down must not end the attempt. The other engines have
+    # completely different failure modes - a different company, a different
+    # network path, a different catalogue - so an outage at Shazam is exactly
+    # when they are worth asking. Aborting here meant a blocked IP took the
+    # working engines down with it.
+    down: Exception | None = None
 
-    # Second pass without the loudness filter. dynaudnorm rescues quiet clips
-    # but can smear an already-loud, compressed track enough to lose the
-    # fingerprint. Only a couple of points this time - a full repeat doubled
-    # the wait for the case that was already the slowest.
-    if not votes:
-        probe = offsets[:1] + offsets[len(offsets) // 2 : len(offsets) // 2 + 1]
-        log.info("recognize: retrying %d unprocessed windows", len(probe))
-        await sweep(normalise=False, label="r", points=probe)
+    try:
+        if await sweep(normalise=True, label="n", points=offsets):
+            ranked = sorted(votes.items(), key=lambda kv: kv[1], reverse=True)
+            return [(songs[k], n) for k, n in ranked]
 
-    if votes:
-        ranked = sorted(votes.items(), key=lambda kv: kv[1], reverse=True)
-        return [(songs[k], n) for k, n in ranked]
+        # Second pass without the loudness filter. dynaudnorm rescues quiet
+        # clips but can smear an already-loud, compressed track enough to lose
+        # the fingerprint. Only a couple of points this time - a full repeat
+        # doubled the wait for the case that was already the slowest.
+        if not votes:
+            probe = offsets[:1] + offsets[len(offsets) // 2 : len(offsets) // 2 + 1]
+            log.info("recognize: retrying %d unprocessed windows", len(probe))
+            await sweep(normalise=False, label="r", points=probe)
 
-    # Last resort: hand over the whole file, which is what the original
-    # implementation did and must never be beaten by the windowed version.
-    log.info("recognize: no window matched - trying the whole file")
-    song = await _recognize_once(path)
-    if song:
-        return [(song, 1)]
+        if votes:
+            ranked = sorted(votes.items(), key=lambda kv: kv[1], reverse=True)
+            return [(songs[k], n) for k, n in ranked]
 
-    # Shazam found nothing. Ask the other engines, whose failure modes differ
-    # from its own - AcoustID in particular fingerprints the exact recording,
-    # so it catches clean audio files that Shazam misses.
-    return await _try_other_engines(path)
+        # Last resort for Shazam: hand over the whole file, which is what the
+        # original implementation did and must never be beaten by windowing.
+        log.info("recognize: no window matched - trying the whole file")
+        song = await _recognize_once(path)
+        if song:
+            return [(song, 1)]
+    except RecognitionUnavailable as e:
+        down = e
+        log.warning("recognize: Shazam unavailable (%s) - falling through to the others", e)
+
+    # AcoustID in particular fingerprints the exact recording, so it catches
+    # clean audio Shazam misses - and it is free and keyless-cheap, which
+    # makes it the one to have configured when Shazam blocks a datacenter IP.
+    others = await _try_other_engines(path)
+    if others:
+        return others
+
+    # Nothing answered. If Shazam never got to speak, say so rather than
+    # claiming the audio is not in any catalogue.
+    if down is not None:
+        raise down
+    return []
 
 
 async def _try_other_engines(path: Path) -> list[tuple[RecognizedSong, int]]:

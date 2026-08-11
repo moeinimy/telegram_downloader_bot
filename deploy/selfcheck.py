@@ -551,6 +551,39 @@ finally:
     _shutil.disk_usage = _real_usage
 
 
+# ---------------------------------------------------------------- recognition
+# From the production log:
+#
+#     Shazam error on 00.mp4: FailedDecodeJson: Failed to decode json
+#
+# Not a missing track - an HTML block page where JSON should be, i.e. the
+# endpoint refusing this server's address. Unclassified it returned None,
+# which the caller reads as "no match", so a blocked IP reached the user as
+# "I couldn't identify any music".
+from modules import recognize as _rec  # noqa: E402
+
+
+class _FailedDecodeJson(Exception):
+    pass
+
+
+for exc, want, label in [
+    (_FailedDecodeJson("Failed to decode json"), True, "the reported production error"),
+    (Exception("403 Forbidden"), True, "a block page"),
+    (Exception("Cannot connect to host"), True, "a network drop"),
+    (ValueError("Expecting value: line 1 column 1"), True, "a raw json decode failure"),
+    (Exception("Too Many Requests"), True, "throttling"),
+    (Exception("track not in catalogue"), False, "a genuine miss"),
+]:
+    check(f"recognize: {label} -> outage={want}", _rec._is_transient(exc) is want,
+          f"{type(exc).__name__}: {exc}")
+
+check("recognize: the last error is recorded for /recstatus",
+      (_rec._note_error(_FailedDecodeJson("Failed to decode json")) is None)
+      and "FailedDecodeJson" in _rec.last_error,
+      _rec.last_error)
+
+
 print()
 if failures:
     print(f"=== {len(failures)} CHECK(S) FAILED: {failures} ===")

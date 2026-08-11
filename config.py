@@ -108,6 +108,11 @@ class Settings:
     audd_token: str
     recognition_engines: tuple[str, ...]
 
+    # Route Shazam through a proxy, e.g. http://user:pass@host:port. Needed
+    # when the endpoint refuses this server's address outright - it answers
+    # with a block page rather than JSON and every fingerprint fails.
+    shazam_proxy: str
+
     # Lyrics sources, in priority order. All are free and keyless.
     lyrics_sources: tuple[str, ...]
 
@@ -249,6 +254,7 @@ settings = Settings(
     audio_format=(_get("AUDIO_FORMAT", "m4a").lower() or "m4a"),
     acoustid_key=_get("ACOUSTID_API_KEY"),
     audd_token=_get("AUDD_API_TOKEN"),
+    shazam_proxy=_get("SHAZAM_PROXY"),
     recognition_engines=tuple(
         e for e in _get("RECOGNITION_ENGINES", "acoustid,audd").replace(" ", "").split(",") if e
     ),

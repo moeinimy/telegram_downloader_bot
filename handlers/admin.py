@@ -202,6 +202,20 @@ async def recstatus_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     ok, detail = recognize.service_reachable()
     lines = [("✅ " if ok else "❌ ") + f"shazam: {detail}"]
+
+    # Reachable and refusing us are different problems with the same symptom.
+    # A TCP connect proves the host is up; it says nothing about whether the
+    # endpoint will answer this IP with JSON or with a block page.
+    if recognize.last_error:
+        import time as _time
+
+        mins = (_time.time() - recognize.last_error_at) / 60
+        lines.append(f"   ⚠️ آخرین خطا ({mins:.0f} دقیقه پیش): {_md(recognize.last_error[:90])}")
+        if "decode" in recognize.last_error.lower() or "403" in recognize.last_error:
+            lines.append("   ↳ شزم به IP این سرور جواب JSON نمی‌ده. SHAZAM_PROXY رو ست کن.")
+    if settings.shazam_proxy:
+        lines.append("   🔀 از پروکسی استفاده می‌شه")
+
     lines += engines.status()
 
     # First, because it is the failure that does not look like itself: with
