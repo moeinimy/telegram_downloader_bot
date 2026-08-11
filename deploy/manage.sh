@@ -908,7 +908,24 @@ do_igdirect() {
 }
 
 do_deps() {
-    echo; info "=== وضعیت پکیج‌ها ==="; echo
+    echo; info "=== وضعیت پکیج‌ها و دیسک ==="; echo
+
+    # First, because it is the failure that does not announce itself: with no
+    # room to write a clip, ffmpeg fails, every recognition window comes back
+    # empty, and the bot tells the user it found no music.
+    info "دیسک:"
+    df -h "$PROJECT_DIR" | tail -1
+    local free_mb
+    free_mb=$(df -m --output=avail "$PROJECT_DIR" 2>/dev/null | tail -1 | tr -d ' ')
+    if [[ -n "$free_mb" ]] && (( free_mb < 500 )); then
+        err "فقط ${free_mb}MB آزاده - تشخیص آهنگ با این فضا کار نمی‌کنه"
+        echo "   بزرگ‌ترین‌ها تو downloads:"
+        du -sh "$PROJECT_DIR/downloads"/* 2>/dev/null | sort -rh | head -8
+        warn "پاک کردن:  botctl clearcache"
+    else
+        ok "فضای کافی هست"
+    fi
+    echo
 
     local py="$PROJECT_DIR/.venv/bin/python"
     local pip="$PROJECT_DIR/.venv/bin/pip"

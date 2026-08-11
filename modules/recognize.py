@@ -207,6 +207,36 @@ def _sample_plan(duration: float) -> tuple[int, list[int]]:
     return window, offsets
 
 
+# Five 12-second mp3 windows plus the source is well under this; the margin
+# is so a nearly-full disk fails here rather than halfway through.
+_MIN_FREE_MB = 150
+
+
+def _require_workspace(folder: Path) -> None:
+    """Fail loudly when there is nowhere to cut the windows.
+
+    Every window goes through ffmpeg writing an mp3. When that write fails,
+    _extract_window returns None, every window returns None, and the caller
+    reports "I couldn't identify any music" - so a full disk arrives at the
+    user as a recognition result rather than as a disk problem. This is the
+    difference between a five-minute fix and a week of blaming Shazam.
+    """
+    import shutil
+
+    try:
+        free_mb = shutil.disk_usage(folder).free // (1024 * 1024)
+    except OSError as e:
+        log.warning("recognize: could not check free space on %s: %s", folder, e)
+        return
+
+    if free_mb < _MIN_FREE_MB:
+        log.error("recognize: only %dMB free on %s - cannot cut windows", free_mb, folder)
+        raise RuntimeError(
+            f"فضای دیسک سرور پره (فقط {free_mb} مگ آزاده).\n\n"
+            "ادمین: «botctl clearcache» یا گزینه ۱۲ منو."
+        )
+
+
 async def recognize_candidates(path: Path) -> list[tuple[RecognizedSong, int]]:
     """
     Fingerprint several windows of a file and return every distinct answer
@@ -218,6 +248,8 @@ async def recognize_candidates(path: Path) -> list[tuple[RecognizedSong, int]]:
     clear winner and ask the user when the windows disagree, instead of
     presenting one unverified guess as fact.
     """
+    _require_workspace(path.parent)
+
     duration = _media_duration(path)
     window, offsets = _sample_plan(duration)
 

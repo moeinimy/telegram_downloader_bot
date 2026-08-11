@@ -140,6 +140,75 @@ def stats_snapshot() -> dict:
 
 _last_sweep = 0.0
 
+# Files under downloads/ that are state, not cache. The sweeper deletes the
+# oldest thing it can find, and these are the oldest things there - so left
+# unprotected it would quietly drop every Instagram pairing, the refreshed
+# 60-day access token and the logged-in session, and the bot would look like
+# it had forgotten its users.
+PROTECTED_NAMES = frozenset({
+    "file_ids.json",
+    "ig_pairing.json",
+    "ig_seen.json",
+    "ig_token.json",
+    "ig_private_session.json",
+})
+
+# Subdirectories that hold something expensive to re-acquire rather than
+# something we downloaded for a user. whisper/ is 1.5GB of model weights;
+# deleting it to make room for a reel means the next subtitle request
+# re-downloads the lot.
+PROTECTED_DIRS = frozenset({"whisper"})
+
+
+def _is_protected(path: Path, root: Path) -> bool:
+    if path.name in PROTECTED_NAMES or path.name.startswith("stats.db"):
+        return True
+    try:
+        return path.relative_to(root).parts[0] in PROTECTED_DIRS
+    except (ValueError, IndexError):
+        return False
+
+
+def disk_report(root: Path) -> dict:
+    """What is actually taking the space, and how much is left on the volume.
+
+    Worth reporting rather than inferring: a full disk stops ffmpeg writing
+    the clip that music recognition fingerprints, and the extractor returns
+    "no window matched" for that - so out of space reaches the user as
+    "I couldn't identify any music", which is not a clue.
+    """
+    import shutil
+
+    reclaimable = protected = 0
+    try:
+        for path in root.rglob("*"):
+            if not path.is_file():
+                continue
+            try:
+                size = path.stat().st_size
+            except OSError:
+                continue
+            if _is_protected(path, root):
+                protected += size
+            else:
+                reclaimable += size
+    except OSError as e:
+        log.warning("disk report failed to scan %s: %s", root, e)
+
+    try:
+        usage = shutil.disk_usage(root)
+        free, total = usage.free, usage.total
+    except OSError:
+        free = total = 0
+
+    return {
+        "reclaimable_mb": reclaimable // (1024 * 1024),
+        "protected_mb": protected // (1024 * 1024),
+        "free_mb": free // (1024 * 1024),
+        "total_mb": total // (1024 * 1024),
+        "cap_mb": MAX_DISK_MB,
+    }
+
 
 def sweep_downloads(root: Path, keep_mb: int | None = None, min_interval: float = 60.0) -> int:
     """
@@ -148,6 +217,10 @@ def sweep_downloads(root: Path, keep_mb: int | None = None, min_interval: float 
     Uploaded files are already reusable through the Telegram file_id cache, so
     deleting them costs nothing but a re-download in the rare case the id is
     rejected. Returns the number of bytes freed.
+
+    Protected paths are excluded from both the deletions and the total: they
+    cannot be reclaimed, so counting them toward the cap would make the
+    sweeper delete real downloads to make room for a model file.
     """
     global _last_sweep
     now = time.monotonic()
@@ -160,8 +233,7 @@ def sweep_downloads(root: Path, keep_mb: int | None = None, min_interval: float 
         files = [
             (p.stat().st_mtime, p.stat().st_size, p)
             for p in root.rglob("*")
-            if p.is_file() and p.name not in ("file_ids.json", "stats.db")
-            and not p.name.startswith("stats.db")
+            if p.is_file() and not _is_protected(p, root)
         ]
     except OSError as e:
         log.warning("disk sweep failed to scan %s: %s", root, e)

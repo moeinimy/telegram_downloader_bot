@@ -482,6 +482,75 @@ check("link: a video post is /reel/",
       == "https://www.instagram.com/reel/ABC12/")
 
 
+# ---------------------------------------------------------------- disk sweeper
+# The sweeper deletes the oldest file it can find to stay under the cap, and
+# the oldest files under downloads/ are the state files - the pairings, the
+# 60-day access token, the logged-in session - plus 1.5GB of whisper weights
+# that were put there by this session's work. Unprotected, it would clear
+# every pairing to make room for one reel.
+from utils import limits as _limits  # noqa: E402
+
+sweep_root = Path(_TMP) / "sweeproot"
+(sweep_root / "whisper").mkdir(parents=True, exist_ok=True)
+(sweep_root / "instagram").mkdir(parents=True, exist_ok=True)
+(sweep_root / "whisper" / "model.bin").write_bytes(b"w" * 4096)
+for state in ("ig_pairing.json", "ig_token.json", "ig_seen.json",
+              "ig_private_session.json", "file_ids.json", "stats.db"):
+    (sweep_root / state).write_text("{}", encoding="utf-8")
+(sweep_root / "instagram" / "00.mp4").write_bytes(b"m" * 8192)
+
+for name in ("whisper/model.bin", "ig_pairing.json", "ig_token.json",
+             "ig_seen.json", "ig_private_session.json", "file_ids.json", "stats.db"):
+    check(f"sweep: {name} is protected",
+          _limits._is_protected(sweep_root / name, sweep_root))
+check("sweep: ordinary media is not protected",
+      not _limits._is_protected(sweep_root / "instagram" / "00.mp4", sweep_root))
+
+_limits.sweep_downloads(sweep_root, keep_mb=0, min_interval=0)
+check("sweep: media is reclaimed", not (sweep_root / "instagram" / "00.mp4").exists())
+check("sweep: the model survives a full sweep", (sweep_root / "whisper" / "model.bin").exists())
+check("sweep: pairings survive a full sweep", (sweep_root / "ig_pairing.json").exists())
+check("sweep: the access token survives a full sweep", (sweep_root / "ig_token.json").exists())
+
+report = _limits.disk_report(sweep_root)
+check("disk: report separates protected from reclaimable",
+      set(report) >= {"free_mb", "total_mb", "protected_mb", "reclaimable_mb"},
+      json.dumps(report))
+
+# A full disk must not reach the user as "no music found".
+from modules.recognize import _require_workspace  # noqa: E402
+
+import shutil as _shutil  # noqa: E402
+
+_real_usage = _shutil.disk_usage
+
+
+def _fake_free(megabytes):
+    return lambda _p: type("U", (), {"free": megabytes * 1024 * 1024, "total": 1, "used": 1})()
+
+
+# Both directions are mocked. Reading the real disk would make this check
+# depend on whatever machine it runs on - and the machine it was written on
+# had 0MB free, which passed the failure case for the wrong reason.
+try:
+    _shutil.disk_usage = _fake_free(1)
+    try:
+        _require_workspace(sweep_root)
+        check("recognize: a full disk raises instead of returning no match", False, "it returned")
+    except RuntimeError as e:
+        check("recognize: a full disk raises instead of returning no match",
+              "دیسک" in str(e), str(e).splitlines()[0])
+
+    _shutil.disk_usage = _fake_free(5000)
+    try:
+        _require_workspace(sweep_root)
+        check("recognize: a healthy disk passes the check", True)
+    except RuntimeError as e:
+        check("recognize: a healthy disk passes the check", False, str(e)[:60])
+finally:
+    _shutil.disk_usage = _real_usage
+
+
 print()
 if failures:
     print(f"=== {len(failures)} CHECK(S) FAILED: {failures} ===")

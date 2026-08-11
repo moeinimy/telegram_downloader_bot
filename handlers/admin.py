@@ -198,9 +198,27 @@ async def recstatus_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     from modules import engines, recognize
 
+    from utils import limits
+
     ok, detail = recognize.service_reachable()
     lines = [("✅ " if ok else "❌ ") + f"shazam: {detail}"]
     lines += engines.status()
+
+    # First, because it is the failure that does not look like itself: with
+    # no room to write a window, ffmpeg fails, every window comes back empty,
+    # and the user is told no music was found.
+    disk = limits.disk_report(settings.download_dir)
+    icon = "✅" if disk["free_mb"] > 500 else ("⚠️" if disk["free_mb"] > 150 else "❌")
+    lines.append("")
+    lines.append(
+        f"{icon} دیسک: {disk['free_mb']}MB آزاد از {disk['total_mb']}MB"
+    )
+    lines.append(
+        f"   ↳ دانلودها {disk['reclaimable_mb']}MB (سقف {disk['cap_mb']}MB)"
+        f" · محافظت‌شده {disk['protected_mb']}MB"
+    )
+    if disk["free_mb"] <= 150:
+        lines.append("   ↳ ⚠️ با این فضا تشخیص آهنگ کار نمی‌کنه. botctl clearcache")
     lines.append("")
     lines.append("ترتیب: " + " → ".join(("shazam",) + tuple(settings.recognition_engines)))
     await update.effective_message.reply_text("\n".join(lines))
