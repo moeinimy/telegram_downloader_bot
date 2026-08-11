@@ -964,12 +964,21 @@ do_proxy() {
     echo "  1) Cloudflare WARP روی همین سرور (رایگان، خودکار)"
     echo "  2) یه سرور دیگه‌ی خودت به‌عنوان پروکسی (بهترین گزینه اگه داری)"
     echo "  3) پروکسی‌ای که خودم دارم رو وارد می‌کنم"
+    echo "  4) خاموش کردن پروکسی (برگشت به حالت مستقیم)"
     echo "  0) برگرد"
     echo
     read -rp "انتخاب: " how
 
     local p=""
     case "$how" in
+        4)
+            set_env SHAZAM_PROXY ""
+            set_env IG_DM_PROXY  ""
+            systemctl restart "$SERVICE_NAME"
+            ok "پروکسی خاموش شد - ترافیک مستقیم می‌ره"
+            info "برای قطع کامل WARP هم:  warp-cli --accept-tos disconnect"
+            return 0
+            ;;
         1) _proxy_warp || return 1; p="http://127.0.0.1:8118" ;;
         2)
             echo
