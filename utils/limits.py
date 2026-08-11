@@ -151,6 +151,9 @@ PROTECTED_NAMES = frozenset({
     "ig_seen.json",
     "ig_token.json",
     "ig_private_session.json",
+    # Losing this one changes the device Instagram sees, which is what made
+    # the direct endpoints start refusing us.
+    "ig_device.json",
 })
 
 # Subdirectories that hold something expensive to re-acquire rather than

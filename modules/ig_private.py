@@ -40,6 +40,27 @@ log = logging.getLogger(__name__)
 
 _SESSION_PATH: Path = settings.download_dir / "ig_private_session.json"
 
+# The device fingerprint, kept SEPARATELY from the session and never deleted
+# by a session reset.
+#
+# instagrapi invents a random phone on every fresh Client(). To Instagram that
+# is a new device signing into the account, and it responds by refusing the
+# direct endpoints - reading the inbox 403s with error_code 1404006 while the
+# login itself succeeds, which is exactly what happened here: the inbox worked
+# for hours, a session reset generated a new phone, and it never worked again.
+#
+# Reusing one fingerprint means the account keeps signing in from the same
+# device it always has.
+_DEVICE_PATH: Path = settings.download_dir / "ig_device.json"
+
+# Which parts of instagrapi's settings describe the device rather than the
+# session. Everything else is per-login and must not be carried over.
+_DEVICE_KEYS = (
+    "uuids", "device_settings", "user_agent", "device_id", "phone_id",
+    "advertising_id", "android_device_id", "request_id", "client_session_id",
+    "country", "country_code", "locale", "timezone_offset",
+)
+
 _client = None
 _client_lock = threading.Lock()
 _task: asyncio.Task | None = None
@@ -89,6 +110,62 @@ def _save(client) -> None:
         _SESSION_PATH.chmod(0o600)
     except Exception as e:
         log.warning("ig poll: could not save the session (%s)", e)
+    _remember_device(client)
+
+
+def _remember_device(client) -> None:
+    """Persist the fingerprint so the next sign-in is the same phone."""
+    import json
+
+    try:
+        settings_blob = client.get_settings() or {}
+        device = {k: settings_blob[k] for k in _DEVICE_KEYS if k in settings_blob}
+        if not device:
+            return
+        tmp = _DEVICE_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(device), encoding="utf-8")
+        tmp.replace(_DEVICE_PATH)
+        _DEVICE_PATH.chmod(0o600)
+    except Exception as e:
+        log.warning("ig poll: could not save the device fingerprint (%s)", e)
+
+
+def _apply_device(client) -> bool:
+    """Put the remembered phone back on a fresh client. True if there was one."""
+    import json
+
+    if not _DEVICE_PATH.exists():
+        return False
+    try:
+        client.set_settings(json.loads(_DEVICE_PATH.read_text(encoding="utf-8")))
+        log.info("ig poll: reusing the stored device fingerprint")
+        return True
+    except Exception as e:
+        log.warning("ig poll: stored device unusable (%s) - a new one will be made", e)
+        return False
+
+
+def _new_client():
+    from instagrapi import Client
+
+    client = Client()
+    _make_responsive(client)
+    _apply_device(client)
+    return client
+
+
+def _warm_up(client) -> None:
+    """A couple of ordinary reads before touching direct.
+
+    A client that signs in and immediately asks for the inbox does not look
+    like the app, which opens a feed first. Cheap insurance on the request
+    that is actually being refused.
+    """
+    for call in (client.get_timeline_feed,):
+        try:
+            call()
+        except Exception as e:
+            log.info("ig poll: warm-up call failed (%s) - continuing", e)
 
 
 def _login():
@@ -119,17 +196,11 @@ def _login():
         if _client is not None:
             return _client
 
-        from instagrapi import Client
-
         if _SESSION_PATH.exists():
-            client = Client()
-            _make_responsive(client)
+            client = _new_client()
             try:
                 client.load_settings(str(_SESSION_PATH))
-                if settings.ig_dm_sessionid:
-                    client.login_by_sessionid(settings.ig_dm_sessionid)
-                elif settings.ig_dm_password:
-                    client.login(settings.ig_dm_username, settings.ig_dm_password)
+                _make_responsive(client)
                 client.get_timeline_feed()  # proves the session is really live
                 _client = client
                 log.info("ig poll: reused the stored session")
@@ -138,9 +209,9 @@ def _login():
                 log.warning("ig poll: stored session rejected (%s)", e)
 
         if settings.ig_dm_sessionid:
-            client = Client()
-            _make_responsive(client)
+            client = _new_client()
             client.login_by_sessionid(settings.ig_dm_sessionid)
+            _warm_up(client)
             _save(client)
             _client = client
             log.info("ig poll: signed in with the sessionid cookie")
@@ -151,9 +222,9 @@ def _login():
                 "no IG_DM_SESSIONID and no IG_DM_PASSWORD - run 'botctl igdirect'"
             )
 
-        client = Client()
-        _make_responsive(client)
+        client = _new_client()
         client.login(settings.ig_dm_username, settings.ig_dm_password)
+        _warm_up(client)
         _save(client)
         _client = client
         log.info("ig poll: logged in with a password as %s", settings.ig_dm_username)
@@ -351,70 +422,36 @@ def _media_from_item(item: dict) -> tuple[str, str, str]:
     return _walk_json(item)
 
 
-def _inbox(client, endpoint: str, params: dict) -> dict:
-    """One raw inbox call. private_request returns the parsed json directly."""
-    return client.private_request(endpoint, params=params) or client.last_json or {}
-
-
-def _inbox_params(limit: int, message_limit: int) -> dict:
-    """Exactly the parameter set instagrapi's own direct_threads() sends.
-
-    Dropping to private_request kept the endpoint and lost the parameters,
-    and Instagram cares about the difference. The first version sent four of
-    these eleven and got:
-
-        {"action":"item_ack","status":"fail",
-         "payload":{"error_code":1404006},"status_code":"403"}
-
-    which is the generic direct-messaging refusal, not an account problem -
-    the same account signed in fine on a phone throughout. A request that
-    does not look like the app gets refused; fetch_reason and the tracking id
-    are part of looking like the app.
-    """
-    import uuid
-
-    return {
-        "visual_message_return_type": "unseen",
-        "thread_message_limit": message_limit,
-        "persistentBadging": "true",
-        "limit": limit,
-        "is_prefetching": "false",
-        "fetch_reason": "initial_snapshot",
-        "eb_device_id": "0",
-        "igd_request_log_tracking_id": str(uuid.uuid4()),
-        "include_old_mrs": "false",
-        "no_pending_badge": "true",
-        "push_disabled": "true",
-    }
-
-
-def _pending_params() -> dict:
-    import uuid
-
-    return {
-        "visual_message_return_type": "unseen",
-        "persistentBadging": "true",
-        "is_prefetching": "false",
-        "request_session_id": str(uuid.uuid4()),
-    }
-
-
 @run_in_thread
 def _collect(threads_wanted: int, since: float, with_pending: bool = True) -> list[DirectMessage]:
     """One synchronous sweep of the inbox. Returns what is newer than `since`."""
     client = _login()
     out: list[DirectMessage] = []
 
-    data = _inbox(client, "direct_v2/inbox/", _inbox_params(threads_wanted, 5))
-    threads = list(((data.get("inbox") or {}).get("threads")) or [])
+    # Fetch through instagrapi's own method, read the result raw.
+    #
+    # Calling private_request directly looked equivalent and was not: whatever
+    # else differs, direct_threads() was answering 200 for hours and the
+    # hand-built request answered 403. Its raw payload is still what gets
+    # parsed - client.last_json holds the response the models were built from,
+    # so the story fields the model layer drops are all still visible.
+    #
+    # The model construction is wasted work, but it is a few hundred
+    # milliseconds against a poll interval of seconds, and it is the
+    # difference between working and not.
+    try:
+        client.direct_threads(amount=threads_wanted, thread_message_limit=5)
+    except TypeError:
+        client.direct_threads(amount=threads_wanted)
+    threads = list(((client.last_json or {}).get("inbox") or {}).get("threads") or [])
 
     if with_pending:
         try:
             # Message requests from people who have never messaged us before
             # land here rather than in the inbox, and a first-time sharer is
             # exactly the case that matters.
-            pending = _inbox(client, "direct_v2/pending_inbox/", _pending_params())
-            threads += ((pending.get("inbox") or {}).get("threads")) or []
+            client.direct_pending_inbox(amount=threads_wanted)
+            threads += ((client.last_json or {}).get("inbox") or {}).get("threads") or []
         except Exception as e:
             log.info("ig poll: pending inbox unavailable (%s)", e)
 

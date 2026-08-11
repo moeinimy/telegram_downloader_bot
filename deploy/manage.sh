@@ -945,6 +945,13 @@ do_igreset() {
 
     rm -f "$PROJECT_DIR/downloads/ig_private_session.json"
     ok "سشن پاک شد"
+    # NOT ig_device.json. Deleting that makes instagrapi invent a new phone,
+    # Instagram sees an unknown device on the account, and the direct
+    # endpoints start answering 403/1404006 while the login still succeeds.
+    # That is what this command caused the first time it was run.
+    if [[ -f "$PROJECT_DIR/downloads/ig_device.json" ]]; then
+        ok "device fingerprint حفظ شد (پاک کردنش باعث ۴۰۳ می‌شه)"
+    fi
 
     local cur
     cur=$(get_env IG_DM_POLL_SECONDS)

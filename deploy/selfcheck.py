@@ -610,15 +610,19 @@ for text, want, label in [
 check("ig poll: 1404006 is NOT called an account ban",
       not _priv._is_blocked(_REAL_403), "it would stop the poller")
 
-params = _priv._inbox_params(5, 5)
-for required in ("fetch_reason", "is_prefetching", "eb_device_id",
-                 "igd_request_log_tracking_id", "include_old_mrs",
-                 "no_pending_badge", "push_disabled", "thread_message_limit",
-                 "visual_message_return_type", "persistentBadging", "limit"):
-    check(f"ig poll: inbox request sends {required}", required in params)
-check("ig poll: the tracking id is per-request",
-      _priv._inbox_params(5, 5)["igd_request_log_tracking_id"]
-      != _priv._inbox_params(5, 5)["igd_request_log_tracking_id"])
+# Hand-building the request was the wrong idea twice over: it 403d, and the
+# fix is to let instagrapi make the call it has always made and read
+# client.last_json for the raw fields. Assert the helpers are gone so nobody
+# reintroduces them.
+check("ig poll: the hand-built inbox request is gone",
+      not hasattr(_priv, "_inbox_params") and not hasattr(_priv, "_inbox"))
+
+# The device fingerprint must survive a session reset. Losing it is what made
+# the direct endpoints start refusing an account that was otherwise fine.
+check("ig poll: the device file is protected from the sweeper",
+      _limits._is_protected(sweep_root / "ig_device.json", sweep_root))
+check("ig poll: device keys cover the fingerprint",
+      {"uuids", "device_settings", "user_agent"} <= set(_priv._DEVICE_KEYS))
 
 # A refused sign-in and a disabled account need different answers, and being
 # told the account is banned sends you to fix the wrong thing.
