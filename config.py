@@ -87,8 +87,8 @@ class Settings:
     # "Sign in to confirm you're not a bot" check without an account.
     yt_cookies_file: str
 
-    # faster-whisper model for the video-subtitles button: tiny | base |
-    # small | medium. Optional install; see modules/transcribe.py.
+    # faster-whisper model for the video-subtitles button. Anything below
+    # medium is English-only in practice; see modules/transcribe.py.
     whisper_model: str
 
     # Audio container for downloaded music: m4a (default), mp3 or flac.
@@ -236,7 +236,7 @@ settings = Settings(
     download_dir=Path(_get("DOWNLOAD_DIR", "./downloads")).resolve(),
     max_upload_mb=int(_get("MAX_UPLOAD_MB", "50") or 50),
     yt_cookies_file=_cookies_path(),
-    whisper_model=(_get("WHISPER_MODEL", "base").lower() or "base"),
+    whisper_model=(_get("WHISPER_MODEL", "large-v3-turbo").lower() or "large-v3-turbo"),
     audio_format=(_get("AUDIO_FORMAT", "m4a").lower() or "m4a"),
     acoustid_key=_get("ACOUSTID_API_KEY"),
     audd_token=_get("AUDD_API_TOKEN"),

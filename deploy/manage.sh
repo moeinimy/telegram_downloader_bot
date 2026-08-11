@@ -909,19 +909,35 @@ do_igdirect() {
 
 do_whisper() {
     echo; info "=== زیرنویس ویدیو (faster-whisper) ==="; echo
-    warn "روی CPU اجرا می‌شه. برای ریلز چند ثانیه‌ای مناسبه."
-    echo "  tiny   سریع‌ترین، فقط برای انگلیسی واضح"
-    echo "  base   پیش‌فرض — فارسی و انگلیسی، تعادل خوب"
-    echo "  small  دقیق‌تر، حدود ۳ برابر کندتر"
-    echo
-    warn "بار اول مدل دانلود می‌شه (base حدود ۱۵۰ مگ)."
-    read -rp "کدوم مدل؟ (tiny/base/small) [base]: " model
-    model="${model:-base}"
-    case "$model" in tiny|base|small|medium) ;; *) err "مدل نامعتبر"; return 1 ;; esac
 
+    local total_mb
+    total_mb=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 0)
+    info "رم این سرور: ${total_mb}MB"
+    echo
+
+    warn "برای فارسی، سایز مدل همه‌چیزه:"
+    echo "  small           فقط انگلیسی. فارسیش تقریبا ساختگیه.   ~۵۰۰MB رم"
+    echo "  medium          فارسی خونا می‌شه.                      ~۱.۵GB رم"
+    echo "  large-v3-turbo  پیشنهادی — فارسی درست.                 ~۲GB رم"
+    echo "  large-v3        کمی بهتر، چند برابر کندتر.             ~۳GB رم"
+    echo
+
+    if (( total_mb < 2500 )); then
+        warn "با ${total_mb}MB رم، large-v3-turbo ممکنه OOM بده. medium امن‌تره."
+    fi
+
+    read -rp "کدوم مدل؟ [large-v3-turbo]: " model
+    model="${model:-large-v3-turbo}"
+    case "$model" in
+        tiny|base|small|medium|large-v3-turbo|large-v3|turbo) ;;
+        *) err "مدل نامعتبر"; return 1 ;;
+    esac
+
+    # >=1.1 for the large-v3-turbo alias and detect_language().
     # Deliberately not in requirements.txt: it pulls ctranslate2 and a model
     # download, and that must not be able to break a working venv on update.
-    if ! sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/pip" install --progress-bar off faster-whisper; then
+    if ! sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/pip" install --progress-bar off \
+            "faster-whisper>=1.1.0"; then
         err "نصب faster-whisper شکست خورد - بات بدون زیرنویس کار می‌کنه"
         return 1
     fi
@@ -930,7 +946,8 @@ do_whisper() {
     chown -R "$BOT_USER:$BOT_USER" "$PROJECT_DIR/downloads"
     systemctl restart "$SERVICE_NAME"
     ok "نصب شد. دکمه «زیرنویس ویدیو» فعاله."
-    warn "اولین استفاده مدل رو دانلود می‌کنه و کند‌تره."
+    warn "اولین استفاده مدل رو دانلود می‌کنه (large-v3-turbo حدود ۱.۶ گیگ) و کنده."
+    warn "اگه بات بعدش kill شد یعنی رم کم اومده - با medium دوباره بزن."
 }
 
 _botapi_grant_read() {

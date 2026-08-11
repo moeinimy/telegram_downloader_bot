@@ -139,18 +139,29 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         # underscores, which makes Telegram reject the whole Markdown message -
         # and the failure is swallowed, so the button just looks dead.
         target = f"@{_escape_md(handle)}" if handle else t(chat_id, "اکانت اینستاگرام بات")
+
+        # A tappable link, because the alternative is copying a handle out of
+        # a message and searching Instagram for it by hand.
+        kb = None
+        if handle:
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+                t(chat_id, "📸 باز کردن پیج در اینستاگرام"),
+                url=f"https://instagram.com/{handle}",
+            )]])
+
         await query.message.reply_text(
             t(
                 chat_id,
                 "🔗 *وصل کردن اکانت*\n\n"
-                "۱. برو به اینستاگرام و {target} رو *فالو کن* (بدون فالو، دایرکتت "
-                "می‌ره تو «درخواست پیام» و ممکنه به دستمون نرسه)\n"
-                "۲. بهش دایرکت بده\n"
-                "۳. دقیقا همین کد رو بفرست:\n\n"
+                "۱. پیج {target} رو باز کن و *فالو کن*\n"
+                "(بدون فالو، پیامت می‌ره تو «درخواست پیام» و ممکنه به دستمون نرسه)\n\n"
+                "۲. *دایرکت* همون پیج رو باز کن و این کد رو *به عنوان پیام* بفرست:\n\n"
                 "`{token}`\n\n"
+                "همین. چند ثانیه بعد همین‌جا تایید می‌گیری.\n\n"
                 "⏳ این کد {minutes} دقیقه اعتبار داره و یک‌بار مصرفه.",
             ).format(target=target, token=token, minutes=ig_pairing.TOKEN_TTL // 60),
             parse_mode="Markdown",
+            reply_markup=kb,
         )
         return
 
@@ -175,7 +186,7 @@ _PAIR_HELP_FA = (
     "۱. این پیج رو فالو کن\n"
     "۲. تو تلگرام بات رو باز کن و /igdirect بزن\n"
     "۳. دکمه «وصل کردن اکانت» رو بزن\n"
-    "۴. کدی که می‌ده رو همین‌جا برام بفرست"
+    "۴. کدی که می‌ده رو همین‌جا تو دایرکت برام بفرست"
 )
 
 

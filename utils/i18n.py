@@ -327,19 +327,21 @@ _EN: dict[str, str] = {
         "🔒 Only your Instagram account's numeric id is stored — no name, no "
         "profile, none of your messages. Unlinking is one tap.",
     "🔗 *وصل کردن اکانت*\n\n"
-    "۱. برو به اینستاگرام و {target} رو *فالو کن* (بدون فالو، دایرکتت "
-    "می‌ره تو «درخواست پیام» و ممکنه به دستمون نرسه)\n"
-    "۲. بهش دایرکت بده\n"
-    "۳. دقیقا همین کد رو بفرست:\n\n"
+    "۱. پیج {target} رو باز کن و *فالو کن*\n"
+    "(بدون فالو، پیامت می‌ره تو «درخواست پیام» و ممکنه به دستمون نرسه)\n\n"
+    "۲. *دایرکت* همون پیج رو باز کن و این کد رو *به عنوان پیام* بفرست:\n\n"
     "`{token}`\n\n"
+    "همین. چند ثانیه بعد همین‌جا تایید می‌گیری.\n\n"
     "⏳ این کد {minutes} دقیقه اعتبار داره و یک‌بار مصرفه.":
         "🔗 *Connect your account*\n\n"
-        "1. Open Instagram and *follow* {target} (without that your DM lands "
-        "in message requests and may never reach us)\n"
-        "2. Send it a DM\n"
-        "3. Send exactly this code:\n\n"
+        "1. Open {target} and *follow* it\n"
+        "(without that your message lands in Instagram's message requests and "
+        "may never reach us)\n\n"
+        "2. Open that page's *DMs* and send this code *as a message*:\n\n"
         "`{token}`\n\n"
+        "That's it. You'll get a confirmation here within seconds.\n\n"
         "⏳ It is valid for {minutes} minutes and can only be used once.",
+    "📸 باز کردن پیج در اینستاگرام": "📸 Open the page on Instagram",
 
     # --- recognition service ---
     "⏳ سرویس تشخیص آهنگ الان جواب نمی‌ده. چند دقیقه دیگه دوباره امتحان کن.":
