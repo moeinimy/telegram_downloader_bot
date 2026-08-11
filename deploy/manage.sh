@@ -956,21 +956,117 @@ do_proxy() {
     echo "  systemctl restart privoxy      # بعدش http://127.0.0.1:8118"
     echo
 
-    local p
-    read -rp "پروکسی http برای شزم (خالی = بدون تغییر): " p
-    [[ -n "$p" ]] && { set_env SHAZAM_PROXY "$p"; ok "SHAZAM_PROXY ست شد"; }
+    echo
+    err "پروکسی رایگان از اینترنت برندار."
+    warn "کوکی sessionid اینستاگرامت از داخل پروکسی رد می‌شه. هرکی پروکسی رو"
+    warn "داره می‌تونه باهاش مستقیم وارد اکانتت بشه - بدون پسورد، بدون 2FA."
+    echo
+    echo "  1) Cloudflare WARP روی همین سرور (رایگان، خودکار)"
+    echo "  2) یه سرور دیگه‌ی خودت به‌عنوان پروکسی (بهترین گزینه اگه داری)"
+    echo "  3) پروکسی‌ای که خودم دارم رو وارد می‌کنم"
+    echo "  0) برگرد"
+    echo
+    read -rp "انتخاب: " how
 
-    read -rp "پروکسی برای اینستاگرام (خالی = همون بالا): " p
-    if [[ -z "$p" ]]; then
-        p=$(get_env SHAZAM_PROXY)
+    local p=""
+    case "$how" in
+        1) _proxy_warp || return 1; p="http://127.0.0.1:8118" ;;
+        2)
+            echo
+            info "روی اون سرور (نه این یکی) اینو بزن:"
+            echo "    apt install -y tinyproxy"
+            echo "    # /etc/tinyproxy/tinyproxy.conf :"
+            echo "    #   Port 8888"
+            echo "    #   Allow $(curl -s --max-time 8 https://api.ipify.org 2>/dev/null || echo '<IP همین سرور>')"
+            echo "    systemctl restart tinyproxy"
+            warn "حتما فقط IP همین سرور رو Allow کن، وگرنه پروکسی بازِ عمومی می‌شه."
+            echo
+            read -rp "آدرس پروکسی (http://IP:8888): " p
+            ;;
+        3) read -rp "آدرس پروکسی: " p ;;
+        *) return 0 ;;
+    esac
+
+    [[ -z "$p" ]] && { warn "چیزی وارد نشد"; return 0; }
+
+    # Test before saving. A proxy that does not unblock these two hosts is
+    # worse than none: it adds a hop, and for instagrapi it also adds someone
+    # who can read the session cookie.
+    echo; info "تست پروکسی..."
+    local ok_sz ok_ig
+    ok_sz=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 \
+        --proxy "$p" https://amp.shazam.com/ 2>/dev/null)
+    ok_ig=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 \
+        --proxy "$p" https://i.instagram.com/api/v1/ 2>/dev/null)
+    echo "  amp.shazam.com   -> HTTP ${ok_sz:-timeout}"
+    echo "  i.instagram.com  -> HTTP ${ok_ig:-timeout}"
+
+    if [[ "$ok_sz" == "403" || -z "$ok_sz" ]]; then
+        err "با این پروکسی هم شزم ۴۰۳ می‌ده - این IP هم رد شده."
+        read -rp "بازم ذخیره کنم؟ (y/n) " a
+        [[ "$a" != "y" ]] && return 1
+    else
+        ok "پروکسی جواب می‌ده"
     fi
-    [[ -n "$p" ]] && { set_env IG_DM_PROXY "$p"; ok "IG_DM_PROXY ست شد"; }
+
+    # aiohttp (under shazamio) cannot use SOCKS; requests (under instagrapi)
+    # can. Saving a socks url into SHAZAM_PROXY would be silently ignored.
+    if [[ "$p" == socks* ]]; then
+        warn "این socks ـه - فقط برای اینستاگرام ست می‌شه، شزم نمی‌تونه ازش استفاده کنه."
+        set_env IG_DM_PROXY "$p"
+    else
+        set_env SHAZAM_PROXY "$p"
+        set_env IG_DM_PROXY  "$p"
+        ok "هر دو ست شدن"
+    fi
 
     chmod 600 "$PROJECT_DIR/.env"
     chown "$BOT_USER:$BOT_USER" "$PROJECT_DIR/.env"
     systemctl restart "$SERVICE_NAME"
     sleep 3
-    ok "ریستارت شد. تست:  botctl shazamtest"
+    ok "ریستارت شد. تست نهایی:  botctl shazamtest"
+}
+
+_proxy_warp() {
+    # WARP is Cloudflare's own network. It is free, needs no account, and the
+    # traffic leaves from a Cloudflare address instead of this datacenter's -
+    # which is the entire point here. It only speaks SOCKS5, so privoxy sits
+    # in front to give shazamio the http proxy aiohttp requires.
+    echo; info "نصب Cloudflare WARP..."
+
+    if ! command -v warp-cli &>/dev/null; then
+        curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg \
+            | gpg --yes --dearmor -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+        echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" \
+            > /etc/apt/sources.list.d/cloudflare-client.list
+        apt-get update -qq
+        apt-get install -y -qq cloudflare-warp || { err "نصب WARP شکست خورد"; return 1; }
+    fi
+
+    # The registration subcommand was renamed between versions.
+    warp-cli --accept-tos registration new 2>/dev/null \
+        || warp-cli --accept-tos register 2>/dev/null || true
+    warp-cli --accept-tos mode proxy       || { err "warp-cli mode proxy نشد"; return 1; }
+    warp-cli --accept-tos proxy port 40000 2>/dev/null || true
+    warp-cli --accept-tos connect          || { err "warp-cli connect نشد"; return 1; }
+    sleep 3
+
+    if ! curl -s --max-time 15 --proxy socks5h://127.0.0.1:40000 https://api.ipify.org >/dev/null; then
+        err "WARP بالا نیومد. وضعیت:"; warp-cli --accept-tos status
+        return 1
+    fi
+    ok "WARP وصل شد - IP خروجی: $(curl -s --max-time 15 --proxy socks5h://127.0.0.1:40000 https://api.ipify.org)"
+
+    info "نصب privoxy (پل socks -> http، چون شزم فقط http می‌فهمه)..."
+    apt-get install -y -qq privoxy || { err "نصب privoxy شکست خورد"; return 1; }
+    grep -q '^forward-socks5 / 127.0.0.1:40000' /etc/privoxy/config \
+        || echo 'forward-socks5 / 127.0.0.1:40000 .' >> /etc/privoxy/config
+    grep -q '^listen-address 127.0.0.1:8118' /etc/privoxy/config \
+        || echo 'listen-address 127.0.0.1:8118' >> /etc/privoxy/config
+    systemctl enable -q --now privoxy
+    systemctl restart privoxy
+    sleep 2
+    ok "privoxy روی http://127.0.0.1:8118"
 }
 
 do_igreset() {
