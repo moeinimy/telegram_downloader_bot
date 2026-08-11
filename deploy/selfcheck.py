@@ -593,6 +593,14 @@ for text, want, label in [
     ("feedback_required", True, "an action block"),
     ("Please wait a few minutes before you try again", False, "ordinary throttling"),
     ("Cannot connect to host i.instagram.com", False, "a network drop"),
+    # Prose instagrapi printed for a rejected login. It matched none of the
+    # machine-readable markers, so the loop retried it as a network blip.
+    ("ChallengeRequired: We can send you an email to help you get back into "
+     "your account. This can also happen when Instagram rejects the proxy/IP, "
+     "device fingerprint, or login context, even if the password is correct.",
+     True, "a rejected login, by its prose"),
+    ("ChallengeRequired: ", True, "a rejected login, by its class name"),
+    ("TimeoutError: read timed out", False, "a timeout"),
 ]:
     check(f"ig poll: {label} -> stop={want}", _priv._is_blocked(text) is want, text[:60])
 

@@ -947,8 +947,16 @@ do_shazamtest() {
     # "FailedDecodeJson" only says the body was not json. Whether that body
     # was a block page, a 403, a captcha or an empty response wants different
     # answers, and none of them are visible from the bot's error message.
-    sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/python" \
-        "$PROJECT_DIR/deploy/shazamtest.py" "${1:-}"
+    # Only pass a path when there is one. "${1:-}" hands the script an empty
+    # argument, which Path("") reads as "." - so the menu entry reported
+    # "[X] . not found" instead of picking a file itself.
+    if [[ -n "${1:-}" ]]; then
+        sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/python" \
+            "$PROJECT_DIR/deploy/shazamtest.py" "$1"
+    else
+        sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/python" \
+            "$PROJECT_DIR/deploy/shazamtest.py"
+    fi
 }
 
 do_deps() {

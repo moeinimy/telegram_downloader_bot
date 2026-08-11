@@ -463,6 +463,18 @@ _BLOCK_MARKERS = (
     "1404006", "challenge_required", "checkpoint", "login_required",
     "consent_required", "feedback_required", "user_has_logged_out",
     '"status_code":"403"', "'status_code': '403'",
+    # instagrapi's exception class names, matched because the wording below
+    # does not always contain the machine-readable form.
+    "challengerequired", "loginrequired", "checkpointrequired",
+    "badpassword", "clientforbidden", "pleasewaitfewminutes",
+    # And the prose it actually printed, which matched none of the above and
+    # so was retried as if it were a network blip:
+    #
+    #   We can send you an email to help you get back into your account. This
+    #   can also happen when Instagram rejects the proxy/IP, device
+    #   fingerprint, or login context, even if the password is correct.
+    "get back into your account", "rejects the proxy", "device fingerprint",
+    "two-factor", "verification code",
 )
 
 # Set when the account is refused. Retrying past this point cannot succeed and
@@ -535,7 +547,10 @@ async def _loop(dispatch: Dispatch) -> None:
         except Exception as e:
             global blocked_reason, blocked_at
 
-            text = str(e)
+            # The class name matters as much as the message: instagrapi
+            # raises ChallengeRequired with prose that never says
+            # "challenge_required".
+            text = f"{type(e).__name__}: {e}"
 
             # Refused, not throttled. No interval fixes this: every further
             # request is another automated call from an address Instagram has

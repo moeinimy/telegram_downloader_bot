@@ -40,8 +40,10 @@ _MEDIA_EXTS = {".mp3", ".m4a", ".mp4", ".wav", ".ogg", ".mov", ".webm"}
 
 
 def pick_audio() -> Path | None:
-    if len(sys.argv) > 1:
-        candidate = Path(sys.argv[1])
+    # An empty argument is not an argument. Path("") is ".", which is not a
+    # file, so the menu entry failed instead of choosing one itself.
+    if len(sys.argv) > 1 and sys.argv[1].strip():
+        candidate = Path(sys.argv[1].strip())
         if candidate.is_file():
             return candidate
         print(f"[X] {candidate} پیدا نشد")
