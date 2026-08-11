@@ -307,7 +307,14 @@ async def _do_subtitles(query, chat_id: int, shortcode: str, _parts) -> None:
         )
         return
 
-    status = await query.message.reply_text(t(chat_id, "💬 دارم به ویدیو گوش می‌دم…"))
+    # The local model on a shared core takes minutes, and a silent wait that
+    # long reads as a hung bot. Say which one is running.
+    waiting = (
+        "💬 دارم به ویدیو گوش می‌دم…"
+        if transcribe.backend() == "api"
+        else "💬 دارم به ویدیو گوش می‌دم… (روی این سرور چند دقیقه طول می‌کشه)"
+    )
+    status = await query.message.reply_text(t(chat_id, waiting))
     async with limits.download_slot(chat_id):
         video = await _local_video(chat_id, shortcode)
         if video is None:

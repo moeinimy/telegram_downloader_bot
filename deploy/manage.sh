@@ -969,46 +969,86 @@ PY
 }
 
 do_whisper() {
-    echo; info "=== زیرنویس ویدیو (faster-whisper) ==="; echo
-
-    local total_mb
-    total_mb=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 0)
-    info "رم این سرور: ${total_mb}MB"
+    echo; info "=== زیرنویس ویدیو ==="; echo
+    echo "  1) API (پیشنهادی) — هیچ باری روی این سرور نمیاد"
+    echo "     whisper-large-v3، بهترین کیفیت فارسی، چند ثانیه."
+    echo "     Groq لایه رایگان داره: روزی ۸ ساعت صدا."
     echo
-
-    warn "برای فارسی، سایز مدل همه‌چیزه:"
-    echo "  small           فقط انگلیسی. فارسیش تقریبا ساختگیه.   ~۵۰۰MB رم"
-    echo "  medium          فارسی خونا می‌شه.                      ~۱.۵GB رم"
-    echo "  large-v3-turbo  پیشنهادی — فارسی درست.                 ~۲GB رم"
-    echo "  large-v3        کمی بهتر، چند برابر کندتر.             ~۳GB رم"
+    echo "  2) محلی (faster-whisper) — بدون اکانت، ولی CPU این سرور رو می‌خوره"
+    echo "  3) خاموش کردن زیرنویس"
+    echo "  0) انصراف"
     echo
+    read -rp "انتخاب: " mode
 
-    if (( total_mb < 2500 )); then
-        warn "با ${total_mb}MB رم، large-v3-turbo ممکنه OOM بده. medium امن‌تره."
-    fi
+    case "$mode" in
+        1)
+            echo
+            info "کلید رایگان: https://console.groq.com/keys"
+            warn "کلید رو من نمی‌بینم؛ مستقیم تو .env همین سرور ذخیره می‌شه."
+            local key
+            read -rsp "API key: " key; echo
+            [[ -z "$key" ]] && { err "کلید خالی بود"; return 1; }
 
-    read -rp "کدوم مدل؟ [large-v3-turbo]: " model
-    model="${model:-large-v3-turbo}"
-    case "$model" in
-        tiny|base|small|medium|large-v3-turbo|large-v3|turbo) ;;
-        *) err "مدل نامعتبر"; return 1 ;;
+            set_env WHISPER_API_URL   "https://api.groq.com/openai/v1"
+            set_env WHISPER_API_MODEL "whisper-large-v3"
+            set_env WHISPER_API_KEY   "$key"
+            chmod 600 "$PROJECT_DIR/.env"
+            chown "$BOT_USER:$BOT_USER" "$PROJECT_DIR/.env"
+            systemctl restart "$SERVICE_NAME"
+            sleep 2
+            ok "فعال شد. دکمه «زیرنویس ویدیو» حالا از API استفاده می‌کنه."
+            info "مدل محلی اگه نصب باشه به‌عنوان پشتیبان می‌مونه."
+            ;;
+        2)
+            local total_mb
+            total_mb=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 0)
+            echo; info "رم این سرور: ${total_mb}MB · هسته: $(nproc 2>/dev/null || echo '?')"
+            echo
+            warn "برای فارسی سایز مدل همه‌چیزه، و هزینه‌ش زمان CPU ـه:"
+            echo "  small           فارسیش تقریبا ساختگیه.       ~۵۰۰MB"
+            echo "  medium          فارسی خونا می‌شه.             ~۱.۵GB"
+            echo "  large-v3-turbo  فارسی درست، ولی خیلی کند.    ~۲GB"
+            echo
+            warn "تجربه‌ی واقعی روی همین سرور: large-v3-turbo برای یه کلیپ ۵ دقیقه طول کشید."
+            (( total_mb < 2500 )) && warn "با ${total_mb}MB رم، large ممکنه OOM بده."
+
+            read -rp "کدوم مدل؟ [medium]: " model
+            model="${model:-medium}"
+            case "$model" in
+                tiny|base|small|medium|large-v3-turbo|large-v3|turbo) ;;
+                *) err "مدل نامعتبر"; return 1 ;;
+            esac
+
+            # >=1.1 for the large-v3-turbo alias and detect_language().
+            # Deliberately not in requirements.txt: it pulls ctranslate2 and a
+            # model download, and that must not break a working venv on update.
+            if ! sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/pip" install --progress-bar off \
+                    "faster-whisper>=1.1.0"; then
+                err "نصب faster-whisper شکست خورد"
+                return 1
+            fi
+
+            set_env WHISPER_MODEL "$model"
+            # Half the cores. Left unset, ctranslate2 takes every one of them
+            # and the bot cannot download anything while it transcribes.
+            local half
+            half=$(( $(nproc 2>/dev/null || echo 2) / 2 )); (( half < 1 )) && half=1
+            set_env WHISPER_CPU_THREADS "$half"
+            info "روی $half هسته اجرا می‌شه تا بقیه‌ی بات بیکار نمونه."
+
+            chown -R "$BOT_USER:$BOT_USER" "$PROJECT_DIR/downloads"
+            systemctl restart "$SERVICE_NAME"
+            ok "نصب شد."
+            warn "اولین استفاده مدل رو دانلود می‌کنه و کنده."
+            ;;
+        3)
+            set_env WHISPER_API_KEY ""
+            systemctl restart "$SERVICE_NAME"
+            ok "API خاموش شد."
+            info "برای حذف کامل مدل محلی:  $PROJECT_DIR/.venv/bin/pip uninstall -y faster-whisper"
+            ;;
+        *) return 0 ;;
     esac
-
-    # >=1.1 for the large-v3-turbo alias and detect_language().
-    # Deliberately not in requirements.txt: it pulls ctranslate2 and a model
-    # download, and that must not be able to break a working venv on update.
-    if ! sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/pip" install --progress-bar off \
-            "faster-whisper>=1.1.0"; then
-        err "نصب faster-whisper شکست خورد - بات بدون زیرنویس کار می‌کنه"
-        return 1
-    fi
-
-    set_env WHISPER_MODEL "$model"
-    chown -R "$BOT_USER:$BOT_USER" "$PROJECT_DIR/downloads"
-    systemctl restart "$SERVICE_NAME"
-    ok "نصب شد. دکمه «زیرنویس ویدیو» فعاله."
-    warn "اولین استفاده مدل رو دانلود می‌کنه (large-v3-turbo حدود ۱.۶ گیگ) و کنده."
-    warn "اگه بات بعدش kill شد یعنی رم کم اومده - با medium دوباره بزن."
 }
 
 _botapi_grant_read() {

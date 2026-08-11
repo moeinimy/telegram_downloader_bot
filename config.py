@@ -87,9 +87,14 @@ class Settings:
     # "Sign in to confirm you're not a bot" check without an account.
     yt_cookies_file: str
 
-    # faster-whisper model for the video-subtitles button. Anything below
-    # medium is English-only in practice; see modules/transcribe.py.
+    # Video subtitles. An OpenAI-compatible transcription endpoint is used
+    # when a key is set - it is both better at Persian and free of CPU cost
+    # here. The local faster-whisper model is the fallback.
+    whisper_api_url: str
+    whisper_api_key: str
+    whisper_api_model: str
     whisper_model: str
+    whisper_cpu_threads: int
 
     # Audio container for downloaded music: m4a (default), mp3 or flac.
     # NOTE: every source the bot can reach (YouTube, SoundCloud) serves lossy
@@ -236,7 +241,11 @@ settings = Settings(
     download_dir=Path(_get("DOWNLOAD_DIR", "./downloads")).resolve(),
     max_upload_mb=int(_get("MAX_UPLOAD_MB", "50") or 50),
     yt_cookies_file=_cookies_path(),
-    whisper_model=(_get("WHISPER_MODEL", "large-v3-turbo").lower() or "large-v3-turbo"),
+    whisper_api_url=_get("WHISPER_API_URL", "https://api.groq.com/openai/v1"),
+    whisper_api_key=_get("WHISPER_API_KEY"),
+    whisper_api_model=_get("WHISPER_API_MODEL", "whisper-large-v3") or "whisper-large-v3",
+    whisper_model=(_get("WHISPER_MODEL", "medium").lower() or "medium"),
+    whisper_cpu_threads=_int("WHISPER_CPU_THREADS", 0),
     audio_format=(_get("AUDIO_FORMAT", "m4a").lower() or "m4a"),
     acoustid_key=_get("ACOUSTID_API_KEY"),
     audd_token=_get("AUDD_API_TOKEN"),

@@ -305,6 +305,8 @@ _EN: dict[str, str] = {
     "این پست ویدیو نیست.": "This post isn't a video.",
     "💬 زیرنویس ویدیو (آزمایشی)": "💬 Video subtitles (beta)",
     "💬 دارم به ویدیو گوش می‌دم…": "💬 Listening to the video…",
+    "💬 دارم به ویدیو گوش می‌دم… (روی این سرور چند دقیقه طول می‌کشه)":
+        "💬 Listening to the video… (this takes a few minutes on this server)",
     "💬 *زیرنویس* (زبان: {lang})\n\n": "💬 *Subtitles* (language: {lang})\n\n",
     "💬 حرفی توش نشنیدم — احتمالا فقط موزیکه.":
         "💬 I couldn't hear any speech — it's probably music only.",
