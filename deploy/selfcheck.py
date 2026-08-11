@@ -433,6 +433,37 @@ check("item: xma prefers the permalink over the signed url",
 check("item: deep nesting terminates",
       _priv._walk_json({"a": {"b": {"c": {"d": {"e": {"f": {"pk": "1"}}}}}}}) == ("", "", ""))
 
+# The real payload from the log, verbatim. A story url is not /p/ or /reel/,
+# so it was falling through to "download this url directly" - which fetched
+# 609KB of login-wall HTML and named no post.
+real_story = {
+    "item_id": "32954495754736457206244805632327680",
+    "item_type": "xma_story_share",
+    "user_id": 42,
+    "original_media_igid": "3961296946067814684",
+    "xma_story_share": [{
+        "target_url": "https://www.instagram.com/stories/shinway__/3961296946067814684"
+                      "?reel_id=77306520822&reel_owner_id=77306520822",
+        "preview_url": "https://lookaside.fbsbx.com/preview.jpg",
+    }],
+}
+permalink, pk, url = _priv._media_from_item(real_story)
+check("item: real xma_story_share yields the story pk",
+      pk == "3961296946067814684" and not url,
+      str((permalink, pk, url)))
+
+check("url: story pk extracted from the path",
+      _priv._STORY_IN_URL.search(
+          "https://www.instagram.com/stories/someone/123456789?reel_id=1").group(1) == "123456789")
+
+# A story permalink resolves to a USERNAME through the url router. Handing
+# that back as a shortcode would fetch a post named after the poster.
+story_dm = ig_direct.DirectMessage(
+    igsid="1", source="poll",
+    permalink="https://www.instagram.com/stories/shinway__/3961296946067814684")
+check("dm: a story permalink is not treated as a shortcode",
+      story_dm.shortcode() == "", story_dm.shortcode())
+
 
 print()
 if failures:

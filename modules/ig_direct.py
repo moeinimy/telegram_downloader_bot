@@ -71,12 +71,16 @@ class DirectMessage:
         attachment carries only a numeric media id and the video's CDN url.
         """
         from modules.instagram import media_id_to_shortcode
-        from utils.url_router import Platform, route
+        from utils.url_router import InstagramKind, Platform, route
 
         if self.permalink:
             result = route(self.permalink)
             if result and result.platform == Platform.INSTAGRAM and result.resource_id:
-                return result.resource_id
+                # A story url resolves to a USERNAME, not a shortcode - a
+                # story has no shortcode at all. Returning it would have the
+                # caller fetch a post named after the poster.
+                if result.kind not in (InstagramKind.STORY.value, InstagramKind.PROFILE.value):
+                    return result.resource_id
 
         # Some payloads bury the permalink in the text instead of a field.
         found = _IG_LINK_RE.search(self.text or "")

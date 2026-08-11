@@ -59,6 +59,30 @@ def available() -> bool:
         return False
 
 
+def _make_responsive(client) -> None:
+    """Remove instagrapi's two built-in sleeps.
+
+    Both exist to pace a scraper hammering the API in a burst. This is a
+    poller: it makes one request every N seconds by construction, so the
+    sleeps hid nothing and were simply added to every measurement.
+
+    Together they were the entire latency budget. Measured on the live bot:
+
+        sweep 2461ms   for two requests of ~410ms each
+
+        request_timeout = 1   -> time.sleep(1) before EVERY private request
+                                 (instagrapi/mixins/private.py, not optional
+                                  and not documented as a delay)
+        delay_range           -> up to another second on top
+
+    request_timeout is not a network timeout despite the name; it is a
+    hardcoded pause. Left slightly above zero so the two calls in one sweep
+    are not fired back to back.
+    """
+    client.request_timeout = 0.1
+    client.delay_range = [0, 0]
+
+
 def _login():
     """Reuse the stored session; only fall back to a password login.
 
@@ -75,17 +99,7 @@ def _login():
         from instagrapi import Client
 
         client = Client()
-        # instagrapi sleeps this long before EVERY private request. Measured
-        # on the live bot, it was the whole cost of a poll:
-        #
-        #     ⏱ lag 6.6s   sweep 2232ms
-        #
-        # Two requests per sweep against a [0,1] range is up to two seconds of
-        # deliberate sleeping to hide timing that the poll interval already
-        # determines - Instagram sees a request every N seconds either way, so
-        # the jitter bought nothing and cost everything. Zero here; the pacing
-        # lives in _loop.
-        client.delay_range = [0, 0]
+        _make_responsive(client)
 
         if _SESSION_PATH.exists():
             try:
@@ -98,10 +112,10 @@ def _login():
             except Exception as e:
                 log.warning("ig poll: stored session rejected (%s) - logging in fresh", e)
                 client = Client()
-                # Same as above. This branch was leaving the default 2-5s on
-                # the client for the rest of the process, so one rejected
-                # session quietly restored the slow path for good.
-                client.delay_range = [0, 0]
+                # This branch used to leave instagrapi's defaults in place for
+                # the rest of the process, so one rejected session quietly
+                # restored the slow path for good.
+                _make_responsive(client)
 
         client.login(settings.ig_dm_username, settings.ig_dm_password)
         try:
@@ -139,6 +153,13 @@ def _str(value) -> str:
 
 
 _SHORTCODE_IN_URL = re.compile(r"/(?:reels?|p|tv)/([A-Za-z0-9_-]{5,})", re.I)
+
+# A shared story arrives as an xma_story_share whose target_url is
+#   /stories/<username>/<story_pk>?reel_id=...
+# The pk in that path IS the address - a story has no shortcode and is not
+# reachable at /p/<code> at all. Matching only reel/p/tv meant this url fell
+# through to "download it directly", which fetched 609KB of login-wall HTML.
+_STORY_IN_URL = re.compile(r"/stories/[^/?#]+/(\d+)")
 
 # --------------------------------------------------------------------------
 # Reading the inbox
@@ -268,14 +289,33 @@ def _media_from_item(item: dict) -> tuple[str, str, str]:
         if not isinstance(node, dict):
             continue
         urls = [str(node.get(field) or "") for field in _URL_FIELDS]
-        # A permalink is worth far more than a signed url here: fetching an
+        # An address is worth far more than a signed url here: fetching an
         # xma video_url returned 600KB of login-wall HTML.
         for candidate in urls:
-            if "instagram.com/" in candidate and _SHORTCODE_IN_URL.search(candidate):
+            if "instagram.com/" not in candidate:
+                continue
+            story = _STORY_IN_URL.search(candidate)
+            if story:
+                return "", story.group(1), ""
+            if _SHORTCODE_IN_URL.search(candidate):
                 return candidate, "", ""
+
+        # Some xma payloads keep the media id separately from the urls.
+        for field in ("original_media_igid", "media_id", "target_media_id"):
+            value = str(node.get(field) or "")
+            if value.split("_")[0].isdigit():
+                return "", value, ""
+
         raw = next((u for u in urls if u), "")
         if raw:
             return "", "", raw
+
+    # The item itself sometimes names the media outright. Seen on a real
+    # xma_story_share, whose key list included original_media_igid.
+    for field in ("original_media_igid", "media_id", "original_media_id"):
+        value = str(item.get(field) or "")
+        if value.split("_")[0].isdigit():
+            return "", value, ""
 
     return _walk_json(item)
 
