@@ -98,7 +98,10 @@ def _login():
             except Exception as e:
                 log.warning("ig poll: stored session rejected (%s) - logging in fresh", e)
                 client = Client()
-                client.delay_range = [2, 5]
+                # Same as above. This branch was leaving the default 2-5s on
+                # the client for the rest of the process, so one rejected
+                # session quietly restored the slow path for good.
+                client.delay_range = [0, 0]
 
         client.login(settings.ig_dm_username, settings.ig_dm_password)
         try:
@@ -137,122 +140,149 @@ def _str(value) -> str:
 
 _SHORTCODE_IN_URL = re.compile(r"/(?:reels?|p|tv)/([A-Za-z0-9_-]{5,})", re.I)
 
+# --------------------------------------------------------------------------
+# Reading the inbox
+#
+# Deliberately NOT through instagrapi's model layer. Two reasons, and both
+# were live bugs:
+#
+# Speed. client.direct_threads() builds a pydantic object per thread and per
+# message. Measured on the running bot, the HTTP call took 412ms while the
+# sweep took 1363ms - the missing ~950ms was model construction for roughly
+# 120 objects, every second, almost all of them messages already handled.
+#
+# Correctness. The model layer only surfaces the fields its version knows
+# about, under the names that version uses. Instagram renames this payload
+# constantly - reel_share became clip, became xma_share - and a shared STORY
+# arrived under a key the installed instagrapi did not model at all, so it
+# came through empty and was dropped. The raw json carries every field under
+# its real name, whatever that name happens to be this month.
+# --------------------------------------------------------------------------
 
-def _populated_fields(message) -> list[str]:
-    """Names of the fields this message actually filled in. Pydantic v1 and
-    v2 disagree on where the field list lives, so both are tried."""
-    schema = getattr(type(message), "model_fields", None) or getattr(message, "__fields__", None)
-    if not schema:
-        return []
-    return sorted(name for name in schema if getattr(message, name, None) is not None)
+# Keys that hold a shared media object, most specific first.
+_MEDIA_KEYS = (
+    "clip", "media_share", "story_share", "reel_share", "media",
+    "visual_media", "raven_media", "direct_media", "felix_share",
+)
 
+# Cross-app shares: a bundle of urls rather than a media object.
+_XMA_KEYS = (
+    "xma_media_share", "xma_share", "xma_reel_share", "xma_story_share",
+    "generic_xma", "xma_link_share",
+)
 
-def _shared_media(message) -> tuple[str, str, str]:
-    """(permalink, media_id, media_url) for whatever this message shared.
+_URL_FIELDS = ("target_url", "url", "video_url", "preview_url", "playable_url")
 
-    Instagram has renamed this payload repeatedly - reel_share became clip,
-    then xma_share - so every known shape is tried instead of trusting one.
-    """
-    for attr in (
-        "clip", "media_share", "story_share", "reel_share",
-        "media", "visual_media", "direct_media",
-    ):
-        obj = getattr(message, attr, None)
-        if obj is None:
-            continue
-        # story_share wraps the media one level deeper.
-        obj = getattr(obj, "media", None) or obj
-
-        code = _str(getattr(obj, "code", ""))
-        if code:
-            return f"https://www.instagram.com/p/{code}/", _str(getattr(obj, "pk", "")), ""
-
-        pk = _str(getattr(obj, "pk", ""))
-        if pk:
-            return "", pk, ""
-
-    # Cross-app shares (xma). These carry a page link where a media url is
-    # expected: fetching xma.video_url returned 600KB of Instagram login-wall
-    # HTML with the post named nowhere in it. So every url on the object is
-    # examined for a permalink first, and the raw url is only the last resort.
-    for attr in ("xma_share", "xma_media_share", "xma_reel_share", "xma_reel_mention"):
-        xma = getattr(message, attr, None)
-        if xma is None:
-            continue
-        # instagrapi sometimes models these as a list of one.
-        if isinstance(xma, (list, tuple)):
-            xma = xma[0] if xma else None
-        if xma is None:
-            continue
-
-        urls = [
-            _str(getattr(xma, field, ""))
-            for field in ("target_url", "url", "preview_url", "video_url")
-        ]
-        for candidate in urls:
-            if "instagram.com/" in candidate and _SHORTCODE_IN_URL.search(candidate):
-                return candidate, "", ""
-
-        raw = next((u for u in urls if u), "")
-        if raw:
-            return "", "", raw
-
-    # Nothing matched by name. Every attribute named above is one Instagram
-    # has already renamed at least once - reel_share became clip, then
-    # xma_share - and each rename silently broke one kind of share until
-    # somebody reported it. Walking the object does not care what the field
-    # is called, which is how a shared STORY resolves: a media object with a
-    # pk, filed under a key none of the lists above knew about.
-    return _walk_for_media(message)
+# Anything under these describes the sender, not the share - and a user
+# object carries a pk too, which would be downloaded as if it were media.
+_SKIP_KEYS = {"user", "users", "sender", "inviter", "from_user", "reactions",
+              "preview_medias", "profile_pic_url"}
 
 
-# What makes an object "the media" rather than a wrapper around it.
-_MEDIA_HINTS = ("video_url", "thumbnail_url", "video_versions", "image_versions2", "media_type")
+def _best_url(node: dict) -> str:
+    for version in node.get("video_versions") or []:
+        if version.get("url"):
+            return str(version["url"])
+    candidates = ((node.get("image_versions2") or {}).get("candidates")) or []
+    if candidates and candidates[0].get("url"):
+        return str(candidates[0]["url"])
+    return ""
 
-# Never descend into these. They describe the sender, not the share, and a
-# user object has a pk too - which would come back as if it were the media.
-_SKIP_FIELDS = {"user", "users", "sender", "inviter", "from_user", "reactions", "user_id"}
 
-
-def _walk_for_media(obj, depth: int = 0, seen: set | None = None) -> tuple[str, str, str]:
-    """Depth-first hunt for (permalink, media_pk, media_url) anywhere on a
-    DM object, regardless of what Instagram is calling the field this month."""
-    if seen is None:
-        seen = set()
-    if obj is None or depth > 4 or id(obj) in seen:
+def _from_media_node(node) -> tuple[str, str, str]:
+    """(permalink, pk, url) from something that looks like a media object."""
+    if isinstance(node, (list, tuple)):
+        node = node[0] if node else None
+    if not isinstance(node, dict):
         return "", "", ""
-    seen.add(id(obj))
 
-    if isinstance(obj, (list, tuple)):
-        for item in obj:
-            found = _walk_for_media(item, depth + 1, seen)
+    # story_share and reel_share wrap the real media one level down.
+    inner = node.get("media")
+    if isinstance(inner, dict):
+        found = _from_media_node(inner)
+        if any(found):
+            return found
+
+    code = str(node.get("code") or "")
+    pk = str(node.get("pk") or node.get("id") or "")
+    url = _best_url(node)
+
+    if code:
+        return f"https://www.instagram.com/p/{code}/", pk, ""
+    if pk:
+        return "", pk, url
+    if url:
+        return "", "", url
+    return "", "", ""
+
+
+def _walk_json(node, depth: int = 0) -> tuple[str, str, str]:
+    """Last resort: find the media anywhere in the item, by shape not by name.
+
+    Every key in _MEDIA_KEYS is one Instagram has already renamed at least
+    once, and each rename broke a kind of share silently until somebody
+    reported it. Shape does not get renamed.
+    """
+    if depth > 5:
+        return "", "", ""
+
+    if isinstance(node, (list, tuple)):
+        for item in node:
+            found = _walk_json(item, depth + 1)
             if any(found):
                 return found
         return "", "", ""
 
-    fields = _populated_fields(obj)
-    if not fields:
+    if not isinstance(node, dict):
         return "", "", ""
 
-    if any(hint in fields for hint in _MEDIA_HINTS) or {"pk", "code"} <= set(fields):
-        code = _str(getattr(obj, "code", ""))
-        pk = _str(getattr(obj, "pk", "") or getattr(obj, "id", ""))
-        url = _str(getattr(obj, "video_url", "") or getattr(obj, "thumbnail_url", ""))
-        if code:
-            return f"https://www.instagram.com/p/{code}/", pk, ""
-        if pk:
-            return "", pk, url
-        if url:
-            return "", "", url
-
-    for name in fields:
-        if name in _SKIP_FIELDS:
-            continue
-        found = _walk_for_media(getattr(obj, name, None), depth + 1, seen)
+    looks_like_media = "code" in node or (
+        ("pk" in node or "id" in node)
+        and ("video_versions" in node or "image_versions2" in node)
+    )
+    if looks_like_media:
+        found = _from_media_node(node)
         if any(found):
             return found
 
+    for key, value in node.items():
+        if key in _SKIP_KEYS:
+            continue
+        found = _walk_json(value, depth + 1)
+        if any(found):
+            return found
     return "", "", ""
+
+
+def _media_from_item(item: dict) -> tuple[str, str, str]:
+    """(permalink, media_pk, media_url) for whatever this DM item shared."""
+    for key in _MEDIA_KEYS:
+        found = _from_media_node(item.get(key))
+        if any(found):
+            return found
+
+    for key in _XMA_KEYS:
+        node = item.get(key)
+        if isinstance(node, (list, tuple)):
+            node = node[0] if node else None
+        if not isinstance(node, dict):
+            continue
+        urls = [str(node.get(field) or "") for field in _URL_FIELDS]
+        # A permalink is worth far more than a signed url here: fetching an
+        # xma video_url returned 600KB of login-wall HTML.
+        for candidate in urls:
+            if "instagram.com/" in candidate and _SHORTCODE_IN_URL.search(candidate):
+                return candidate, "", ""
+        raw = next((u for u in urls if u), "")
+        if raw:
+            return "", "", raw
+
+    return _walk_json(item)
+
+
+def _inbox(client, endpoint: str, params: dict) -> dict:
+    """One raw inbox call. private_request returns the parsed json directly."""
+    return client.private_request(endpoint, params=params) or client.last_json or {}
 
 
 @run_in_thread
@@ -261,60 +291,61 @@ def _collect(threads_wanted: int, since: float, with_pending: bool = True) -> li
     client = _login()
     out: list[DirectMessage] = []
 
-    # thread_message_limit is the difference between a small response and a
-    # large one. Only the newest few messages per thread can possibly be newer
-    # than the high-water mark, and pulling twenty of each was paying transfer
-    # and parse time on every single poll for messages already handled.
-    try:
-        threads = list(client.direct_threads(amount=threads_wanted, thread_message_limit=6))
-    except TypeError:
-        # Older instagrapi without the parameter.
-        threads = list(client.direct_threads(amount=threads_wanted))
+    data = _inbox(client, "direct_v2/inbox/", {
+        "visual_message_return_type": "unseen",
+        "thread_message_limit": 5,
+        "persistentBadging": "true",
+        "limit": threads_wanted,
+    })
+    threads = list(((data.get("inbox") or {}).get("threads")) or [])
 
     if with_pending:
         try:
             # Message requests from people who have never messaged us before
             # land here rather than in the inbox, and a first-time sharer is
             # exactly the case that matters.
-            threads += list(client.direct_pending_inbox(amount=threads_wanted))
+            pending = _inbox(client, "direct_v2/pending_inbox/", {
+                "visual_message_return_type": "unseen",
+                "persistentBadging": "true",
+            })
+            threads += ((pending.get("inbox") or {}).get("threads")) or []
         except Exception as e:
             log.info("ig poll: pending inbox unavailable (%s)", e)
 
-    me = _str(getattr(client, "user_id", ""))
+    me = str(getattr(client, "user_id", "") or "")
 
     for thread in threads:
-        for message in getattr(thread, "messages", None) or []:
-            sender = _str(getattr(message, "user_id", ""))
+        for item in thread.get("items") or []:
+            sender = str(item.get("user_id") or "")
             if not sender or sender == me:
                 continue  # our own replies
 
-            stamp = getattr(message, "timestamp", None)
-            ts = stamp.timestamp() if hasattr(stamp, "timestamp") else float(stamp or 0)
+            # Instagram timestamps DM items in MICROseconds.
+            ts = float(item.get("timestamp") or 0) / 1_000_000
             if ts <= since:
                 continue
 
-            permalink, media_id, media_url = _shared_media(message)
-            text = _str(getattr(message, "text", ""))
+            permalink, media_id, media_url = _media_from_item(item)
+            text = str(item.get("text") or "")
             if not (permalink or media_id or media_url or text):
                 continue
 
             out.append(
                 DirectMessage(
                     igsid=sender,
-                    mid=_str(getattr(message, "id", "")),
+                    mid=str(item.get("item_id") or ""),
                     text=text,
                     media_url=media_url,
                     permalink=permalink,
                     media_id=media_id,
                     timestamp=ts,
                     source="poll",
-                    # Which fields the message actually carried. Instagram
-                    # renames this payload often enough that "we did not find
-                    # the media" is useless on its own - the next report needs
-                    # to say where it was hiding instead.
+                    # The item's own keys. When extraction finds nothing this
+                    # is the only thing that says where the media was hiding,
+                    # and its absence is why the story bug needed a report.
                     raw={
-                        "item_type": _str(getattr(message, "item_type", "")),
-                        "fields": _populated_fields(message),
+                        "item_type": str(item.get("item_type") or ""),
+                        "keys": sorted(k for k in item if item.get(k) is not None),
                     },
                 )
             )
@@ -408,8 +439,10 @@ async def _loop(dispatch: Dispatch) -> None:
     if not _seen_after:
         _seen_after = time.time()
 
-    idle = max(1, settings.ig_dm_poll_seconds)
-    fast = max(1, min(settings.ig_dm_fast_seconds, idle))
+    # Floors, not defaults. Below ~0.3s the sweep itself is the limit and the
+    # only thing another request buys is a higher chance of being throttled.
+    idle = max(0.3, settings.ig_dm_poll_seconds)
+    fast = max(0.3, min(settings.ig_dm_fast_seconds, idle))
     window = max(0, settings.ig_dm_fast_window)
 
     last_activity = 0.0

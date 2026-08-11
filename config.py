@@ -68,8 +68,10 @@ class Settings:
     ig_health_minutes: int
     ig_dm_username: str
     ig_dm_password: str
-    ig_dm_poll_seconds: int
-    ig_dm_fast_seconds: int
+    # Floats: the poll interval IS the DM latency, so sub-second settings are
+    # meaningful here even though nothing else in this file needs them.
+    ig_dm_poll_seconds: float
+    ig_dm_fast_seconds: float
     ig_dm_fast_window: int
 
     # Optional: local Bot API server (https://github.com/tdlib/telegram-bot-api)
@@ -171,6 +173,17 @@ def _int(name: str, default: int) -> int:
         return default
 
 
+def _float(name: str, default: float) -> float:
+    raw = _get(name)
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        logging.getLogger(__name__).warning("%s=%r is not a number - using %s", name, raw, default)
+        return default
+
+
 def _webhook_path() -> str:
     """Meta stores the callback URL verbatim, so a path that lost its leading
     slash would register as a different endpoint than the one aiohttp serves."""
@@ -212,8 +225,8 @@ settings = Settings(
     ig_health_minutes=_int("IG_HEALTH_MINUTES", 10),
     ig_dm_username=_get("IG_DM_USERNAME"),
     ig_dm_password=_get("IG_DM_PASSWORD"),
-    ig_dm_poll_seconds=_int("IG_DM_POLL_SECONDS", 2),
-    ig_dm_fast_seconds=_int("IG_DM_FAST_SECONDS", 1),
+    ig_dm_poll_seconds=_float("IG_DM_POLL_SECONDS", 2),
+    ig_dm_fast_seconds=_float("IG_DM_FAST_SECONDS", 1),
     ig_dm_fast_window=_int("IG_DM_FAST_WINDOW", 120),
     bot_api_base_url=_get("BOT_API_BASE_URL"),
     download_dir=Path(_get("DOWNLOAD_DIR", "./downloads")).resolve(),
@@ -256,3 +269,10 @@ def setup_logging() -> None:
     # quiet noisy libs
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("telegram").setLevel(logging.INFO)
+    # instagrapi logs the full url of every private request at INFO. At a
+    # one-second poll that is two lines per second written to journald
+    # forever - it buries every other line and costs real disk I/O. Failures
+    # still come through at WARNING.
+    logging.getLogger("instagrapi").setLevel(logging.WARNING)
+    logging.getLogger("private_request").setLevel(logging.WARNING)
+    logging.getLogger("public_request").setLevel(logging.WARNING)

@@ -376,45 +376,62 @@ check("handlers: the gate runs after the stats tracker",
 # knew. The walker has to find it without being told the name.
 import modules.ig_private as _priv  # noqa: E402
 
+# A shared reel: media object under a known key, with a shortcode.
+reel_item = {
+    "item_id": "1", "item_type": "clip", "user_id": 42, "timestamp": 1754900000000000,
+    "clip": {"clip": {"code": "DZfwtaiob79", "pk": "3396139282436016699",
+                      "video_versions": [{"url": "https://cdn/hi.mp4", "height": 1080}]}},
+}
+check("item: reel resolves to a permalink",
+      _priv._media_from_item(reel_item)[0] == "https://www.instagram.com/p/DZfwtaiob79/",
+      str(_priv._media_from_item(reel_item)))
 
-class _Fake:
-    """Stands in for an instagrapi model: pydantic-style field list plus
-    attributes, so _populated_fields sees it the same way."""
+# A shared story: no code anywhere - a story is not reachable at /p/<code> -
+# so the pk is the only usable address.
+story_item = {
+    "item_id": "2", "item_type": "story_share", "user_id": 42,
+    "story_share": {"media": {"pk": "3396139282436016699", "media_type": 2,
+                              "video_versions": [{"url": "https://cdn/s.mp4"}]}},
+}
+permalink, pk, url = _priv._media_from_item(story_item)
+check("item: story yields a pk and no fake permalink",
+      pk == "3396139282436016699" and permalink == "",
+      str((permalink, pk, url)))
 
-    def __init__(self, **kw):
-        self.__dict__.update(kw)
-        self.__fields__ = {k: None for k in kw}
+# The case that took a user report: media under a key nothing knows about.
+unknown_item = {
+    "item_id": "3", "item_type": "some_new_thing", "user_id": 42,
+    "brand_new_wrapper": {"inner": {"pk": "999888777",
+                                    "image_versions2": {"candidates": [{"url": "https://cdn/p.jpg"}]}}},
+}
+check("item: unknown key still found by shape",
+      _priv._media_from_item(unknown_item)[1] == "999888777",
+      str(_priv._media_from_item(unknown_item)))
 
+# A user object has a pk too. Returning it would send the bot off to download
+# the sender's profile picture instead of what they shared.
+text_item = {
+    "item_id": "4", "item_type": "text", "user_id": 42, "text": "IG-7QK4M2",
+    "user": {"pk": "42", "username": "someone",
+             "image_versions2": {"candidates": [{"url": "https://cdn/avatar.jpg"}]}},
+}
+check("item: the sender is not mistaken for the media",
+      _priv._media_from_item(text_item) == ("", "", ""),
+      str(_priv._media_from_item(text_item)))
 
-story = _Fake(
-    item_type="story_share",
-    some_unknown_wrapper=_Fake(
-        media=_Fake(pk="3396139282436016699", media_type=2,
-                    video_url="https://cdn/x.mp4", code=None),
-    ),
-)
-check("walk: story pk found under an unknown key",
-      _priv._walk_for_media(story)[1] == "3396139282436016699",
-      str(_priv._walk_for_media(story)))
+# xma: a permalink among the urls beats the signed one, which is what
+# returned 600KB of login-wall HTML.
+xma_item = {
+    "item_id": "5", "item_type": "xma_media_share", "user_id": 42,
+    "xma_media_share": [{"video_url": "https://lookaside.fbsbx.com/x",
+                         "target_url": "https://www.instagram.com/reel/ABC123xyz/"}],
+}
+check("item: xma prefers the permalink over the signed url",
+      _priv._media_from_item(xma_item)[0] == "https://www.instagram.com/reel/ABC123xyz/",
+      str(_priv._media_from_item(xma_item)))
 
-post = _Fake(item_type="clip", weird_new_name=_Fake(
-    pk="123", code="DZfwtaiob79", media_type=2, video_url="https://cdn/y.mp4"))
-check("walk: permalink built from a code",
-      _priv._walk_for_media(post)[0] == "https://www.instagram.com/p/DZfwtaiob79/",
-      str(_priv._walk_for_media(post)))
-
-# A user object has a pk too, and returning it as media would send the bot
-# off to download the sender's profile.
-sender_only = _Fake(item_type="text", text="hello",
-                    user=_Fake(pk="999", username="someone", media_type=1))
-check("walk: the sender is not mistaken for the media",
-      _priv._walk_for_media(sender_only) == ("", "", ""),
-      str(_priv._walk_for_media(sender_only)))
-
-cyclic = _Fake(item_type="x")
-cyclic.self_ref = cyclic
-cyclic.__fields__["self_ref"] = None
-check("walk: a reference cycle terminates", _priv._walk_for_media(cyclic) == ("", "", ""))
+check("item: deep nesting terminates",
+      _priv._walk_json({"a": {"b": {"c": {"d": {"e": {"f": {"pk": "1"}}}}}}}) == ("", "", ""))
 
 
 print()
