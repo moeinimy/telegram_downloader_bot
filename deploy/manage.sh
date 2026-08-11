@@ -907,6 +907,67 @@ do_igdirect() {
     info "وضعیت رو تو بات با /srcstatus ببین."
 }
 
+do_deps() {
+    echo; info "=== وضعیت پکیج‌ها ==="; echo
+
+    local py="$PROJECT_DIR/.venv/bin/python"
+    local pip="$PROJECT_DIR/.venv/bin/pip"
+
+    info "نسخه‌ها:"
+    "$pip" list 2>/dev/null | grep -iE '^(shazamio|shazamio-core|pydantic|pydantic-core|aiohttp|instagrapi|faster-whisper|ctranslate2|yt-dlp|python-telegram-bot|httpx)\b' \
+        || warn "pip list جواب نداد"
+    echo
+
+    # The reason this exists: instagrapi and faster-whisper were installed
+    # into the same venv as shazamio, and all four have opinions about
+    # pydantic. A resolver conflict there breaks music recognition silently -
+    # nothing logs it, the feature just stops matching.
+    info "تضاد وابستگی‌ها (pip check):"
+    if "$pip" check 2>&1 | grep -v '^$'; then
+        warn "بالا رو بخون - تضاد یعنی یکی از فیچرها بی‌صدا خرابه"
+    else
+        ok "تضادی نیست"
+    fi
+    echo
+
+    info "ایمپورت واقعی هر کدوم:"
+    "$py" - <<'PY'
+mods = [
+    ("shazamio", "تشخیص آهنگ"),
+    ("pydantic", "-"),
+    ("aiohttp", "-"),
+    ("instagrapi", "دایرکت اینستاگرام"),
+    ("faster_whisper", "زیرنویس"),
+    ("yt_dlp", "دانلود"),
+]
+for name, what in mods:
+    try:
+        m = __import__(name)
+        v = getattr(m, "__version__", "?")
+        print(f"  OK   {name:16} {v:12} {what}")
+    except Exception as e:
+        print(f"  FAIL {name:16} {'':12} {what}  <- {type(e).__name__}: {e}")
+PY
+    echo
+    info "تست زنده‌ی شزم:"
+    "$py" - <<'PY'
+import asyncio, socket, sys
+sys.path.insert(0, ".")
+try:
+    socket.create_connection(("amp.shazam.com", 443), timeout=6).close()
+    print("  OK   amp.shazam.com قابل دسترسه")
+except Exception as e:
+    print(f"  FAIL amp.shazam.com در دسترس نیست: {e}")
+try:
+    from shazamio import Shazam
+    s = Shazam()
+    print("  OK   کلاینت شزم ساخته شد:", ", ".join(
+        m for m in ("recognize", "recognize_song") if hasattr(s, m)) or "هیچ متد شناخته‌شده‌ای نداره!")
+except Exception as e:
+    print(f"  FAIL ساخت کلاینت شزم: {type(e).__name__}: {e}")
+PY
+}
+
 do_whisper() {
     echo; info "=== زیرنویس ویدیو (faster-whisper) ==="; echo
 
@@ -1277,7 +1338,8 @@ menu() {
     echo " 21) موتورهای تشخیص آهنگ"
     echo " 22) اینستاگرام دایرکت (دایرکت اینستا -> تلگرام)"
     echo " 23) زیرنویس ویدیو (faster-whisper)"
-    echo " 24) نصب مجدد از صفر (پاک کردن همه چی)"
+    echo " 24) وضعیت پکیج‌ها و تضادها"
+    echo " 25) نصب مجدد از صفر (پاک کردن همه چی)"
     echo "  0) خروج"
     echo
 }
@@ -1296,6 +1358,7 @@ case "${1:-}" in
     igcheck) do_igcheck; exit 0 ;;
     igdirect) do_igdirect; exit $? ;;
     whisper) do_whisper; exit $? ;;
+    deps)    do_deps;    exit 0 ;;
     engines) do_engines; exit $? ;;
     update)  do_update;  exit $? ;;
     restart) systemctl restart "$SERVICE_NAME"; exit $? ;;
@@ -1334,7 +1397,8 @@ while true; do
         21) do_engines; pause ;;
         22) do_igdirect; pause ;;
         23) do_whisper; pause ;;
-        24) do_reset; pause ;;
+        24) do_deps; pause ;;
+        25) do_reset; pause ;;
         0)  echo; exit 0 ;;
         *)  err "گزینه نامعتبر"; sleep 1 ;;
     esac
