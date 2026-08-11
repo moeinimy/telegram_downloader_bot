@@ -816,13 +816,27 @@ _igdirect_standby() {
     if [[ "$how" == "1" ]]; then
         echo
         info "تو مرورگر با همین اکانت وارد instagram.com شو، بعد:"
-        echo "  F12 → Application → Cookies → instagram.com → sessionid"
-        warn "این کوکی رو من نمی‌بینم؛ مستقیم تو .env همین سرور ذخیره می‌شه."
-        local sid
+        echo "  F12 → Application → Cookies → instagram.com"
+        echo "  سه تا کوکی لازمه: sessionid, csrftoken, ds_user_id"
+        warn "این کوکی‌ها رو من نمی‌بینم؛ مستقیم تو .env همین سرور ذخیره می‌شن."
+        # All three, because with them the WEB api can be used - and that is
+        # the api this cookie belongs to. Given only sessionid we are back to
+        # handing a browser cookie to the mobile api, which refuses it.
+        local sid csrf dsid
         read -rsp "sessionid: " sid; echo
         [[ -z "$sid" ]] && { err "خالی بود"; return 1; }
-        set_env IG_DM_SESSIONID "$sid"
+        read -rp  "csrftoken: " csrf
+        read -rp  "ds_user_id: " dsid
+        set_env IG_DM_SESSIONID  "$sid"
+        set_env IG_DM_CSRFTOKEN  "$csrf"
+        set_env IG_DM_DS_USER_ID "$dsid"
         set_env IG_DM_PASSWORD ""
+        if [[ -n "$csrf" && -n "$dsid" ]]; then
+            set_env IG_DIRECT_SOURCES "web,poll"
+            ok "هر سه کوکی ست شد - از API وب استفاده می‌شه (بدون instagrapi)"
+        else
+            warn "بدون csrftoken و ds_user_id فقط مسیر موبایل می‌مونه، که همون ۴۰۳ رو می‌ده."
+        fi
     else
         local dm_pass
         read -rsp "پسورد اکانت دایرکت: " dm_pass; echo

@@ -34,6 +34,9 @@ from pathlib import Path
 
 from config import settings
 from modules.ig_direct import DirectMessage, Dispatch, Source
+from modules.ig_items import media_from_item as _media_from_item
+from modules.ig_items import to_direct_message
+from modules.ig_items import walk_json as _walk_json
 from utils.helpers import run_in_thread
 
 log = logging.getLogger(__name__)
@@ -267,172 +270,9 @@ def _str(value) -> str:
     return "" if value is None else str(value)
 
 
-_SHORTCODE_IN_URL = re.compile(r"/(?:reels?|p|tv)/([A-Za-z0-9_-]{5,})", re.I)
-
-# A shared story arrives as an xma_story_share whose target_url is
-#   /stories/<username>/<story_pk>?reel_id=...
-# The pk in that path IS the address - a story has no shortcode and is not
-# reachable at /p/<code> at all. Matching only reel/p/tv meant this url fell
-# through to "download it directly", which fetched 609KB of login-wall HTML.
-_STORY_IN_URL = re.compile(r"/stories/[^/?#]+/(\d+)")
-
-# --------------------------------------------------------------------------
-# Reading the inbox
-#
-# Deliberately NOT through instagrapi's model layer. Two reasons, and both
-# were live bugs:
-#
-# Speed. client.direct_threads() builds a pydantic object per thread and per
-# message. Measured on the running bot, the HTTP call took 412ms while the
-# sweep took 1363ms - the missing ~950ms was model construction for roughly
-# 120 objects, every second, almost all of them messages already handled.
-#
-# Correctness. The model layer only surfaces the fields its version knows
-# about, under the names that version uses. Instagram renames this payload
-# constantly - reel_share became clip, became xma_share - and a shared STORY
-# arrived under a key the installed instagrapi did not model at all, so it
-# came through empty and was dropped. The raw json carries every field under
-# its real name, whatever that name happens to be this month.
-# --------------------------------------------------------------------------
-
-# Keys that hold a shared media object, most specific first.
-_MEDIA_KEYS = (
-    "clip", "media_share", "story_share", "reel_share", "media",
-    "visual_media", "raven_media", "direct_media", "felix_share",
-)
-
-# Cross-app shares: a bundle of urls rather than a media object.
-_XMA_KEYS = (
-    "xma_media_share", "xma_share", "xma_reel_share", "xma_story_share",
-    "generic_xma", "xma_link_share",
-)
-
-_URL_FIELDS = ("target_url", "url", "video_url", "preview_url", "playable_url")
-
-# Anything under these describes the sender, not the share - and a user
-# object carries a pk too, which would be downloaded as if it were media.
-_SKIP_KEYS = {"user", "users", "sender", "inviter", "from_user", "reactions",
-              "preview_medias", "profile_pic_url"}
-
-
-def _best_url(node: dict) -> str:
-    for version in node.get("video_versions") or []:
-        if version.get("url"):
-            return str(version["url"])
-    candidates = ((node.get("image_versions2") or {}).get("candidates")) or []
-    if candidates and candidates[0].get("url"):
-        return str(candidates[0]["url"])
-    return ""
-
-
-def _from_media_node(node) -> tuple[str, str, str]:
-    """(permalink, pk, url) from something that looks like a media object."""
-    if isinstance(node, (list, tuple)):
-        node = node[0] if node else None
-    if not isinstance(node, dict):
-        return "", "", ""
-
-    # story_share and reel_share wrap the real media one level down.
-    inner = node.get("media")
-    if isinstance(inner, dict):
-        found = _from_media_node(inner)
-        if any(found):
-            return found
-
-    code = str(node.get("code") or "")
-    pk = str(node.get("pk") or node.get("id") or "")
-    url = _best_url(node)
-
-    if code:
-        return f"https://www.instagram.com/p/{code}/", pk, ""
-    if pk:
-        return "", pk, url
-    if url:
-        return "", "", url
-    return "", "", ""
-
-
-def _walk_json(node, depth: int = 0) -> tuple[str, str, str]:
-    """Last resort: find the media anywhere in the item, by shape not by name.
-
-    Every key in _MEDIA_KEYS is one Instagram has already renamed at least
-    once, and each rename broke a kind of share silently until somebody
-    reported it. Shape does not get renamed.
-    """
-    if depth > 5:
-        return "", "", ""
-
-    if isinstance(node, (list, tuple)):
-        for item in node:
-            found = _walk_json(item, depth + 1)
-            if any(found):
-                return found
-        return "", "", ""
-
-    if not isinstance(node, dict):
-        return "", "", ""
-
-    looks_like_media = "code" in node or (
-        ("pk" in node or "id" in node)
-        and ("video_versions" in node or "image_versions2" in node)
-    )
-    if looks_like_media:
-        found = _from_media_node(node)
-        if any(found):
-            return found
-
-    for key, value in node.items():
-        if key in _SKIP_KEYS:
-            continue
-        found = _walk_json(value, depth + 1)
-        if any(found):
-            return found
-    return "", "", ""
-
-
-def _media_from_item(item: dict) -> tuple[str, str, str]:
-    """(permalink, media_pk, media_url) for whatever this DM item shared."""
-    for key in _MEDIA_KEYS:
-        found = _from_media_node(item.get(key))
-        if any(found):
-            return found
-
-    for key in _XMA_KEYS:
-        node = item.get(key)
-        if isinstance(node, (list, tuple)):
-            node = node[0] if node else None
-        if not isinstance(node, dict):
-            continue
-        urls = [str(node.get(field) or "") for field in _URL_FIELDS]
-        # An address is worth far more than a signed url here: fetching an
-        # xma video_url returned 600KB of login-wall HTML.
-        for candidate in urls:
-            if "instagram.com/" not in candidate:
-                continue
-            story = _STORY_IN_URL.search(candidate)
-            if story:
-                return "", story.group(1), ""
-            if _SHORTCODE_IN_URL.search(candidate):
-                return candidate, "", ""
-
-        # Some xma payloads keep the media id separately from the urls.
-        for field in ("original_media_igid", "media_id", "target_media_id"):
-            value = str(node.get(field) or "")
-            if value.split("_")[0].isdigit():
-                return "", value, ""
-
-        raw = next((u for u in urls if u), "")
-        if raw:
-            return "", "", raw
-
-    # The item itself sometimes names the media outright. Seen on a real
-    # xma_story_share, whose key list included original_media_igid.
-    for field in ("original_media_igid", "media_id", "original_media_id"):
-        value = str(item.get(field) or "")
-        if value.split("_")[0].isdigit():
-            return "", value, ""
-
-    return _walk_json(item)
+# Item parsing lives in modules/ig_items.py: Instagram serves the same
+# inbox payload from the mobile and the web api, so both readers hand their
+# items to one parser and only the transport differs.
 
 
 @run_in_thread
@@ -481,30 +321,9 @@ def _collect(threads_wanted: int, since: float, with_pending: bool = True) -> li
             if ts <= since:
                 continue
 
-            permalink, media_id, media_url = _media_from_item(item)
-            text = str(item.get("text") or "")
-            if not (permalink or media_id or media_url or text):
-                continue
-
-            out.append(
-                DirectMessage(
-                    igsid=sender,
-                    mid=str(item.get("item_id") or ""),
-                    text=text,
-                    media_url=media_url,
-                    permalink=permalink,
-                    media_id=media_id,
-                    timestamp=ts,
-                    source="poll",
-                    # The item's own keys. When extraction finds nothing this
-                    # is the only thing that says where the media was hiding,
-                    # and its absence is why the story bug needed a report.
-                    raw={
-                        "item_type": str(item.get("item_type") or ""),
-                        "keys": sorted(k for k in item if item.get(k) is not None),
-                    },
-                )
-            )
+            message = to_direct_message(item, "poll", me)
+            if message:
+                out.append(message)
 
     return out
 

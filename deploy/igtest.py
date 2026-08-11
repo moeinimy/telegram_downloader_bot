@@ -37,6 +37,12 @@ def head(title: str) -> None:
     print("=" * 60)
 
 
+async def _web_probe(ig_web):
+    """One real inbox read through the web api, from the beginning of time so
+    anything present shows up."""
+    return await ig_web._collect(5, 0.0, True)
+
+
 def main() -> int:
     from config import settings
 
@@ -46,6 +52,40 @@ def main() -> int:
     print(f"  پسورد          : {'ست شده' if settings.ig_dm_password else '(ست نشده)'}")
     print(f"  پروکسی         : {settings.ig_dm_proxy or '(بدون پروکسی)'}")
     print(f"  فاصله پولینگ   : {settings.ig_dm_poll_seconds}s / {settings.ig_dm_fast_seconds}s")
+
+    print(f"  csrftoken      : {'ست شده' if settings.ig_dm_csrftoken else '(ست نشده)'}")
+    print(f"  ds_user_id     : {settings.ig_dm_ds_user_id or '(ست نشده)'}")
+    print(f"  منابع          : {', '.join(settings.ig_direct_sources)}")
+
+    # The web api first: it is the one the sessionid cookie was issued for, so
+    # it needs no login, no device and nothing signed. The mobile api below is
+    # only worth trying when this cannot run.
+    if settings.has_ig_web:
+        head("۰) API وب (مسیر اصلی)")
+        import asyncio as _asyncio
+
+        from modules import ig_web
+
+        try:
+            messages = _asyncio.run(_web_probe(ig_web))
+            print(f"  {OK}اینباکس وب خونده شد - {len(messages)} پیام جدید")
+            for m in messages[:5]:
+                print(f"     [{m.raw.get('item_type','?')}] "
+                      f"{(m.permalink or m.media_id or m.text or '')[:70]}")
+            print()
+            print(f"  {OK}دایرکت از این مسیر کار می‌کنه. مسیر موبایل لازم نیست.")
+            return 0
+        except Exception as e:
+            print(f"  {BAD}{type(e).__name__}: {str(e)[:250]}")
+            if "401" in str(e) or "login" in str(e).lower():
+                print("      ↳ کوکی منقضی شده. یه sessionid تازه بگیر: botctl igdirect")
+            elif "403" in str(e):
+                print("      ↳ کوکی از این آدرس قبول نشد. پروکسی رو عوض کن: botctl proxy")
+            elif "csrf" in str(e).lower():
+                print("      ↳ csrftoken لازمه: botctl igdirect")
+            print("      ادامه می‌دم با مسیر موبایل...")
+    else:
+        print(f"\n  {INFO}API وب فعال نیست (sessionid ست نشده)")
 
     try:
         from modules import ig_private

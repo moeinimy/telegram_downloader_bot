@@ -215,6 +215,7 @@ class _SourceState:
 
 _states: dict[str, _SourceState] = {
     "webhook": _SourceState(),
+    "web": _SourceState(),
     "poll": _SourceState(),
 }
 _sources: dict[str, Source] = {}
@@ -271,6 +272,16 @@ def _build_sources() -> dict[str, Source]:
             _states["webhook"].detail = f"unavailable: {e}"
             log.error("ig direct: webhook source unavailable (%s)", e)
 
+    if "web" in settings.ig_direct_sources and settings.has_ig_web:
+        try:
+            from modules import ig_web
+
+            built["web"] = ig_web.source()
+            _states["web"].configured = True
+        except Exception as e:
+            _states["web"].detail = f"unavailable: {e}"
+            log.warning("ig direct: web source unavailable (%s)", e)
+
     if "poll" in settings.ig_direct_sources and settings.has_ig_private:
         try:
             from modules import ig_private
@@ -304,6 +315,19 @@ async def start(on_message: Dispatch) -> None:
             "ig direct: webhook listening on %s:%s%s",
             settings.ig_webhook_host, settings.ig_webhook_port, settings.ig_webhook_path,
         )
+
+    # The web reader starts immediately too when no webhook is configured. It
+    # is not a last resort like the mobile poller: it uses the api its cookie
+    # was actually issued for, so it has no device to be unknown and nothing
+    # to sign.
+    if "web" in _sources and "webhook" not in _sources:
+        try:
+            await _sources["web"].start(_dispatch)
+            _states["web"].running = True
+            log.info("ig direct: reading the inbox through the web api")
+        except Exception as e:
+            _states["web"].detail = str(e)[:120]
+            log.error("ig direct: web source failed to start: %s", e)
 
     _health_task = asyncio.create_task(_health_loop())
 
@@ -352,12 +376,24 @@ async def _check_and_failover() -> None:
         if not healthy:
             log.warning("ig direct: official path unhealthy - %s", detail)
 
+    web = _sources.get("web")
+    if web and _states["web"].running:
+        try:
+            web_ok, web_detail = await web.health()
+        except Exception as e:
+            web_ok, web_detail = False, f"{type(e).__name__}: {e}"
+        _states["web"].healthy = web_ok
+        _states["web"].detail = web_detail
+        _states["web"].last_check = time.time()
+
     if not poll:
         return
 
-    # No webhook configured at all means the poller is the primary, not a
-    # standby, so it must simply stay up.
-    want_poll = not webhook or not healthy
+    # The mobile poller is the last resort: it is the only source that needs
+    # a device Instagram has to recognise, and the one whose failures cost
+    # the account. It runs only when nothing above it is working.
+    web_working = bool(web and _states["web"].running and _states["web"].healthy is not False)
+    want_poll = not (healthy or web_working)
     state = _states["poll"]
 
     if want_poll and not state.running:

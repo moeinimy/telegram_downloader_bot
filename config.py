@@ -72,6 +72,12 @@ class Settings:
     # Preferred over the password: a password login originating from this
     # server is a login context Instagram does not trust and usually refuses.
     ig_dm_sessionid: str
+    # The other two browser cookies. With all three the WEB api can be used
+    # directly, which is what the sessionid actually belongs to - the mobile
+    # api refuses a browser-issued cookie no matter what device it is paired
+    # with.
+    ig_dm_csrftoken: str
+    ig_dm_ds_user_id: str
     # Route instagrapi through a proxy. Unlike SHAZAM_PROXY this one accepts
     # socks5:// as well - instagrapi uses requests, which speaks SOCKS.
     ig_dm_proxy: str
@@ -151,10 +157,16 @@ class Settings:
         return bool(self.ig_dm_username and (self.ig_dm_sessionid or self.ig_dm_password))
 
     @property
+    def has_ig_web(self) -> bool:
+        """The web api needs nothing but the cookie it was issued to."""
+        return bool(self.ig_dm_sessionid)
+
+    @property
     def ig_direct_enabled(self) -> bool:
         """True when at least one configured source is also switched on."""
         return bool(
             ("webhook" in self.ig_direct_sources and self.has_ig_webhook)
+            or ("web" in self.ig_direct_sources and self.has_ig_web)
             or ("poll" in self.ig_direct_sources and self.has_ig_private)
         )
 
@@ -235,7 +247,7 @@ settings = Settings(
     ig_csrftoken=_get("IG_CSRFTOKEN"),
     ig_ds_user_id=_get("IG_DS_USER_ID"),
     ig_direct_sources=tuple(
-        s for s in _get("IG_DIRECT_SOURCES", "webhook,poll").replace(" ", "").lower().split(",") if s
+        s for s in _get("IG_DIRECT_SOURCES", "webhook,web,poll").replace(" ", "").lower().split(",") if s
     ),
     ig_app_id=_get("IG_APP_ID"),
     ig_app_secret=_get("IG_APP_SECRET"),
@@ -249,6 +261,10 @@ settings = Settings(
     ig_dm_username=_get("IG_DM_USERNAME"),
     ig_dm_password=_get("IG_DM_PASSWORD"),
     ig_dm_sessionid=_get("IG_DM_SESSIONID"),
+    # Fall back to the instaloader cookies: same browser, same panel, and
+    # someone who set those has already done the work.
+    ig_dm_csrftoken=_get("IG_DM_CSRFTOKEN") or _get("IG_CSRFTOKEN"),
+    ig_dm_ds_user_id=_get("IG_DM_DS_USER_ID") or _get("IG_DS_USER_ID"),
     ig_dm_proxy=_get("IG_DM_PROXY"),
     # Raised after the account was blocked at ~1s polling. See .env.example.
     ig_dm_poll_seconds=_float("IG_DM_POLL_SECONDS", 8),
@@ -283,11 +299,11 @@ if settings.audio_format not in ("m4a", "mp3", "flac"):
         f"AUDIO_FORMAT={settings.audio_format!r} is not one of: m4a, mp3, flac"
     )
 
-_unknown_sources = set(settings.ig_direct_sources) - {"webhook", "poll"}
+_unknown_sources = set(settings.ig_direct_sources) - {"webhook", "web", "poll"}
 if _unknown_sources:
     raise RuntimeError(
         f"IG_DIRECT_SOURCES contains unknown source(s): {', '.join(sorted(_unknown_sources))}. "
-        "Valid names are: webhook, poll"
+        "Valid names are: webhook, web, poll"
     )
 
 settings.download_dir.mkdir(parents=True, exist_ok=True)

@@ -374,6 +374,7 @@ check("handlers: the gate runs after the stats tracker",
 # Named-attribute lookup broke once per Instagram rename, most recently on
 # shared stories: a media object with a pk, under a key none of the lists
 # knew. The walker has to find it without being told the name.
+import modules.ig_items as _items  # noqa: E402
 import modules.ig_private as _priv  # noqa: E402
 
 # A shared reel: media object under a known key, with a shortcode.
@@ -453,7 +454,7 @@ check("item: real xma_story_share yields the story pk",
       str((permalink, pk, url)))
 
 check("url: story pk extracted from the path",
-      _priv._STORY_IN_URL.search(
+      _items.STORY_IN_URL.search(
           "https://www.instagram.com/stories/someone/123456789?reel_id=1").group(1) == "123456789")
 
 # A story permalink resolves to a USERNAME through the url router. Handing
@@ -616,6 +617,12 @@ check("ig poll: 1404006 is NOT called an account ban",
 # reintroduces them.
 check("ig poll: the hand-built inbox request is gone",
       not hasattr(_priv, "_inbox_params") and not hasattr(_priv, "_inbox"))
+
+# Both readers must share one parser: the mobile and web apis return the
+# same payload, and two copies would drift the moment Instagram renames a
+# key again.
+check("ig items: the poller uses the shared parser",
+      _priv._media_from_item is _items.media_from_item)
 
 # The device fingerprint must survive a session reset. Losing it is what made
 # the direct endpoints start refusing an account that was otherwise fine.
