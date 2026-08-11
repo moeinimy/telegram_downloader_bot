@@ -1010,12 +1010,24 @@ do_proxy() {
     echo "  amp.shazam.com   -> HTTP ${ok_sz:-timeout}"
     echo "  i.instagram.com  -> HTTP ${ok_ig:-timeout}"
 
-    if [[ "$ok_sz" == "403" || -z "$ok_sz" ]]; then
-        err "با این پروکسی هم شزم ۴۰۳ می‌ده - این IP هم رد شده."
+    # 000 is curl for "no response at all" - the proxy itself is unreachable.
+    # The first version only rejected 403 and empty, so 000 was reported as
+    # success and a completely dead proxy got saved.
+    if [[ -z "$ok_sz" || "$ok_sz" == "000" ]]; then
+        err "پروکسی جواب نداد (HTTP 000) - یعنی خود پروکسی بالا نیست."
+        echo "   چک کن:"
+        echo "     ss -lntp | grep -E '8118|40000'"
+        echo "     systemctl status privoxy --no-pager -l | tail -20"
+        echo "     warp-cli --accept-tos status"
+        echo "     curl -x http://127.0.0.1:8118 -s -o /dev/null -w '%{http_code}\\n' https://api.ipify.org"
+        read -rp "بازم ذخیره کنم؟ (y/n) " a
+        [[ "$a" != "y" ]] && return 1
+    elif [[ "$ok_sz" == "403" ]]; then
+        err "پروکسی وصله ولی شزم به IP اونم ۴۰۳ می‌ده."
         read -rp "بازم ذخیره کنم؟ (y/n) " a
         [[ "$a" != "y" ]] && return 1
     else
-        ok "پروکسی جواب می‌ده"
+        ok "پروکسی جواب می‌ده (HTTP $ok_sz)"
     fi
 
     # aiohttp (under shazamio) cannot use SOCKS; requests (under instagrapi)
@@ -1075,7 +1087,29 @@ _proxy_warp() {
     systemctl enable -q --now privoxy
     systemctl restart privoxy
     sleep 2
-    ok "privoxy روی http://127.0.0.1:8118"
+
+    # Verify the bridge end to end. "privoxy is installed" and "requests get
+    # through privoxy to WARP" are different claims, and only the second one
+    # matters - the first attempt reported success and then every request
+    # through it came back HTTP 000.
+    local code
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 \
+        --proxy http://127.0.0.1:8118 https://api.ipify.org 2>/dev/null)
+    if [[ "$code" == "200" ]]; then
+        ok "privoxy کار می‌کنه - http://127.0.0.1:8118 (IP: $(curl -s --max-time 20 --proxy http://127.0.0.1:8118 https://api.ipify.org))"
+        return 0
+    fi
+
+    err "privoxy جواب نداد (HTTP ${code:-000}). وضعیت:"
+    echo "  --- پورت‌ها ---"
+    ss -lntp 2>/dev/null | grep -E ':(8118|40000)' || echo "    هیچ‌کدوم از 8118/40000 باز نیست"
+    echo "  --- warp ---"
+    warp-cli --accept-tos status 2>&1 | head -5
+    echo "  --- privoxy ---"
+    systemctl status privoxy --no-pager -l 2>&1 | tail -8
+    echo "  --- forward خط ---"
+    grep -n 'forward-socks5' /etc/privoxy/config || echo "    خط forward نیست!"
+    return 1
 }
 
 do_igreset() {
@@ -1118,6 +1152,14 @@ do_igreset() {
     journalctl -u "$SERVICE_NAME" --no-pager -n 15 | grep -iE "ig poll|blocked" || echo "  (چیزی نیست - خوبه)"
     echo
     warn "اگه دوباره ۴۰۳ داد، اکانت هنوز فلگه. یکی دو روز دست بهش نزن."
+}
+
+do_igtest() {
+    echo; info "=== تست زنده‌ی اینستاگرام دایرکت ==="
+    # The bot's log only shows the end of the story. This runs the same
+    # sequence step by step so a refused address, a stale session, a rejected
+    # device and a real account problem stop looking identical.
+    sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/python" "$PROJECT_DIR/deploy/igtest.py"
 }
 
 do_shazamtest() {
@@ -1629,7 +1671,8 @@ menu() {
     echo " 25) تست زنده‌ی شزم"
     echo " 26) ریست سشن اینستاگرام (بعد از بلاک)"
     echo " 27) پروکسی (شزم / اینستاگرام)"
-    echo " 28) نصب مجدد از صفر (پاک کردن همه چی)"
+    echo " 28) تست زنده‌ی اینستاگرام دایرکت"
+    echo " 29) نصب مجدد از صفر (پاک کردن همه چی)"
     echo "  0) خروج"
     echo
 }
@@ -1650,6 +1693,7 @@ case "${1:-}" in
     whisper) do_whisper; exit $? ;;
     deps)    do_deps;    exit 0 ;;
     shazamtest) do_shazamtest "${2:-}"; exit $? ;;
+    igtest2) do_igtest; exit $? ;;
     igreset) do_igreset; exit $? ;;
     proxy)   do_proxy;   exit $? ;;
     engines) do_engines; exit $? ;;
@@ -1694,7 +1738,8 @@ while true; do
         25) do_shazamtest; pause ;;
         26) do_igreset; pause ;;
         27) do_proxy; pause ;;
-        28) do_reset; pause ;;
+        28) do_igtest; pause ;;
+        29) do_reset; pause ;;
         0)  echo; exit 0 ;;
         *)  err "گزینه نامعتبر"; sleep 1 ;;
     esac

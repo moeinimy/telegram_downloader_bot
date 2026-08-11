@@ -61,16 +61,48 @@ def _client():
             proxy = ""
 
         if proxy:
-            try:
-                _shazam = Shazam(proxy=proxy)
-                log.info("shazam: routing through the configured proxy")
-            except TypeError:
-                # Older shazamio has no proxy argument.
-                log.warning("shazam: this shazamio version ignores SHAZAM_PROXY")
-                _shazam = Shazam()
-        else:
-            _shazam = Shazam()
+            _install_proxy(proxy)
+        _shazam = Shazam()
     return _shazam
+
+
+_proxy_installed = False
+
+
+def _install_proxy(proxy: str) -> None:
+    """Force every aiohttp request through the proxy.
+
+    Shazam(proxy=...) only exists in some shazamio versions. On the one
+    installed here it raised TypeError, the old code caught it, logged
+    "this shazamio version ignores SHAZAM_PROXY" and carried on WITHOUT a
+    proxy - so a correctly configured proxy changed nothing and Shazam kept
+    answering 403 to the server's own address.
+
+    Setting it at the aiohttp layer works whatever shazamio does with its
+    constructor, because that is the layer the request actually leaves from.
+    Scoped by the guard below to one install, and only when a proxy is set.
+
+    aiohttp is used in this process by shazamio alone - python-telegram-bot
+    is on httpx, and web/webhook.py is a server rather than a client - so
+    nothing else is redirected.
+    """
+    global _proxy_installed
+
+    if _proxy_installed:
+        return
+
+    import aiohttp
+
+    original = aiohttp.ClientSession._request
+
+    async def _request(self, method, url, **kwargs):
+        # setdefault, so an explicit per-call proxy still wins.
+        kwargs.setdefault("proxy", proxy)
+        return await original(self, method, url, **kwargs)
+
+    aiohttp.ClientSession._request = _request
+    _proxy_installed = True
+    log.info("shazam: routing aiohttp through %s", proxy.split("@")[-1])
 
 
 def reset_client() -> None:
