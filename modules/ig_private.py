@@ -74,7 +74,12 @@ def _login():
         from instagrapi import Client
 
         client = Client()
-        client.delay_range = [2, 5]  # instagrapi's own inter-request jitter
+        # instagrapi's inter-request jitter. Its default of 2-5s is applied to
+        # EVERY call, and a sweep makes two, so it was adding up to ten
+        # seconds on top of the poll interval before a shared reel was even
+        # noticed. Still jittered - Instagram flags perfectly regular timing -
+        # just not the dominant cost.
+        client.delay_range = [1, 3]
 
         if _SESSION_PATH.exists():
             try:
@@ -222,7 +227,7 @@ async def _loop(dispatch: Dispatch) -> None:
     if not _seen_after:
         _seen_after = time.time()
 
-    interval = max(15, settings.ig_dm_poll_seconds)
+    interval = max(10, settings.ig_dm_poll_seconds)
     while True:
         try:
             await _sweep(dispatch, threads_wanted=10, since=_seen_after)

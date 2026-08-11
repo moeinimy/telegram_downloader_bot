@@ -118,6 +118,44 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 # ---------- media sending ----------
 
+# Telegram's sendPhoto only reliably accepts JPEG and PNG. WEBP is a sticker
+# format to it, and a still Instagram served as WEBP came back as
+# "Image_process_failed" - a Telegram error for a file that had downloaded
+# perfectly, which reads like a download failure and is not one.
+_TELEGRAM_PHOTO_EXTS = {".jpg", ".jpeg", ".png"}
+
+
+def _prepare_photo(path: Path) -> tuple[Path, str]:
+    """(file to send, how to send it) for one downloaded still.
+
+    Re-encodes anything Telegram will not take. If Pillow cannot open it at
+    all then it is not an image, and sending it as a document at least gets
+    the user their file instead of an error.
+    """
+    if path.suffix.lower() in _TELEGRAM_PHOTO_EXTS:
+        return path, "photo"
+    try:
+        from PIL import Image
+
+        out = path.with_name(f"{path.stem}_tg.jpg")
+        with Image.open(path) as img:
+            img.convert("RGB").save(out, "JPEG", quality=92)
+        return out, "photo"
+    except Exception as e:
+        log.warning("instagram: %s is not a sendable image (%s) - sending as file", path.name, e)
+        return path, "document"
+
+
+def _classify(files: list[Path]) -> list[tuple[Path, str]]:
+    out = []
+    for f in files:
+        if f.suffix.lower() in _VIDEO_EXTS:
+            out.append((f, "video"))
+        else:
+            out.append(_prepare_photo(f))
+    return out
+
+
 async def deliver(bot, chat_id: int, files: list[Path], caption: str | None = None) -> None:
     """Upload downloaded Instagram media to a chat.
 
@@ -128,31 +166,44 @@ async def deliver(bot, chat_id: int, files: list[Path], caption: str | None = No
     """
     from contextlib import ExitStack
 
-    if len(files) == 1:
-        f = files[0]
-        with f.open("rb") as handle:
-            if f.suffix.lower() in _VIDEO_EXTS:
+    items = _classify(files)
+
+    if len(items) == 1:
+        path, kind = items[0]
+        with path.open("rb") as handle:
+            if kind == "video":
                 await bot.send_video(chat_id=chat_id, video=handle, caption=caption)
-            else:
+            elif kind == "photo":
                 await bot.send_photo(chat_id=chat_id, photo=handle, caption=caption)
+            else:
+                await bot.send_document(chat_id=chat_id, document=handle, caption=caption)
         return
 
     # batch into groups of 10 (Telegram limit)
-    for i in range(0, len(files), 10):
-        chunk = files[i : i + 10]
-        # Every handle has to stay open until send_media_group has read them
-        # all, so they are closed together once the call returns.
+    for i in range(0, len(items), 10):
+        chunk = items[i : i + 10]
+        # A media group takes photos and videos but not documents, so anything
+        # unsendable as either goes on its own afterwards rather than making
+        # the whole group fail.
         with ExitStack() as stack:
             media = []
-            for index, f in enumerate(chunk):
-                handle = stack.enter_context(f.open("rb"))
+            for index, (path, kind) in enumerate(chunk):
+                if kind == "document":
+                    continue
+                handle = stack.enter_context(path.open("rb"))
                 # Telegram shows only the first item's caption for a group.
                 text = caption if (i == 0 and index == 0) else None
-                if f.suffix.lower() in _VIDEO_EXTS:
+                if kind == "video":
                     media.append(InputMediaVideo(media=handle, caption=text))
                 else:
                     media.append(InputMediaPhoto(media=handle, caption=text))
-            await bot.send_media_group(chat_id=chat_id, media=media)
+            if media:
+                await bot.send_media_group(chat_id=chat_id, media=media)
+
+        for path, kind in chunk:
+            if kind == "document":
+                with path.open("rb") as handle:
+                    await bot.send_document(chat_id=chat_id, document=handle)
 
 
 async def _send_media(msg, files: list[Path]) -> None:

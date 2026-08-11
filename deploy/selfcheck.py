@@ -226,6 +226,55 @@ ig_direct._seen = None
 check("dedup: seen-store persisted across a reload", ig_direct.already_seen(second[0]))
 
 
+# ---------------------------------------------------------------- media typing
+# Instagram serves stills as WEBP often enough that guessing the extension
+# from the URL sent them to Telegram as .jpg, and sendPhoto answered
+# IMAGE_PROCESS_FAILED for a file that had downloaded perfectly.
+from modules.instagram import _sniff_ext  # noqa: E402
+
+check("sniff: jpeg magic", _sniff_ext(b"\xff\xd8\xff\xe0" + b"\0" * 20, "https://x/a") == ".jpg")
+check("sniff: png magic", _sniff_ext(b"\x89PNG\r\n\x1a\n" + b"\0" * 20, "https://x/a") == ".png")
+check("sniff: webp NOT reported as jpg",
+      _sniff_ext(b"RIFF\x00\x00\x00\x00WEBPVP8 ", "https://x/a.webp") == ".webp")
+check("sniff: mp4 magic", _sniff_ext(b"\x00\x00\x00\x18ftypmp42", "https://x/a") == ".mp4")
+check("sniff: quicktime magic", _sniff_ext(b"\x00\x00\x00\x14ftypqt  ", "https://x/a") == ".mov")
+check("sniff: url is only a fallback",
+      _sniff_ext(b"not a known container at all", "https://x/a.jpg?v=1") == ".jpg")
+check("sniff: html error page is not called an image",
+      _sniff_ext(b"<html><head><title>403</title>", "https://x/a") == ".bin")
+
+from handlers.instagram_handler import _classify, _prepare_photo  # noqa: E402
+
+media_dir = Path(_TMP) / "media"
+media_dir.mkdir(exist_ok=True)
+
+try:
+    from PIL import Image
+
+    webp = media_dir / "still.webp"
+    Image.new("RGB", (64, 48), (200, 30, 30)).save(webp, "WEBP")
+    out, kind = _prepare_photo(webp)
+    check("photo: webp re-encoded for Telegram",
+          kind == "photo" and out.suffix == ".jpg" and out.exists(),
+          f"{out.name} / {kind}")
+    with Image.open(out) as img:
+        check("photo: re-encode really is JPEG", img.format == "JPEG", str(img.format))
+
+    jpg = media_dir / "still.jpg"
+    Image.new("RGB", (10, 10)).save(jpg, "JPEG")
+    check("photo: jpeg passed through untouched", _prepare_photo(jpg) == (jpg, "photo"))
+except ImportError:
+    check("photo: Pillow available", False, "Pillow is not installed")
+
+junk = media_dir / "00.bin"
+junk.write_bytes(b"<html><head><title>403 Forbidden</title></head></html>")
+check("photo: non-image falls back to document", _prepare_photo(junk)[1] == "document")
+
+video = media_dir / "clip.mp4"
+video.write_bytes(b"\x00\x00\x00\x18ftypmp42")
+check("classify: video stays a video", _classify([video]) == [(video, "video")])
+
+
 print()
 if failures:
     print(f"=== {len(failures)} CHECK(S) FAILED: {failures} ===")

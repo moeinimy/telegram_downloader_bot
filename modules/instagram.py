@@ -568,6 +568,34 @@ def _try_embed(shortcode: str) -> list[str]:
     return urls
 
 
+def _sniff_ext(data: bytes, url: str) -> str:
+    """The real container, read from the bytes.
+
+    Guessing from the URL was wrong in a way that only showed up at the
+    Telegram end: Instagram serves plenty of stills as WEBP, the old guess
+    mapped ".webp" in the url to a ".jpg" filename, and sendPhoto answered
+    IMAGE_PROCESS_FAILED for a file that had downloaded perfectly. Anything
+    unrecognised fell to ".bin" and was then sent as a photo too.
+    """
+    if data[:3] == b"\xff\xd8\xff":
+        return ".jpg"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return ".png"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return ".webp"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return ".gif"
+    # ISO base media: mp4, m4v and mov all share this box layout.
+    if data[4:8] == b"ftyp":
+        return ".mov" if data[8:12] == b"qt  " else ".mp4"
+
+    clean = url.split("?")[0].lower()
+    for ext in (".mp4", ".mov", ".jpg", ".jpeg", ".png", ".webp"):
+        if clean.endswith(ext):
+            return ext
+    return ".bin"
+
+
 def _download_urls(urls: list[str], target: Path) -> list[Path]:
     """Save direct CDN URLs. Much cheaper than a yt-dlp run once we have them."""
     from utils import http
@@ -575,11 +603,9 @@ def _download_urls(urls: list[str], target: Path) -> list[Path]:
     target.mkdir(parents=True, exist_ok=True)
     saved: list[Path] = []
     for i, url in enumerate(urls):
-        clean = url.split("?")[0]
-        ext = ".mp4" if ".mp4" in clean else (".jpg" if ".jpg" in clean or ".webp" in clean else ".bin")
-        dest = target / f"{i:02d}{ext}"
         r = http.get(url, headers={"User-Agent": _WEB_UA, "Referer": "https://www.instagram.com/"})
         r.raise_for_status()
+        dest = target / f"{i:02d}{_sniff_ext(r.content, url)}"
         dest.write_bytes(r.content)
         saved.append(dest)
     if not saved:
