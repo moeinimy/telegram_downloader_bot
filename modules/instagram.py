@@ -568,14 +568,26 @@ def _try_embed(shortcode: str) -> list[str]:
     return urls
 
 
-def _sniff_ext(data: bytes, url: str) -> str:
-    """The real container, read from the bytes.
+_CTYPE_EXT = {
+    "video/mp4": ".mp4",
+    "video/quicktime": ".mov",
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+    "image/heic": ".heic",
+}
 
-    Guessing from the URL was wrong in a way that only showed up at the
-    Telegram end: Instagram serves plenty of stills as WEBP, the old guess
-    mapped ".webp" in the url to a ".jpg" filename, and sendPhoto answered
-    IMAGE_PROCESS_FAILED for a file that had downloaded perfectly. Anything
-    unrecognised fell to ".bin" and was then sent as a photo too.
+
+def _sniff_ext(data: bytes, url: str, content_type: str = "") -> str:
+    """The real container: magic bytes, then the server's own label, then the
+    url as a last resort.
+
+    Guessing from the url alone was wrong twice over. Instagram serves plenty
+    of stills as WEBP, and mapping ".webp" in the url to a ".jpg" filename
+    made sendPhoto answer IMAGE_PROCESS_FAILED for a file that had downloaded
+    perfectly. Worse, a signed CDN url that has expired or been refused comes
+    back 200 with an HTML page, and nothing in the url says so.
     """
     if data[:3] == b"\xff\xd8\xff":
         return ".jpg"
@@ -585,9 +597,21 @@ def _sniff_ext(data: bytes, url: str) -> str:
         return ".webp"
     if data[:6] in (b"GIF87a", b"GIF89a"):
         return ".gif"
-    # ISO base media: mp4, m4v and mov all share this box layout.
-    if data[4:8] == b"ftyp":
+    # ISO base media: mp4, m4v and mov all share this box layout. fMP4
+    # segments lead with styp rather than ftyp.
+    if data[4:8] in (b"ftyp", b"styp"):
         return ".mov" if data[8:12] == b"qt  " else ".mp4"
+
+    label = (content_type or "").split(";")[0].strip().lower()
+    if label in _CTYPE_EXT:
+        return _CTYPE_EXT[label]
+
+    # A server saying "text/html" outranks a url that ends in .mp4, and that
+    # ordering is the whole point: an expired signed CDN url still ends in
+    # .mp4 while serving a login page. Falling through to the url here is how
+    # a 595KB HTML page became a video file.
+    if label and not label.startswith(("image/", "video/", "audio/", "application/octet-stream")):
+        return ".bin"
 
     clean = url.split("?")[0].lower()
     for ext in (".mp4", ".mov", ".jpg", ".jpeg", ".png", ".webp"):
@@ -605,7 +629,23 @@ def _download_urls(urls: list[str], target: Path) -> list[Path]:
     for i, url in enumerate(urls):
         r = http.get(url, headers={"User-Agent": _WEB_UA, "Referer": "https://www.instagram.com/"})
         r.raise_for_status()
-        dest = target / f"{i:02d}{_sniff_ext(r.content, url)}"
+
+        ctype = r.headers.get("content-type", "")
+        ext = _sniff_ext(r.content, url, ctype)
+        if ext == ".bin":
+            # 200 OK is not the same as "this is media". A refused or expired
+            # signed url comes back as an HTML page with a 200, and saving it
+            # produced a 595KB "00.bin" that reached the user as a file.
+            #
+            # Raising here is the point: _anonymous_fetch catches it and moves
+            # on to the next route, so yt-dlp still gets its turn instead of
+            # the whole download being declared a success.
+            raise RuntimeError(
+                f"CDN returned {ctype or 'no content-type'} "
+                f"({len(r.content)} bytes starting {r.content[:12]!r}) instead of media"
+            )
+
+        dest = target / f"{i:02d}{ext}"
         dest.write_bytes(r.content)
         saved.append(dest)
     if not saved:
@@ -650,12 +690,16 @@ def _anonymous_fetch(shortcode: str, target: Path) -> list[Path]:
 
             urls = _HTTP_ROUTES[name](shortcode)
             if urls:
+                # Only after the bytes are on disk. Marking a route preferred
+                # for handing back urls it cannot actually serve pinned every
+                # later download to the one route that was failing.
+                files = _download_urls(urls, target)
                 _preferred_route = name
                 log.info("instagram: %s served %d media for %s", name, len(urls), shortcode)
-                return _download_urls(urls, target)
+                return files
             errors.append(f"{name}: {_last_reason.get(name, 'no media')}")
         except Exception as e:
-            errors.append(f"{name}: {type(e).__name__}")
+            errors.append(f"{name}: {type(e).__name__}: {str(e)[:90]}")
             log.info("instagram %s failed for %s: %s", name, shortcode, e)
 
     # When Instagram explicitly said the post is not visible logged-out, that

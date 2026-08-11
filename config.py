@@ -69,6 +69,8 @@ class Settings:
     ig_dm_username: str
     ig_dm_password: str
     ig_dm_poll_seconds: int
+    ig_dm_fast_seconds: int
+    ig_dm_fast_window: int
 
     # Optional: local Bot API server (https://github.com/tdlib/telegram-bot-api)
     # e.g. http://127.0.0.1:8081 - raises the upload limit from 50MB to 2GB.
@@ -210,7 +212,9 @@ settings = Settings(
     ig_health_minutes=_int("IG_HEALTH_MINUTES", 10),
     ig_dm_username=_get("IG_DM_USERNAME"),
     ig_dm_password=_get("IG_DM_PASSWORD"),
-    ig_dm_poll_seconds=_int("IG_DM_POLL_SECONDS", 45),
+    ig_dm_poll_seconds=_int("IG_DM_POLL_SECONDS", 5),
+    ig_dm_fast_seconds=_int("IG_DM_FAST_SECONDS", 1),
+    ig_dm_fast_window=_int("IG_DM_FAST_WINDOW", 120),
     bot_api_base_url=_get("BOT_API_BASE_URL"),
     download_dir=Path(_get("DOWNLOAD_DIR", "./downloads")).resolve(),
     max_upload_mb=int(_get("MAX_UPLOAD_MB", "50") or 50),

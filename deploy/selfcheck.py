@@ -238,10 +238,41 @@ check("sniff: webp NOT reported as jpg",
       _sniff_ext(b"RIFF\x00\x00\x00\x00WEBPVP8 ", "https://x/a.webp") == ".webp")
 check("sniff: mp4 magic", _sniff_ext(b"\x00\x00\x00\x18ftypmp42", "https://x/a") == ".mp4")
 check("sniff: quicktime magic", _sniff_ext(b"\x00\x00\x00\x14ftypqt  ", "https://x/a") == ".mov")
+check("sniff: fmp4 styp box", _sniff_ext(b"\x00\x00\x00\x18stypmsdh", "https://x/a") == ".mp4")
+check("sniff: content-type used when bytes are unknown",
+      _sniff_ext(b"????????????????", "https://x/a", "video/mp4; codecs=avc1") == ".mp4")
 check("sniff: url is only a fallback",
       _sniff_ext(b"not a known container at all", "https://x/a.jpg?v=1") == ".jpg")
 check("sniff: html error page is not called an image",
       _sniff_ext(b"<html><head><title>403</title>", "https://x/a") == ".bin")
+check("sniff: html content-type is not media",
+      _sniff_ext(b"<!DOCTYPE html>", "https://x/a", "text/html; charset=utf-8") == ".bin")
+
+# The 595KB "00.bin" the user was sent: a 200 response that is not media must
+# fail the route so the next one gets its turn, not succeed with garbage.
+import types  # noqa: E402
+
+import modules.instagram as _ig  # noqa: E402
+
+_fake = types.SimpleNamespace(
+    content=b"<html><head><title>Login</title></head></html>" * 20,
+    headers={"content-type": "text/html; charset=utf-8"},
+    raise_for_status=lambda: None,
+)
+_orig_get = _ig.http.get if hasattr(_ig, "http") else None
+import utils.http as _http  # noqa: E402
+
+_saved = _http.get
+_http.get = lambda url, **kw: _fake
+try:
+    _ig._download_urls(["https://cdn/x.mp4"], Path(_TMP) / "route")
+    check("download: HTML masquerading as media is rejected", False, "it returned successfully")
+except RuntimeError as e:
+    check("download: HTML masquerading as media is rejected", "text/html" in str(e), str(e)[:70])
+except Exception as e:
+    check("download: HTML masquerading as media is rejected", False, f"{type(e).__name__}: {e}")
+finally:
+    _http.get = _saved
 
 from handlers.instagram_handler import _classify, _prepare_photo  # noqa: E402
 

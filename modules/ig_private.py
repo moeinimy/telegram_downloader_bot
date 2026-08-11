@@ -74,12 +74,13 @@ def _login():
         from instagrapi import Client
 
         client = Client()
-        # instagrapi's inter-request jitter. Its default of 2-5s is applied to
-        # EVERY call, and a sweep makes two, so it was adding up to ten
-        # seconds on top of the poll interval before a shared reel was even
-        # noticed. Still jittered - Instagram flags perfectly regular timing -
-        # just not the dominant cost.
-        client.delay_range = [1, 3]
+        # instagrapi's inter-request jitter, applied to EVERY call. Its
+        # default of 2-5s was the dominant cost: a sweep makes up to two
+        # requests, so up to ten seconds sat on top of the poll interval
+        # before a shared reel was even looked for. Kept non-zero because
+        # perfectly regular timing is itself a signal, but the poll interval
+        # is now the thing that controls the request rate.
+        client.delay_range = [0, 1]
 
         if _SESSION_PATH.exists():
             try:
@@ -143,19 +144,20 @@ def _shared_media(message) -> tuple[str, str, str]:
 
 
 @run_in_thread
-def _collect(threads_wanted: int, since: float) -> list[DirectMessage]:
+def _collect(threads_wanted: int, since: float, with_pending: bool = True) -> list[DirectMessage]:
     """One synchronous sweep of the inbox. Returns what is newer than `since`."""
     client = _login()
     out: list[DirectMessage] = []
 
     threads = list(client.direct_threads(amount=threads_wanted))
-    try:
-        # Message requests from people who have never messaged us before land
-        # here rather than in the inbox, and a first-time sharer is exactly
-        # the case that matters.
-        threads += list(client.direct_pending_inbox(amount=threads_wanted))
-    except Exception as e:
-        log.info("ig poll: pending inbox unavailable (%s)", e)
+    if with_pending:
+        try:
+            # Message requests from people who have never messaged us before
+            # land here rather than in the inbox, and a first-time sharer is
+            # exactly the case that matters.
+            threads += list(client.direct_pending_inbox(amount=threads_wanted))
+        except Exception as e:
+            log.info("ig poll: pending inbox unavailable (%s)", e)
 
     me = _str(getattr(client, "user_id", ""))
 
@@ -208,18 +210,40 @@ async def send_text(user_id: str, text: str) -> bool:
         return False
 
 
-async def _sweep(dispatch: Dispatch, threads_wanted: int, since: float) -> int:
+async def _sweep(
+    dispatch: Dispatch, threads_wanted: int, since: float, with_pending: bool = True
+) -> int:
     global _seen_after
 
-    messages = await _collect(threads_wanted, since)
+    messages = await _collect(threads_wanted, since, with_pending)
     for dm in sorted(messages, key=lambda m: m.timestamp):
         _seen_after = max(_seen_after, dm.timestamp)
         await dispatch(dm)
     return len(messages)
 
 
+# How many consecutive sweeps have been throttled. Aggressive polling has to
+# be able to give ground on its own, or the first bad afternoon costs the
+# account rather than a few seconds of latency.
+_throttled = 0
+_THROTTLE_MARKERS = ("wait a few minutes", "429", "rate", "throttl", "please wait")
+
+
 async def _loop(dispatch: Dispatch) -> None:
-    global _seen_after
+    """Poll fast while the user is active, slowly while they are not.
+
+    Polling has no push channel, so the interval IS the latency - there is no
+    way to be told about a DM, only to ask. Asking every second around the
+    clock would be ~3600 requests an hour against a private API, which is the
+    surest way to lose the account.
+
+    Sharing is bursty, though: somebody sends the pairing token and then three
+    reels within a minute. So any message drops the loop into fast mode for a
+    window, and everything after the first arrives effectively instantly. Set
+    IG_DM_POLL_SECONDS equal to IG_DM_FAST_SECONDS to stay fast permanently
+    and accept the risk.
+    """
+    global _seen_after, _throttled
 
     # Only messages from here on. The catch-up sweep is what covers the
     # outage window; without this floor the first poll would replay the
@@ -227,19 +251,47 @@ async def _loop(dispatch: Dispatch) -> None:
     if not _seen_after:
         _seen_after = time.time()
 
-    interval = max(10, settings.ig_dm_poll_seconds)
+    idle = max(1, settings.ig_dm_poll_seconds)
+    fast = max(1, min(settings.ig_dm_fast_seconds, idle))
+    window = max(0, settings.ig_dm_fast_window)
+
+    last_activity = 0.0
+    sweeps = 0
+
     while True:
+        hot = (time.time() - last_activity) < window
+        sweeps += 1
+        # The pending inbox is a second round trip and only ever matters for a
+        # sender who has never messaged before - a once-per-user event. Paying
+        # for it on every fast sweep would double the request rate for nothing.
+        with_pending = not hot or sweeps % 10 == 1
+
         try:
-            await _sweep(dispatch, threads_wanted=10, since=_seen_after)
+            found = await _sweep(dispatch, 5 if hot else 10, _seen_after, with_pending)
+            _throttled = 0
+            if found:
+                last_activity = time.time()
+                hot = True
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            # A challenge or a changed endpoint lands here. Back off rather
-            # than hammering an account Instagram is already unhappy with.
-            log.warning("ig poll: sweep failed (%s) - backing off", e)
-            await asyncio.sleep(interval * 4)
+            # A challenge, a changed endpoint, or Instagram telling us to slow
+            # down. Back off hard and keep backing off: continuing at the same
+            # rate into a throttle is what turns it into a ban.
+            text = str(e).lower()
+            if any(marker in text for marker in _THROTTLE_MARKERS):
+                _throttled += 1
+                penalty = min(300, idle * (2 ** _throttled))
+                log.warning(
+                    "ig poll: throttled by Instagram (%s) - backing off to %ds", e, penalty
+                )
+                await asyncio.sleep(penalty)
+            else:
+                log.warning("ig poll: sweep failed (%s) - backing off", e)
+                await asyncio.sleep(idle * 4)
             continue
-        await asyncio.sleep(interval)
+
+        await asyncio.sleep(fast if hot else idle)
 
 
 # ---------------- lifecycle ----------------
