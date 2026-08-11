@@ -198,9 +198,20 @@ async def on_direct_message(dm: ig_direct.DirectMessage) -> None:
             await ig_direct.reply_dm(dm, _PAIR_HELP_FA)
         return
 
-    # 3. Paired, but this is chat rather than a share.
+    # 3. Paired. Either a share we can act on, ordinary chat, or a share we
+    #    failed to read - and the three must not look alike.
     shortcode = dm.shortcode()
-    if not shortcode and not dm.media_url:
+    if not shortcode and not dm.media_url and not dm.media_id:
+        if dm.text.strip():
+            return  # they are just talking to us
+
+        # An attachment arrived and nothing was extracted from it. Dropping
+        # this silently is why the shared-story failure took a user report to
+        # find: from both sides it looked like nothing had been sent.
+        log.warning("ig direct: unreadable share from %s - raw=%s", dm.source, dm.raw)
+        await ig_direct.reply_dm(
+            dm, "این رو نتونستم بخونم. لینک خود پست رو برام بفرست تا دانلودش کنم."
+        )
         return
 
     await _fetch_and_send(dm, chat_id, shortcode)
@@ -282,8 +293,14 @@ async def _fetch_and_send(dm: ig_direct.DirectMessage, chat_id: int, shortcode: 
         f"https://www.instagram.com/reel/{shortcode}/" if shortcode else ""
     )
 
+    caption = permalink.split("?")[0] or None
+    if shortcode:
+        from handlers import ig_post_menu
+
+        caption = await ig_post_menu.caption_for(chat_id, shortcode, permalink)
+
     try:
-        await instagram_handler.deliver(bot, chat_id, files, caption=permalink or None)
+        await instagram_handler.deliver(bot, chat_id, files, caption=caption)
         await status.delete()
     except Exception as e:
         await status.edit_text(t(chat_id, "❌ آپلود ناموفق: {err}").format(err=e))

@@ -75,13 +75,17 @@ def _login():
         from instagrapi import Client
 
         client = Client()
-        # instagrapi's inter-request jitter, applied to EVERY call. Its
-        # default of 2-5s was the dominant cost: a sweep makes up to two
-        # requests, so up to ten seconds sat on top of the poll interval
-        # before a shared reel was even looked for. Kept non-zero because
-        # perfectly regular timing is itself a signal, but the poll interval
-        # is now the thing that controls the request rate.
-        client.delay_range = [0, 1]
+        # instagrapi sleeps this long before EVERY private request. Measured
+        # on the live bot, it was the whole cost of a poll:
+        #
+        #     ⏱ lag 6.6s   sweep 2232ms
+        #
+        # Two requests per sweep against a [0,1] range is up to two seconds of
+        # deliberate sleeping to hide timing that the poll interval already
+        # determines - Instagram sees a request every N seconds either way, so
+        # the jitter bought nothing and cost everything. Zero here; the pacing
+        # lives in _loop.
+        client.delay_range = [0, 0]
 
         if _SESSION_PATH.exists():
             try:
@@ -190,7 +194,63 @@ def _shared_media(message) -> tuple[str, str, str]:
                 return candidate, "", ""
 
         raw = next((u for u in urls if u), "")
-        return "", "", raw
+        if raw:
+            return "", "", raw
+
+    # Nothing matched by name. Every attribute named above is one Instagram
+    # has already renamed at least once - reel_share became clip, then
+    # xma_share - and each rename silently broke one kind of share until
+    # somebody reported it. Walking the object does not care what the field
+    # is called, which is how a shared STORY resolves: a media object with a
+    # pk, filed under a key none of the lists above knew about.
+    return _walk_for_media(message)
+
+
+# What makes an object "the media" rather than a wrapper around it.
+_MEDIA_HINTS = ("video_url", "thumbnail_url", "video_versions", "image_versions2", "media_type")
+
+# Never descend into these. They describe the sender, not the share, and a
+# user object has a pk too - which would come back as if it were the media.
+_SKIP_FIELDS = {"user", "users", "sender", "inviter", "from_user", "reactions", "user_id"}
+
+
+def _walk_for_media(obj, depth: int = 0, seen: set | None = None) -> tuple[str, str, str]:
+    """Depth-first hunt for (permalink, media_pk, media_url) anywhere on a
+    DM object, regardless of what Instagram is calling the field this month."""
+    if seen is None:
+        seen = set()
+    if obj is None or depth > 4 or id(obj) in seen:
+        return "", "", ""
+    seen.add(id(obj))
+
+    if isinstance(obj, (list, tuple)):
+        for item in obj:
+            found = _walk_for_media(item, depth + 1, seen)
+            if any(found):
+                return found
+        return "", "", ""
+
+    fields = _populated_fields(obj)
+    if not fields:
+        return "", "", ""
+
+    if any(hint in fields for hint in _MEDIA_HINTS) or {"pk", "code"} <= set(fields):
+        code = _str(getattr(obj, "code", ""))
+        pk = _str(getattr(obj, "pk", "") or getattr(obj, "id", ""))
+        url = _str(getattr(obj, "video_url", "") or getattr(obj, "thumbnail_url", ""))
+        if code:
+            return f"https://www.instagram.com/p/{code}/", pk, ""
+        if pk:
+            return "", pk, url
+        if url:
+            return "", "", url
+
+    for name in fields:
+        if name in _SKIP_FIELDS:
+            continue
+        found = _walk_for_media(getattr(obj, name, None), depth + 1, seen)
+        if any(found):
+            return found
 
     return "", "", ""
 
@@ -356,6 +416,7 @@ async def _loop(dispatch: Dispatch) -> None:
     sweeps = 0
 
     while True:
+        cycle_started = time.monotonic()
         hot = (time.time() - last_activity) < window
         sweeps += 1
         # The pending inbox is a second round trip and only ever matters for a
@@ -388,7 +449,12 @@ async def _loop(dispatch: Dispatch) -> None:
                 await asyncio.sleep(idle * 4)
             continue
 
-        await asyncio.sleep(fast if hot else idle)
+        # Paced from the START of the cycle, not the end. Sleeping the full
+        # interval AFTER the sweep made the real period interval + sweep -
+        # a 5s setting with a 2.2s sweep polled every 7.2s, which is what the
+        # 6.6s measured lag actually was.
+        target = fast if hot else idle
+        await asyncio.sleep(max(0.0, target - (time.monotonic() - cycle_started)))
 
 
 # ---------------- lifecycle ----------------

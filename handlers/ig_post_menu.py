@@ -101,6 +101,45 @@ def _stats(chat_id: int, info: ig.PostInfo) -> str:
     return "\n".join(lines) or t(chat_id, "اطلاعاتی در دسترس نیست.")
 
 
+async def caption_for(chat_id: int, shortcode: str, permalink: str = "") -> str:
+    """The text under a delivered post.
+
+    Was the raw shared url, query string and all - "?id=...&is_sponsored=
+    false&is_ineligible_for_clips_chaining=false" is Instagram's plumbing,
+    not something a user wants to read. Fetching the info here also warms the
+    cache the buttons read from, so "caption" and "direct link" answer without
+    a round trip.
+    """
+    clean = (permalink or "").split("?")[0] or f"https://www.instagram.com/reel/{shortcode}/"
+
+    try:
+        info = await _info(shortcode)
+    except Exception as e:
+        log.info("ig post menu: no info for %s (%s) - plain link caption", shortcode, e)
+        return clean
+
+    parts = []
+    if info.username:
+        parts.append(f"👤 @{info.username}")
+
+    counters = []
+    if info.likes:
+        counters.append(f"❤️ {_num(info.likes)}")
+    if info.views:
+        counters.append(f"▶️ {_num(info.views)}")
+    if counters:
+        parts.append("  ".join(counters))
+
+    head = info.caption.strip().replace("\n", " ")
+    if head:
+        # Telegram caps a media caption at 1024 characters, and the full text
+        # is one button away anyway.
+        parts.append(head[:180] + ("…" if len(head) > 180 else ""))
+
+    parts.append(clean)
+    return "\n".join(parts)
+
+
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     parts = query.data.split(":")

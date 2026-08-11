@@ -370,6 +370,53 @@ check("handlers: the gate runs after the stats tracker",
       json.dumps(catch_alls))
 
 
+# ---------------------------------------------------------------- DM payload walk
+# Named-attribute lookup broke once per Instagram rename, most recently on
+# shared stories: a media object with a pk, under a key none of the lists
+# knew. The walker has to find it without being told the name.
+import modules.ig_private as _priv  # noqa: E402
+
+
+class _Fake:
+    """Stands in for an instagrapi model: pydantic-style field list plus
+    attributes, so _populated_fields sees it the same way."""
+
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+        self.__fields__ = {k: None for k in kw}
+
+
+story = _Fake(
+    item_type="story_share",
+    some_unknown_wrapper=_Fake(
+        media=_Fake(pk="3396139282436016699", media_type=2,
+                    video_url="https://cdn/x.mp4", code=None),
+    ),
+)
+check("walk: story pk found under an unknown key",
+      _priv._walk_for_media(story)[1] == "3396139282436016699",
+      str(_priv._walk_for_media(story)))
+
+post = _Fake(item_type="clip", weird_new_name=_Fake(
+    pk="123", code="DZfwtaiob79", media_type=2, video_url="https://cdn/y.mp4"))
+check("walk: permalink built from a code",
+      _priv._walk_for_media(post)[0] == "https://www.instagram.com/p/DZfwtaiob79/",
+      str(_priv._walk_for_media(post)))
+
+# A user object has a pk too, and returning it as media would send the bot
+# off to download the sender's profile.
+sender_only = _Fake(item_type="text", text="hello",
+                    user=_Fake(pk="999", username="someone", media_type=1))
+check("walk: the sender is not mistaken for the media",
+      _priv._walk_for_media(sender_only) == ("", "", ""),
+      str(_priv._walk_for_media(sender_only)))
+
+cyclic = _Fake(item_type="x")
+cyclic.self_ref = cyclic
+cyclic.__fields__["self_ref"] = None
+check("walk: a reference cycle terminates", _priv._walk_for_media(cyclic) == ("", "", ""))
+
+
 print()
 if failures:
     print(f"=== {len(failures)} CHECK(S) FAILED: {failures} ===")
