@@ -22,6 +22,7 @@ Public coroutines:
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 import threading
 import time
@@ -234,17 +235,63 @@ def fetch_post(shortcode: str) -> list[Path]:
 
 @run_in_thread(heavy=True)
 def fetch_direct_url(url: str, name: str) -> list[Path]:
-    """Save a CDN url handed to us by a DM attachment.
+    """Fetch whatever url a DM attachment handed us.
 
     The last resort for a share that carries no permalink and no media id.
-    These urls are signed and expire within minutes, which is why this is
-    called the moment the message arrives rather than queued.
+    Two things can come back and only one of them is media:
+
+    * A signed CDN url pointing at the file. Saved directly - these expire
+      within minutes, which is why this runs the moment the message arrives.
+    * An instagram.com PAGE. Cross-app shares routinely carry a page link
+      where a video url is expected, and downloading it produced 609KB of
+      HTML that reached the user as a broken file. The page names the post,
+      though, so the shortcode is recovered from it and the normal route
+      ladder - yt-dlp included - takes over.
     """
+    from utils import http
+
     target = settings.download_dir / "instagram" / f"dm_{safe_filename(name)}"
-    try:
-        return _download_urls([url], target)
-    except Exception as e:
-        raise _friendly_error(e) from e
+
+    r = http.get(url, headers={"User-Agent": _WEB_UA, "Referer": "https://www.instagram.com/"})
+    r.raise_for_status()
+    ctype = r.headers.get("content-type", "")
+    ext = _sniff_ext(r.content, url, ctype)
+
+    if ext != ".bin":
+        target.mkdir(parents=True, exist_ok=True)
+        dest = target / f"00{ext}"
+        dest.write_bytes(r.content)
+        return [dest]
+
+    shortcode = _shortcode_from_html(r.text) if "html" in ctype.lower() else ""
+    if shortcode:
+        log.info("instagram: DM url was a page - recovered shortcode %s", shortcode)
+        try:
+            return _anonymous_fetch(shortcode, target)
+        except Exception as e:
+            raise _friendly_error(e) from e
+
+    raise _friendly_error(RuntimeError(
+        f"the shared link returned {ctype or 'no content-type'} "
+        f"({len(r.content)} bytes) and named no post"
+    ))
+
+
+_HTML_SHORTCODE_RES = (
+    # A permalink in the markup is unambiguous, so it goes first. The bare
+    # "shortcode" field is a weaker signal - plenty of unrelated json on an
+    # Instagram page has a "code" key - and is only consulted after it.
+    re.compile(r"instagram\.com/(?:reels?|p|tv)/([A-Za-z0-9_-]{5,})", re.I),
+    re.compile(r'"shortcode"\s*:\s*"([A-Za-z0-9_-]{5,})"'),
+)
+
+
+def _shortcode_from_html(html: str) -> str:
+    for pattern in _HTML_SHORTCODE_RES:
+        found = pattern.search(html)
+        if found:
+            return found.group(1)
+    return ""
 
 
 @run_in_thread

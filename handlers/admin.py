@@ -261,6 +261,12 @@ async def srcstatus_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                                    params={"url": "spotify:track:0wwPcA6wtMf6HUMpIRdeP7"},
                                    timeout=12).status_code == 200))
     lines += _ig_direct_lines()
+
+    from handlers import gate
+
+    lines.append("")
+    lines += [_md(line) for line in await gate.diagnose(context.bot)]
+
     await update.effective_message.reply_text(
         "\n".join(lines), parse_mode="Markdown")
 

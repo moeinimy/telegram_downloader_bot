@@ -305,6 +305,19 @@ video = media_dir / "clip.mp4"
 video.write_bytes(b"\x00\x00\x00\x18ftypmp42")
 check("classify: video stays a video", _classify([video]) == [(video, "video")])
 
+from modules.instagram import _shortcode_from_html  # noqa: E402
+
+check("html recovery: permalink in the page",
+      _shortcode_from_html('<a href="https://www.instagram.com/reel/DQxYz_1AbC/">x</a>') == "DQxYz_1AbC")
+check("html recovery: /p/ permalink",
+      _shortcode_from_html('... "https://instagram.com/p/CtYv2acXPNO/" ...') == "CtYv2acXPNO")
+check("html recovery: shortcode field as fallback",
+      _shortcode_from_html('{"shortcode":"DZfwtaiob79","x":1}') == "DZfwtaiob79")
+check("html recovery: permalink beats the raw field",
+      _shortcode_from_html('{"shortcode":"WRONGCODE1"} https://www.instagram.com/reel/RIGHTCODE1/')
+      == "RIGHTCODE1")
+check("html recovery: nothing to find", _shortcode_from_html("<html>no post here</html>") == "")
+
 
 print()
 if failures:

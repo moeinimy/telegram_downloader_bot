@@ -31,6 +31,55 @@ _TTL = 300.0
 
 _JOINED = ("member", "administrator", "creator", "owner")
 
+# Why the last membership check could not be answered, "" when it could.
+last_error: str = ""
+
+
+async def diagnose(bot) -> list[str]:
+    """Can this lock actually lock anything right now?
+
+    Worth asking directly, because both ways it breaks are invisible from the
+    outside. If the bot is not an admin of the channel the check throws and
+    everyone is let through - a lock that never engages looks identical to one
+    that everybody has passed. And an admin in ADMIN_IDS is exempt by design,
+    so testing with your own account proves nothing either way.
+    """
+    if not settings.required_channel:
+        return ["⚪️ قفل کانال: غیرفعال (REQUIRED_CHANNEL خالیه)"]
+
+    lines = [f"🔒 قفل کانال: {settings.required_channel}"]
+
+    try:
+        chat = await bot.get_chat(settings.required_channel)
+    except Exception as e:
+        return lines + [
+            f"   ❌ کانال پیدا نشد: {str(e)[:70]}",
+            "   ↳ قفل عملا غیرفعاله — همه رد می‌شن.",
+        ]
+
+    try:
+        me = await bot.get_chat_member(chat.id, (await bot.get_me()).id)
+        if me.status in ("administrator", "creator"):
+            lines.append("   ✅ بات ادمین کاناله — چک عضویت کار می‌کنه")
+        else:
+            lines += [
+                f"   ❌ بات ادمین نیست (وضعیت: {me.status})",
+                "   ↳ چک عضویت خطا می‌ده و همه رد می‌شن. بات رو ادمین کن.",
+            ]
+    except Exception as e:
+        lines += [
+            f"   ❌ وضعیت بات تو کانال خونده نشد: {str(e)[:70]}",
+            "   ↳ قفل عملا غیرفعاله — همه رد می‌شن.",
+        ]
+
+    if last_error:
+        lines.append(f"   ⚠️ آخرین خطای چک: {last_error[:70]}")
+    if settings.admin_ids:
+        lines.append(
+            f"   ℹ️ {len(settings.admin_ids)} ادمین از قفل معافن — با اکانت خودت تست نکن"
+        )
+    return lines
+
 
 def _channel_url() -> str:
     ch = settings.required_channel.lstrip("@")
@@ -86,11 +135,19 @@ async def is_member_bot(bot, user_id: int) -> bool:
     except Exception as e:
         # Usually "chat not found" or the bot is not an admin there. Blocking
         # everyone because of a misconfiguration is worse than not gating.
+        #
+        # But failing open silently is how a lock that was never working looks
+        # exactly like a lock that is working: everybody gets through either
+        # way. Remember why, so /srcstatus can say so out loud.
+        global last_error
+        last_error = str(e)
         log.warning(
             "membership check failed for %s in %s: %s - letting the user through",
             user_id, settings.required_channel, e,
         )
         return True
+
+    last_error = ""
 
     if joined:
         _ok_until[user_id] = time.monotonic() + _TTL
