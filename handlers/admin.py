@@ -214,10 +214,8 @@ async def recstatus_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         if "decode" in recognize.last_error.lower() or "403" in recognize.last_error:
             lines.append("   ↳ شزم به IP این سرور جواب JSON نمی‌ده. SHAZAM_PROXY رو ست کن.")
     if settings.shazam_proxy:
-        if settings.shazam_proxy.lower().startswith("socks"):
-            lines.append("   ❌ SHAZAM_PROXY از نوع SOCKS ـه و نادیده گرفته می‌شه — باید http باشه")
-        else:
-            lines.append("   🔀 از پروکسی استفاده می‌شه")
+        kind = "socks" if settings.shazam_proxy.lower().startswith("socks") else "http"
+        lines.append(f"   🔀 از پروکسی استفاده می‌شه ({kind})")
 
     lines += engines.status()
 

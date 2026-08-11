@@ -947,13 +947,7 @@ do_proxy() {
     echo "  i.instagram.com    -> HTTP ${sc:-timeout}"
     echo
 
-    warn "شزم فقط http:// قبول می‌کنه (aiohttp سوکس نمی‌فهمه)."
-    warn "اینستاگرام هم http:// و هم socks5:// قبول می‌کنه."
-    echo
-    info "اگه فقط socks5 داری، با privoxy پل بزن:"
-    echo "  apt install -y privoxy"
-    echo "  echo 'forward-socks5 / 127.0.0.1:1080 .' >> /etc/privoxy/config"
-    echo "  systemctl restart privoxy      # بعدش http://127.0.0.1:8118"
+    info "هم http:// و هم socks5:// کار می‌کنن (کتابخونه‌هاش خودکار نصب می‌شن)."
     echo
 
     echo
@@ -979,7 +973,7 @@ do_proxy() {
             info "برای قطع کامل WARP هم:  warp-cli --accept-tos disconnect"
             return 0
             ;;
-        1) _proxy_warp || return 1; p="http://127.0.0.1:8118" ;;
+        1) _proxy_warp || return 1; p="socks5h://127.0.0.1:40000" ;;
         2)
             echo
             info "روی اون سرور (نه این یکی) اینو بزن:"
@@ -1030,16 +1024,17 @@ do_proxy() {
         ok "پروکسی جواب می‌ده (HTTP $ok_sz)"
     fi
 
-    # aiohttp (under shazamio) cannot use SOCKS; requests (under instagrapi)
-    # can. Saving a socks url into SHAZAM_PROXY would be silently ignored.
+    # Both take socks now: instagrapi through requests[socks], shazamio
+    # through aiohttp-socks. Make sure those are present for a socks url that
+    # arrived by some other route than the WARP path above.
     if [[ "$p" == socks* ]]; then
-        warn "این socks ـه - فقط برای اینستاگرام ست می‌شه، شزم نمی‌تونه ازش استفاده کنه."
-        set_env IG_DM_PROXY "$p"
-    else
-        set_env SHAZAM_PROXY "$p"
-        set_env IG_DM_PROXY  "$p"
-        ok "هر دو ست شدن"
+        sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/pip" install -q --progress-bar off \
+            "aiohttp-socks" "requests[socks]" 2>/dev/null || \
+            warn "نصب کتابخونه‌های socks شکست خورد - ممکنه پروکسی نادیده گرفته بشه"
     fi
+    set_env SHAZAM_PROXY "$p"
+    set_env IG_DM_PROXY  "$p"
+    ok "هر دو ست شدن"
 
     chmod 600 "$PROJECT_DIR/.env"
     chown "$BOT_USER:$BOT_USER" "$PROJECT_DIR/.env"
@@ -1078,37 +1073,41 @@ _proxy_warp() {
     fi
     ok "WARP وصل شد - IP خروجی: $(curl -s --max-time 15 --proxy socks5h://127.0.0.1:40000 https://api.ipify.org)"
 
-    info "نصب privoxy (پل socks -> http، چون شزم فقط http می‌فهمه)..."
-    apt-get install -y -qq privoxy || { err "نصب privoxy شکست خورد"; return 1; }
-    grep -q '^forward-socks5 / 127.0.0.1:40000' /etc/privoxy/config \
-        || echo 'forward-socks5 / 127.0.0.1:40000 .' >> /etc/privoxy/config
-    grep -q '^listen-address 127.0.0.1:8118' /etc/privoxy/config \
-        || echo 'listen-address 127.0.0.1:8118' >> /etc/privoxy/config
-    systemctl enable -q --now privoxy
-    systemctl restart privoxy
-    sleep 2
+    # No privoxy bridge. Both libraries can speak SOCKS directly once their
+    # optional dependency is present, and the bridge was one more service to
+    # install, start and get wrong - which it did immediately: the setup
+    # appended a listen-address the packaged config already had, privoxy
+    # refused to start binding the same port twice, and every request through
+    # it failed with connection refused.
+    info "نصب کتابخونه‌های SOCKS (به‌جای privoxy)..."
+    if ! sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/pip" install --progress-bar off \
+            "aiohttp-socks" "requests[socks]"; then
+        err "نصب aiohttp-socks/pysocks شکست خورد"
+        return 1
+    fi
+    ok "نصب شد - شزم و اینستاگرام هر دو مستقیم socks5 می‌زنن"
 
-    # Verify the bridge end to end. "privoxy is installed" and "requests get
-    # through privoxy to WARP" are different claims, and only the second one
-    # matters - the first attempt reported success and then every request
-    # through it came back HTTP 000.
-    local code
-    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 \
-        --proxy http://127.0.0.1:8118 https://api.ipify.org 2>/dev/null)
-    if [[ "$code" == "200" ]]; then
-        ok "privoxy کار می‌کنه - http://127.0.0.1:8118 (IP: $(curl -s --max-time 20 --proxy http://127.0.0.1:8118 https://api.ipify.org))"
+    # Prove the venv itself can reach out through the proxy, not just curl.
+    if sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/python" - <<'PY'
+import sys
+try:
+    import requests
+    r = requests.get("https://api.ipify.org",
+                     proxies={"https": "socks5h://127.0.0.1:40000"}, timeout=20)
+    print(f"    python از طریق socks -> {r.text.strip()}")
+    sys.exit(0 if r.ok else 1)
+except Exception as e:
+    print(f"    python از طریق socks شکست خورد: {type(e).__name__}: {e}")
+    sys.exit(1)
+PY
+    then
+        ok "venv هم از پروکسی رد می‌شه"
         return 0
     fi
 
-    err "privoxy جواب نداد (HTTP ${code:-000}). وضعیت:"
-    echo "  --- پورت‌ها ---"
-    ss -lntp 2>/dev/null | grep -E ':(8118|40000)' || echo "    هیچ‌کدوم از 8118/40000 باز نیست"
-    echo "  --- warp ---"
+    err "venv نتونست از socks رد بشه. وضعیت:"
+    ss -lntp 2>/dev/null | grep -E ':40000' || echo "    پورت 40000 باز نیست"
     warp-cli --accept-tos status 2>&1 | head -5
-    echo "  --- privoxy ---"
-    systemctl status privoxy --no-pager -l 2>&1 | tail -8
-    echo "  --- forward خط ---"
-    grep -n 'forward-socks5' /etc/privoxy/config || echo "    خط forward نیست!"
     return 1
 }
 

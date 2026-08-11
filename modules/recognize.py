@@ -46,22 +46,8 @@ def _client():
     if _shazam is None:
         from shazamio import Shazam
 
-        proxy = settings.shazam_proxy
-        if proxy and proxy.lower().startswith("socks"):
-            # aiohttp, which shazamio is built on, only speaks http proxies.
-            # A socks url is accepted silently and then ignored, so the
-            # symptom is identical to having set no proxy at all - which is
-            # the worst possible outcome for something bought to fix a block.
-            log.error(
-                "SHAZAM_PROXY=%s is a SOCKS proxy and aiohttp cannot use one. "
-                "Put an http bridge in front of it (privoxy) and point this at "
-                "the bridge, or use an http:// proxy.",
-                proxy.split("@")[-1],
-            )
-            proxy = ""
-
-        if proxy:
-            _install_proxy(proxy)
+        if settings.shazam_proxy:
+            _install_proxy(settings.shazam_proxy)
         _shazam = Shazam()
     return _shazam
 
@@ -85,6 +71,13 @@ def _install_proxy(proxy: str) -> None:
     aiohttp is used in this process by shazamio alone - python-telegram-bot
     is on httpx, and web/webhook.py is a server rather than a client - so
     nothing else is redirected.
+
+    SOCKS is handled through aiohttp-socks by replacing the session's
+    connector. aiohttp has no native SOCKS support, and the alternative -
+    bridging it to http with privoxy - is one more service to install, start
+    and get wrong. It was, immediately: privoxy refused to start because the
+    setup appended a listen-address the packaged config already had, and
+    every request then failed with connection refused on the bridge.
     """
     global _proxy_installed
 
@@ -93,14 +86,35 @@ def _install_proxy(proxy: str) -> None:
 
     import aiohttp
 
-    original = aiohttp.ClientSession._request
+    if proxy.lower().startswith("socks"):
+        try:
+            from aiohttp_socks import ProxyConnector
+        except ImportError:
+            log.error(
+                "SHAZAM_PROXY is SOCKS but aiohttp-socks is not installed. "
+                "Run: botctl proxy  (it installs it), or use an http:// proxy."
+            )
+            return
 
-    async def _request(self, method, url, **kwargs):
-        # setdefault, so an explicit per-call proxy still wins.
-        kwargs.setdefault("proxy", proxy)
-        return await original(self, method, url, **kwargs)
+        original_init = aiohttp.ClientSession.__init__
 
-    aiohttp.ClientSession._request = _request
+        def __init__(self, *args, **kwargs):
+            # Only when the caller did not bring its own connector.
+            if not kwargs.get("connector"):
+                kwargs["connector"] = ProxyConnector.from_url(proxy)
+            original_init(self, *args, **kwargs)
+
+        aiohttp.ClientSession.__init__ = __init__
+    else:
+        original_request = aiohttp.ClientSession._request
+
+        async def _request(self, method, url, **kwargs):
+            # setdefault, so an explicit per-call proxy still wins.
+            kwargs.setdefault("proxy", proxy)
+            return await original_request(self, method, url, **kwargs)
+
+        aiohttp.ClientSession._request = _request
+
     _proxy_installed = True
     log.info("shazam: routing aiohttp through %s", proxy.split("@")[-1])
 
