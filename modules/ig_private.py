@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import threading
 import time
 from pathlib import Path
@@ -107,10 +108,39 @@ def _login():
         return _client
 
 
+def client():
+    """The logged-in client, for anything that wants authenticated access.
+
+    modules/instagram.py uses this as its first download route. An account
+    that Instagram considers logged in sees posts the anonymous routes cannot:
+    age-gated and "sensitive" media, private accounts it follows, stories at
+    all, and - the case that started this - shares whose only url resolves to
+    a login wall when fetched without a session.
+    """
+    return _login()
+
+
+def usable() -> bool:
+    """Configured, installed, and not obviously broken. Cheap - no network."""
+    return bool(available() and settings.has_ig_private)
+
+
 def _str(value) -> str:
     """instagrapi hands back pydantic Url objects and enums as often as plain
     strings, and str() is the only thing that behaves for all of them."""
     return "" if value is None else str(value)
+
+
+_SHORTCODE_IN_URL = re.compile(r"/(?:reels?|p|tv)/([A-Za-z0-9_-]{5,})", re.I)
+
+
+def _populated_fields(message) -> list[str]:
+    """Names of the fields this message actually filled in. Pydantic v1 and
+    v2 disagree on where the field list lives, so both are tried."""
+    schema = getattr(type(message), "model_fields", None) or getattr(message, "__fields__", None)
+    if not schema:
+        return []
+    return sorted(name for name in schema if getattr(message, name, None) is not None)
 
 
 def _shared_media(message) -> tuple[str, str, str]:
@@ -134,11 +164,30 @@ def _shared_media(message) -> tuple[str, str, str]:
         if pk:
             return "", pk, ""
 
-    xma = getattr(message, "xma_share", None)
-    if xma is not None:
-        target = _str(getattr(xma, "target_url", ""))
-        permalink = target if "instagram.com/" in target else ""
-        return permalink, "", "" if permalink else _str(getattr(xma, "video_url", ""))
+    # Cross-app shares (xma). These carry a page link where a media url is
+    # expected: fetching xma.video_url returned 600KB of Instagram login-wall
+    # HTML with the post named nowhere in it. So every url on the object is
+    # examined for a permalink first, and the raw url is only the last resort.
+    for attr in ("xma_share", "xma_media_share", "xma_reel_share", "xma_reel_mention"):
+        xma = getattr(message, attr, None)
+        if xma is None:
+            continue
+        # instagrapi sometimes models these as a list of one.
+        if isinstance(xma, (list, tuple)):
+            xma = xma[0] if xma else None
+        if xma is None:
+            continue
+
+        urls = [
+            _str(getattr(xma, field, ""))
+            for field in ("target_url", "url", "preview_url", "video_url")
+        ]
+        for candidate in urls:
+            if "instagram.com/" in candidate and _SHORTCODE_IN_URL.search(candidate):
+                return candidate, "", ""
+
+        raw = next((u for u in urls if u), "")
+        return "", "", raw
 
     return "", "", ""
 
@@ -187,7 +236,14 @@ def _collect(threads_wanted: int, since: float, with_pending: bool = True) -> li
                     media_id=media_id,
                     timestamp=ts,
                     source="poll",
-                    raw={"item_type": _str(getattr(message, "item_type", ""))},
+                    # Which fields the message actually carried. Instagram
+                    # renames this payload often enough that "we did not find
+                    # the media" is useless on its own - the next report needs
+                    # to say where it was hiding instead.
+                    raw={
+                        "item_type": _str(getattr(message, "item_type", "")),
+                        "fields": _populated_fields(message),
+                    },
                 )
             )
 

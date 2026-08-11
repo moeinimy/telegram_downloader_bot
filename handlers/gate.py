@@ -163,8 +163,10 @@ async def guard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not user or user.is_bot:
         return
 
-    # Let the "I joined" button itself through, and /start so the language
-    # picker still works.
+    # Let the "I joined" button and the language picker through - they are the
+    # only two things a locked-out user needs to be able to press. Everything
+    # else, /start included, waits behind the gate, which is what makes the
+    # lock apply to people who started the bot long before it was turned on.
     data = (update.callback_query.data or "") if update.callback_query else ""
     if data.startswith(("gate:", "lang:")):
         return

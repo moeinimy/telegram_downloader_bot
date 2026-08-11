@@ -263,6 +263,15 @@ async def _fetch_and_send(dm: ig_direct.DirectMessage, chat_id: int, shortcode: 
         ig_pairing.unlink_identity(dm.identity())
         return
 
+    if not shortcode:
+        # Everything downstream is a guess from here, and the guess is what
+        # keeps failing. Record what the message actually looked like so the
+        # next failure names the field the media was hiding in.
+        log.warning(
+            "ig direct: no shortcode from %s message %s - url=%r raw=%s",
+            dm.source, dm.mid, dm.media_url[:120], dm.raw,
+        )
+
     try:
         async with limits.download_slot(chat_id):
             if shortcode:

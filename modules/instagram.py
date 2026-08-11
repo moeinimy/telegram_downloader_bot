@@ -41,9 +41,11 @@ _last_op = 0.0
 _MIN_INTERVAL = 20.0  # seconds
 
 _NO_SESSION_MSG = (
-    "استوری بدون اکانت اینستاگرام قابل دانلود نیست. "
-    "اگه لازمش داری، کوکی‌های یه اکانت یه‌بارمصرف رو تو .env ست کن "
-    "(IG_SESSIONID / IG_CSRFTOKEN / IG_DS_USER_ID / INSTAGRAM_USERNAME)."
+    "استوری بدون اکانت اینستاگرام قابل دانلود نیست.\n\n"
+    "دو راه داره:\n"
+    "• «botctl igdirect» و گزینه ۲ — یه اکانت کامل لاگین می‌کنه و بهترین گزینه‌ست\n"
+    "• یا کوکی یه اکانت یه‌بارمصرف تو .env "
+    "(IG_SESSIONID / IG_CSRFTOKEN / IG_DS_USER_ID / INSTAGRAM_USERNAME)"
 )
 
 
@@ -318,9 +320,44 @@ def fetch_profile_pic(username: str) -> Path:
         raise _friendly_error(e) from e
 
 
+def _story_urls_private(username: str) -> list[str]:
+    """Active stories via the logged-in account, or [] if that is not set up."""
+    from modules import ig_private
+
+    if not ig_private.usable():
+        return []
+    try:
+        client = ig_private.client()
+        user_id = client.user_id_from_username(username)
+        items = client.user_stories(user_id)
+    except Exception as e:
+        log.info("instagram: private story fetch failed for %s: %s", username, e)
+        return []
+
+    urls: list[str] = []
+    for item in items:
+        url = getattr(item, "video_url", None) or getattr(item, "thumbnail_url", None)
+        if url:
+            urls.append(str(url))
+    return urls
+
+
 @run_in_thread(heavy=True)
 def fetch_story(username: str) -> list[Path]:
-    """Requires a logged-in session. Downloads ALL active story items."""
+    """All active story items. Needs an account - stories are the one thing
+    that genuinely cannot be reached logged out.
+
+    The Instagram Direct account is tried first when it exists: it is a real
+    logged-in session rather than scraped browser cookies, so it does not go
+    stale the way IG_SESSIONID does.
+    """
+    target = settings.download_dir / "instagram" / f"stories_{safe_filename(username)}"
+
+    urls = _story_urls_private(username)
+    if urls:
+        log.info("instagram: %d story item(s) for %s via the logged-in account", len(urls), username)
+        return _download_urls(urls, target)
+
     if not settings.has_instagram_session:
         raise RuntimeError(_NO_SESSION_MSG)
 
@@ -332,7 +369,6 @@ def fetch_story(username: str) -> list[Path]:
         raise RuntimeError(_NO_SESSION_MSG)
     try:
         profile = instaloader.Profile.from_username(L.context, username)
-        target = settings.download_dir / "instagram" / f"stories_{username}"
         target.mkdir(parents=True, exist_ok=True)
         for story in L.get_stories(userids=[profile.userid]):
             for item in story.get_items():
@@ -473,6 +509,64 @@ def _ensure_anon_cookies() -> str:
     except Exception as e:
         log.info("instagram cookie bootstrap failed: %s", e)
     return client.cookies.get("csrftoken") or ""
+
+
+def _urls_from_instagrapi(media) -> list[str]:
+    """Every downloadable url on an instagrapi Media, carousel included.
+
+    Read through getattr because instagrapi's model shifts between releases
+    and a renamed field must degrade to "this route found nothing" rather than
+    to an AttributeError that looks like the account is broken.
+    """
+    out: list[str] = []
+
+    def one(item) -> None:
+        url = getattr(item, "video_url", None) or getattr(item, "thumbnail_url", None)
+        if url:
+            out.append(str(url))
+
+    resources = getattr(media, "resources", None) or []
+    if resources:
+        for resource in resources:
+            one(resource)
+    else:
+        one(media)
+    return [u for u in out if u]
+
+
+def _try_private_api(shortcode: str) -> list[str]:
+    """The logged-in route.
+
+    First in the ladder whenever an account is configured, because it is the
+    only one that is not guessing: the anonymous endpoints get whatever
+    Instagram feels like showing a stranger, which for restricted, age-gated
+    or cross-app-shared posts is a login wall - 600KB of HTML with the post
+    nowhere in it.
+
+    Costs nothing when unconfigured: it returns before touching the network.
+    """
+    from modules import ig_private
+
+    if not ig_private.usable():
+        _last_reason["private"] = "no account configured"
+        return []
+
+    try:
+        client = ig_private.client()
+    except Exception as e:
+        _last_reason["private"] = f"login failed: {str(e)[:70]}"
+        return []
+
+    try:
+        media = client.media_info(client.media_pk_from_code(shortcode))
+    except Exception as e:
+        _last_reason["private"] = str(e)[:80]
+        return []
+
+    urls = _urls_from_instagrapi(media)
+    if not urls:
+        _last_reason["private"] = f"media_type={getattr(media, 'media_type', '?')} but no urls"
+    return urls
 
 
 def _try_graphql(shortcode: str) -> list[str]:
@@ -707,6 +801,9 @@ def _download_urls(urls: list[str], target: Path) -> list[Path]:
 _preferred_route: str | None = None
 
 _HTTP_ROUTES = {
+    # Logged in first: it is the only route that is not asking Instagram what
+    # it will show a stranger. Skipped in microseconds when no account is set.
+    "private": _try_private_api,
     "graphql": _try_graphql,
     "api_v1": _try_api_v1,
     "embed": _try_embed,
@@ -760,6 +857,7 @@ def _probe_routes(shortcode: str) -> dict[str, int]:
     """How many media each cookie-free route yields. -1 means it errored."""
     results: dict[str, int] = {}
     for name, fn in (
+        ("private", _try_private_api),
         ("graphql", _try_graphql),
         ("api_v1", _try_api_v1),
         ("embed", _try_embed),

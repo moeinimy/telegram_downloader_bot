@@ -319,6 +319,50 @@ check("html recovery: permalink beats the raw field",
 check("html recovery: nothing to find", _shortcode_from_html("<html>no post here</html>") == "")
 
 
+# ---------------------------------------------------------------- handler groups
+# PTB runs only the FIRST matching handler in a group and then moves on, and a
+# TypeHandler(Update) matches every update. Two of them in one group means the
+# second never runs - which is how the channel lock silently let everyone
+# through for as long as the stats tracker shared its group. Nothing about
+# that is visible at runtime, so it is asserted structurally.
+main_tree = ast.parse(Path("main.py").read_text(encoding="utf-8"))
+catch_alls: dict[int, list[str]] = {}
+
+for node in ast.walk(main_tree):
+    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+        continue
+    if node.func.attr != "add_handler" or not node.args:
+        continue
+    handler = node.args[0]
+    if not (isinstance(handler, ast.Call) and getattr(handler.func, "id", "") == "TypeHandler"):
+        continue
+    if not (handler.args and getattr(handler.args[0], "id", "") == "Update"):
+        continue
+
+    group = next(
+        (kw.value.value for kw in node.keywords
+         if kw.arg == "group" and isinstance(kw.value, ast.Constant)),
+        None,
+    )
+    if group is None:
+        group = next(
+            (-kw.value.operand.value for kw in node.keywords
+             if kw.arg == "group" and isinstance(kw.value, ast.UnaryOp)),
+            0,
+        )
+    catch_alls.setdefault(group, []).append(ast.unparse(handler.args[1]))
+
+clashes = {g: cbs for g, cbs in catch_alls.items() if len(cbs) > 1}
+check("handlers: no two catch-all TypeHandlers share a group", not clashes,
+      json.dumps(catch_alls) if clashes else json.dumps(catch_alls))
+
+check("handlers: the gate runs after the stats tracker",
+      any("gate.guard" in cbs for cbs in catch_alls.values())
+      and max(g for g, cbs in catch_alls.items() if "gate.guard" in cbs)
+      > max(g for g, cbs in catch_alls.items() if "admin.track_update" in cbs),
+      json.dumps(catch_alls))
+
+
 print()
 if failures:
     print(f"=== {len(failures)} CHECK(S) FAILED: {failures} ===")

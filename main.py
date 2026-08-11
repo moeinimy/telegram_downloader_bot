@@ -112,12 +112,19 @@ def build_app() -> Application:
 
     app = builder.build()
 
-    # Runs before everything else (group -1) and never blocks other handlers;
-    # keeps the usage table current without touching each flow.
-    app.add_handler(TypeHandler(Update, admin.track_update), group=-1)
+    # These two MUST sit in different groups. Within one group PTB runs only
+    # the first handler that matches and then moves to the next group - and a
+    # TypeHandler(Update) matches everything. Both were in group -1, so
+    # track_update consumed the group and gate.guard was never reached: the
+    # channel lock silently let every user through, for as long as both
+    # handlers had been registered.
+    #
+    # Statistics first, deliberately. A user who is about to be turned away at
+    # the gate is still a user worth counting.
+    app.add_handler(TypeHandler(Update, admin.track_update), group=-2)
 
-    # Sponsor-channel lock, if configured. Group -1 so it runs before any
-    # feature handler and can stop the update.
+    # Sponsor-channel lock, if configured. Its own group, before any feature
+    # handler, so it can stop the update.
     if settings.required_channel:
         app.add_handler(TypeHandler(Update, gate.guard), group=-1)
         log.info("Channel lock active: %s", settings.required_channel)
