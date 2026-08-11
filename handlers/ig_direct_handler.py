@@ -259,9 +259,16 @@ async def _fetch_and_send(dm: ig_direct.DirectMessage, chat_id: int, shortcode: 
             dm.source, dm.mid, dm.media_url[:120], dm.raw,
         )
 
+    from modules import ig_private
+
     try:
         async with limits.download_slot(chat_id):
-            if shortcode:
+            if dm.media_id and ig_private.usable():
+                # The pk came off the DM itself; a shortcode is something we
+                # computed from it. Prefer the exact address - and it is the
+                # ONLY one that works for a story, which has no shortcode.
+                files = await ig.fetch_by_pk(dm.media_id)
+            elif shortcode:
                 files = await ig.fetch_post(shortcode)
             else:
                 # No permalink and no media id: all we have is a signed CDN

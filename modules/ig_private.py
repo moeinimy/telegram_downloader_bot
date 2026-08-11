@@ -149,7 +149,10 @@ def _shared_media(message) -> tuple[str, str, str]:
     Instagram has renamed this payload repeatedly - reel_share became clip,
     then xma_share - so every known shape is tried instead of trusting one.
     """
-    for attr in ("clip", "media_share", "story_share", "media", "visual_media"):
+    for attr in (
+        "clip", "media_share", "story_share", "reel_share",
+        "media", "visual_media", "direct_media",
+    ):
         obj = getattr(message, attr, None)
         if obj is None:
             continue
@@ -198,7 +201,16 @@ def _collect(threads_wanted: int, since: float, with_pending: bool = True) -> li
     client = _login()
     out: list[DirectMessage] = []
 
-    threads = list(client.direct_threads(amount=threads_wanted))
+    # thread_message_limit is the difference between a small response and a
+    # large one. Only the newest few messages per thread can possibly be newer
+    # than the high-water mark, and pulling twenty of each was paying transfer
+    # and parse time on every single poll for messages already handled.
+    try:
+        threads = list(client.direct_threads(amount=threads_wanted, thread_message_limit=6))
+    except TypeError:
+        # Older instagrapi without the parameter.
+        threads = list(client.direct_threads(amount=threads_wanted))
+
     if with_pending:
         try:
             # Message requests from people who have never messaged us before
@@ -266,14 +278,43 @@ async def send_text(user_id: str, text: str) -> bool:
         return False
 
 
+# What the last few messages actually cost, end to end. Guessing at where the
+# delay lives has been wrong twice now, so it is measured instead: `lag` is
+# the age of the message when the bot first saw it, which is the number the
+# poll interval is supposed to control.
+last_sweep_ms: float = 0.0
+last_lag: float = 0.0
+_lag_samples: list[float] = []
+
+
+def timing() -> dict:
+    return {
+        "sweep_ms": round(last_sweep_ms),
+        "last_lag": round(last_lag, 1),
+        "avg_lag": round(sum(_lag_samples) / len(_lag_samples), 1) if _lag_samples else 0.0,
+        "samples": len(_lag_samples),
+    }
+
+
 async def _sweep(
     dispatch: Dispatch, threads_wanted: int, since: float, with_pending: bool = True
 ) -> int:
-    global _seen_after
+    global _seen_after, last_sweep_ms, last_lag
 
+    started = time.monotonic()
     messages = await _collect(threads_wanted, since, with_pending)
+    last_sweep_ms = (time.monotonic() - started) * 1000
+
     for dm in sorted(messages, key=lambda m: m.timestamp):
         _seen_after = max(_seen_after, dm.timestamp)
+        if dm.timestamp:
+            last_lag = max(0.0, time.time() - dm.timestamp)
+            _lag_samples.append(last_lag)
+            del _lag_samples[:-20]
+            log.info(
+                "ig poll: message %s seen %.1fs after it was sent (sweep %.0fms, pending=%s)",
+                dm.mid, last_lag, last_sweep_ms, with_pending,
+            )
         await dispatch(dm)
     return len(messages)
 
@@ -323,7 +364,7 @@ async def _loop(dispatch: Dispatch) -> None:
         with_pending = not hot or sweeps % 10 == 1
 
         try:
-            found = await _sweep(dispatch, 5 if hot else 10, _seen_after, with_pending)
+            found = await _sweep(dispatch, 3 if hot else 8, _seen_after, with_pending)
             _throttled = 0
             if found:
                 last_activity = time.time()

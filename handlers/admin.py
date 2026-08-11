@@ -306,6 +306,20 @@ def _ig_direct_lines() -> list[str]:
         lines.append(f"{icon} {name} ({role}): {_md(state['detail'] or '-')}")
         lines.append(f"   ↳ {state['events']} پیام · آخری {ago(state['last_event'])}")
 
+    if snapshot["sources"].get("poll", {}).get("running"):
+        try:
+            from modules import ig_private
+
+            timing = ig_private.timing()
+            if timing["samples"]:
+                lines.append(
+                    f"⏱ تاخیر: آخری {timing['last_lag']}s · "
+                    f"میانگین {timing['avg_lag']}s ({timing['samples']} نمونه)"
+                )
+            lines.append(f"   ↳ هر sweep {timing['sweep_ms']}ms طول می‌کشه")
+        except Exception:
+            pass
+
     left = ig_graph.days_left()
     if left is not None:
         lines.append(

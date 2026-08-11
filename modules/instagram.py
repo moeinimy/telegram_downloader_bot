@@ -625,6 +625,48 @@ def fetch_info(shortcode: str) -> PostInfo:
 
 
 @run_in_thread(heavy=True)
+def fetch_by_pk(media_pk: str) -> list[Path]:
+    """Download by numeric media id, using the logged-in account.
+
+    The exact address, and the only one that works for a story. A story has no
+    shortcode - it is not reachable at /p/<code> at all - so deriving one from
+    its pk produced a plausible-looking string that could never resolve, and a
+    shared story simply failed.
+
+    Posts go through here too when an account is configured: the pk came
+    straight off the DM, while a shortcode is something we computed from it.
+    """
+    from modules import ig_private
+
+    if not ig_private.usable():
+        raise RuntimeError("no Instagram account configured")
+
+    pk = str(media_pk).split("_")[0]
+    client = ig_private.client()
+    target = settings.download_dir / "instagram" / f"pk_{pk}"
+
+    urls: list[str] = []
+    try:
+        urls = _urls_from_instagrapi(client.media_info(pk))
+    except Exception as e:
+        log.info("instagram: media_info(%s) failed (%s) - trying story_info", pk, e)
+
+    if not urls:
+        # Stories live behind their own endpoint and expire in 24h.
+        try:
+            story = client.story_info(pk)
+            url = getattr(story, "video_url", None) or getattr(story, "thumbnail_url", None)
+            if url:
+                urls = [str(url)]
+        except Exception as e:
+            raise _friendly_error(e) from e
+
+    if not urls:
+        raise _friendly_error(RuntimeError("no media"))
+    return _download_urls(urls, target)
+
+
+@run_in_thread(heavy=True)
 def fetch_quality(shortcode: str, url: str, label: str) -> Path:
     """One specific video rendition, straight from its CDN url."""
     target = settings.download_dir / "instagram" / shortcode / "q"
