@@ -97,6 +97,9 @@ async def recognize_from_file(msg, path: Path, cleanup: bool = False) -> None:
 
 
 async def _recognize_and_send(msg, status, audio_path: Path, *, cleanup: bool) -> None:
+    import time as _time
+
+    started = _time.monotonic()
     try:
         candidates = await rec.recognize_candidates(audio_path)
     except rec.RecognitionUnavailable:
@@ -114,7 +117,18 @@ async def _recognize_and_send(msg, status, audio_path: Path, *, cleanup: bool) -
             except Exception:
                 pass
 
+    identified = _time.monotonic()
     await _handle_candidates(msg, status, candidates)
+
+    # Two numbers, because they have completely different fixes: recognition
+    # is Shazam round trips (a proxy multiplies them), delivery is yt-dlp
+    # plus the Telegram upload. "It is slow" has been about the second one
+    # more often than the first.
+    log.info(
+        "recognize: identify %.1fs, fetch+send %.1fs (total %.1fs) - phases %s",
+        identified - started, _time.monotonic() - identified,
+        _time.monotonic() - started, rec.last_timing,
+    )
 
 
 # Ambiguous results, keyed by a short hash so they fit in callback data.

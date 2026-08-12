@@ -182,9 +182,30 @@ def _note_error(e: Exception) -> None:
     last_error_at = time.time()
 
 
-# Windows fingerprinted at once. Three keeps the wall-clock down without
-# looking like a burst to the endpoint.
-_BATCH = 3
+# Windows fingerprinted at once.
+#
+# Three was chosen when every request left from this server directly. Through
+# a proxy each round trip costs several times more, so the batch size is what
+# decides the wall clock: a five-window plan at three-per-batch is two
+# sequential rounds, at five it is one.
+def _int_env(name: str, default: int) -> int:
+    import os
+
+    try:
+        return max(1, int(os.getenv(name, "") or default))
+    except ValueError:
+        return default
+
+
+_BATCH = _int_env("RECOGNIZE_BATCH", 5)
+
+# Where the wall clock actually goes, per phase. Guessing at latency has been
+# wrong every time this session; each phase reports itself instead.
+last_timing: dict[str, float] = {}
+
+
+def _phase(name: str, started: float) -> None:
+    last_timing[name] = round(time.monotonic() - started, 2)
 
 
 async def _recognize_once(path: Path, attempts: int = 2) -> RecognizedSong | None:
@@ -444,9 +465,14 @@ async def recognize_candidates(path: Path) -> list[tuple[RecognizedSong, int]]:
     # when they are worth asking. Aborting here meant a blocked IP took the
     # working engines down with it.
     down: Exception | None = None
+    started = time.monotonic()
+    last_timing.clear()
 
     try:
         if await sweep(normalise=True, label="n", points=offsets):
+            _phase("shazam", started)
+            log.info("recognize: matched in %.1fs (%d windows, batch %d)",
+                     last_timing["shazam"], len(offsets), _BATCH)
             ranked = sorted(votes.items(), key=lambda kv: kv[1], reverse=True)
             return [(songs[k], n) for k, n in ranked]
 
@@ -473,10 +499,19 @@ async def recognize_candidates(path: Path) -> list[tuple[RecognizedSong, int]]:
         down = e
         log.warning("recognize: Shazam unavailable (%s) - falling through to the others", e)
 
+    _phase("shazam", started)
+
     # AcoustID in particular fingerprints the exact recording, so it catches
     # clean audio Shazam misses - and it is free and keyless-cheap, which
     # makes it the one to have configured when Shazam blocks a datacenter IP.
+    engines_started = time.monotonic()
     others = await _try_other_engines(path)
+    _phase("other_engines", engines_started)
+    log.info(
+        "recognize: shazam %.1fs, other engines %.1fs (%d windows, batch %d)",
+        last_timing.get("shazam", 0), last_timing.get("other_engines", 0),
+        len(offsets), _BATCH,
+    )
     if others:
         return others
 
