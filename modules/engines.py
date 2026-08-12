@@ -58,8 +58,24 @@ def _on_cooldown(name: str) -> bool:
     return _cooldown.get(name, 0) > time.monotonic()
 
 
+# Why each engine was last put on cooldown. A bad key and an exhausted quota
+# both stop the engine, but only one of them comes back on its own - and
+# reporting "temporarily disabled" for a key that will never work sends the
+# admin off to wait instead of to fix it.
+_cooldown_reason: dict[str, str] = {}
+
+_AUTH_MARKERS = ("400", "401", "403", "authorization", "invalid api key",
+                 "invalid client", "unauthorized", "authentication")
+
+
+def _is_auth_failure(why: str) -> bool:
+    lowered = why.lower()
+    return any(marker in lowered for marker in _AUTH_MARKERS)
+
+
 def _cool(name: str, why: str) -> None:
     _cooldown[name] = time.monotonic() + _COOLDOWN
+    _cooldown_reason[name] = why
     log.warning("engine %s disabled for %.0f min: %s", name, _COOLDOWN / 60, why)
 
 
@@ -204,8 +220,15 @@ def status() -> list[str]:
                 why = "fpcalc نصب نیست (apt install libchromaprint-tools)"
             lines.append(f"⚪ {name}: {why}")
         elif _on_cooldown(name):
+            why = _cooldown_reason.get(name, "")
             left = int((_cooldown[name] - time.monotonic()) / 60)
-            lines.append(f"🟡 {name}: موقتا غیرفعال ({left} دقیقه دیگه)")
+            if _is_auth_failure(why):
+                # This one does not heal. Say so, or the admin waits out a
+                # cooldown for a key that is simply wrong.
+                lines.append(f"❌ {name}: کلید قبول نشد — {why[:60]}")
+                lines.append(f"   ↳ کلید رو درست کن: botctl engines")
+            else:
+                lines.append(f"🟡 {name}: موقتا غیرفعال ({left} دقیقه دیگه) — {why[:50]}")
         else:
             lines.append(f"✅ {name}: فعال")
     return lines

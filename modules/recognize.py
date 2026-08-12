@@ -203,6 +203,11 @@ _BATCH = _int_env("RECOGNIZE_BATCH", 5)
 # the file while the chance of a match does not.
 _WHOLE_FILE_MAX_MB = _int_env("RECOGNIZE_WHOLE_FILE_MAX_MB", 4)
 
+# And a ceiling even when it does run. shazamio sleeps for the retryms Shazam
+# sends back on a miss - 12 seconds - once per segment, so an unbounded
+# whole-file attempt is a minute of doing nothing.
+_WHOLE_FILE_TIMEOUT = _int_env("RECOGNIZE_WHOLE_FILE_TIMEOUT", 15)
+
 # Where the wall clock actually goes, per phase. Guessing at latency has been
 # wrong every time this session; each phase reports itself instead.
 last_timing: dict[str, float] = {}
@@ -493,24 +498,43 @@ async def recognize_candidates(path: Path) -> list[tuple[RecognizedSong, int]]:
             ranked = sorted(votes.items(), key=lambda kv: kv[1], reverse=True)
             return [(songs[k], n) for k, n in ranked]
 
-        # Last resort for Shazam: hand over the whole file, which is what the
-        # original implementation did and must never be beaten by windowing.
+        # The whole-file fallback, from the original implementation, kept so
+        # windowing could never be worse than what came before.
         #
-        # Only when the file is small. Uploading megabytes to Shazam through a
-        # proxy costs many seconds and, having already lost on five targeted
-        # windows, almost never wins - Shazam matches on 5-12 seconds, so a
-        # long file gives it no more to work with, just more to transfer.
+        # It is worth almost nothing and costs almost a minute. Measured:
+        #
+        #   3 windows      1.0s
+        #   2 retries      0.8s
+        #   whole file    53.0s   <- of a 55s total
+        #
+        # shazamio's recognize() splits the file into segments and honours
+        # the retryms Shazam returns with a miss - 12000 - so four segments
+        # is nearly a minute of sleeping. And it is asking the same audio the
+        # windows just asked about, so a miss there means a miss here.
+        #
+        # Only run it when windowing did not really happen (a file too short
+        # to sample), and put a ceiling on it even then.
         size_mb = path.stat().st_size / 1e6 if path.exists() else 0
-        if size_mb <= _WHOLE_FILE_MAX_MB:
+        if len(offsets) >= 3:
+            log.info(
+                "recognize: %d windows already covered the file - skipping the "
+                "whole-file attempt", len(offsets),
+            )
+        elif size_mb > _WHOLE_FILE_MAX_MB:
+            log.info("recognize: whole-file attempt skipped (%.1fMB > %dMB)",
+                     size_mb, _WHOLE_FILE_MAX_MB)
+        else:
             log.info("recognize: no window matched - trying the whole file")
-            song = await _recognize_once(path)
+            try:
+                song = await asyncio.wait_for(
+                    _recognize_once(path), timeout=_WHOLE_FILE_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                log.info("recognize: whole-file attempt timed out after %ds",
+                         _WHOLE_FILE_TIMEOUT)
+                song = None
             if song:
                 return [(song, 1)]
-        else:
-            log.info(
-                "recognize: skipping the whole-file attempt (%.1fMB > %dMB)",
-                size_mb, _WHOLE_FILE_MAX_MB,
-            )
     except RecognitionUnavailable as e:
         down = e
         log.warning("recognize: Shazam unavailable (%s) - falling through to the others", e)

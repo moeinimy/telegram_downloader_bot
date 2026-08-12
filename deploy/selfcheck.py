@@ -746,6 +746,22 @@ check("logs: symphonia header spam is dropped", "invalid mpeg" not in _out)
 check("logs: a real symphonia ERROR still gets through", "a real decode failure" in _out)
 check("logs: our own warnings still get through", "a real warning of ours" in _out)
 
+# A rejected key and an exhausted quota both stop an engine, but only one
+# recovers on its own. Reporting "temporarily disabled" for a wrong key sends
+# the admin off to wait instead of to fix it.
+from modules import engines as _engines  # noqa: E402
+
+for why, want, label in [
+    ("HTTP 400", True, "acoustid's rejected key"),
+    ("{'error_code': 900, 'error_message': 'authorization failed'}", True,
+     "audd's rejected token"),
+    ("HTTP 429 rate limited", False, "a quota blip"),
+    ("Cannot connect to host", False, "a network drop"),
+    ("daily limit reached", False, "an exhausted quota"),
+]:
+    check(f"engines: {label} -> auth failure={want}",
+          _engines._is_auth_failure(why) is want, why[:40])
+
 check("recognize: the last error is recorded for /recstatus",
       (_rec._note_error(_FailedDecodeJson("Failed to decode json")) is None)
       and "FailedDecodeJson" in _rec.last_error,
