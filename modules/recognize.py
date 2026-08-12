@@ -199,6 +199,10 @@ def _int_env(name: str, default: int) -> int:
 
 _BATCH = _int_env("RECOGNIZE_BATCH", 5)
 
+# Above this, the whole-file fallback is skipped: the upload cost grows with
+# the file while the chance of a match does not.
+_WHOLE_FILE_MAX_MB = _int_env("RECOGNIZE_WHOLE_FILE_MAX_MB", 4)
+
 # Where the wall clock actually goes, per phase. Guessing at latency has been
 # wrong every time this session; each phase reports itself instead.
 last_timing: dict[str, float] = {}
@@ -491,10 +495,22 @@ async def recognize_candidates(path: Path) -> list[tuple[RecognizedSong, int]]:
 
         # Last resort for Shazam: hand over the whole file, which is what the
         # original implementation did and must never be beaten by windowing.
-        log.info("recognize: no window matched - trying the whole file")
-        song = await _recognize_once(path)
-        if song:
-            return [(song, 1)]
+        #
+        # Only when the file is small. Uploading megabytes to Shazam through a
+        # proxy costs many seconds and, having already lost on five targeted
+        # windows, almost never wins - Shazam matches on 5-12 seconds, so a
+        # long file gives it no more to work with, just more to transfer.
+        size_mb = path.stat().st_size / 1e6 if path.exists() else 0
+        if size_mb <= _WHOLE_FILE_MAX_MB:
+            log.info("recognize: no window matched - trying the whole file")
+            song = await _recognize_once(path)
+            if song:
+                return [(song, 1)]
+        else:
+            log.info(
+                "recognize: skipping the whole-file attempt (%.1fMB > %dMB)",
+                size_mb, _WHOLE_FILE_MAX_MB,
+            )
     except RecognitionUnavailable as e:
         down = e
         log.warning("recognize: Shazam unavailable (%s) - falling through to the others", e)

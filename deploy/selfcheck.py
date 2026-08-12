@@ -718,6 +718,34 @@ check("ig poll: BadPassword reads as a login problem",
 check("ig poll: a checkpoint does not read as a login problem",
       not _priv._is_login_problem("checkpoint_required"))
 
+# shazamio-core's Rust demuxer logs one WARNING per junk byte skipped. On a
+# 2MB file that is tens of thousands of lines per recognition, written
+# synchronously to journald - most of what the user experiences as "slow".
+import io as _io  # noqa: E402
+import logging as _logging  # noqa: E402
+
+import config as _config  # noqa: E402
+
+_config.setup_logging()
+_buf = _io.StringIO()
+_probe = _logging.StreamHandler(_buf)
+for _f in _logging.getLogger().handlers[0].filters:
+    _probe.addFilter(_f)
+_logging.getLogger().addHandler(_probe)
+try:
+    _logging.getLogger("symphonia_bundle_mp3.demuxer").warning("skipping junk at 2052628 bytes")
+    _logging.getLogger("symphonia_core.probe").warning("invalid mpeg audio header")
+    _logging.getLogger("symphonia_bundle_mp3.demuxer").error("a real decode failure")
+    _logging.getLogger("modules.recognize").warning("a real warning of ours")
+    _out = _buf.getvalue()
+finally:
+    _logging.getLogger().removeHandler(_probe)
+
+check("logs: symphonia junk spam is dropped", "skipping junk" not in _out)
+check("logs: symphonia header spam is dropped", "invalid mpeg" not in _out)
+check("logs: a real symphonia ERROR still gets through", "a real decode failure" in _out)
+check("logs: our own warnings still get through", "a real warning of ours" in _out)
+
 check("recognize: the last error is recorded for /recstatus",
       (_rec._note_error(_FailedDecodeJson("Failed to decode json")) is None)
       and "FailedDecodeJson" in _rec.last_error,

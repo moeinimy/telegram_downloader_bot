@@ -324,3 +324,24 @@ def setup_logging() -> None:
     logging.getLogger("instagrapi").setLevel(logging.WARNING)
     logging.getLogger("private_request").setLevel(logging.WARNING)
     logging.getLogger("public_request").setLevel(logging.WARNING)
+
+    # shazamio-core's Rust mp3 demuxer logs one WARNING per junk byte it
+    # skips. On a 2MB file that is tens of thousands of lines PER
+    # recognition, all of them written synchronously to journald - which is
+    # not merely noise, it is most of the wall clock the user experiences as
+    # "recognition is slow":
+    #
+    #   symphonia_bundle_mp3.demuxer | skipping junk at 2052628 bytes
+    #
+    # A filter rather than setLevel on each name: the crate emits under
+    # several logger names (symphonia_core, symphonia_bundle_mp3, and one per
+    # module beneath them) and a new one appearing should not restore the
+    # flood. Errors still get through.
+    class _DropSymphonia(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            return not (
+                record.name.startswith("symphonia") and record.levelno < logging.ERROR
+            )
+
+    for handler in logging.getLogger().handlers:
+        handler.addFilter(_DropSymphonia())
