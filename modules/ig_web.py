@@ -170,6 +170,25 @@ def _collect(limit: int, since: float, with_pending: bool = True) -> list[Direct
     return out
 
 
+def media_info_sync(media_pk: str) -> dict:
+    """Full media info for a pk, over the web api.
+
+    The same cookies that read the inbox can read a post, so downloads take
+    the working session rather than falling back to the mobile api that is
+    refusing this account. Returns the raw item, in the shape
+    modules/instagram.py already parses.
+    """
+    pk = str(media_pk).split("_")[0]
+    data = _get(f"https://www.instagram.com/api/v1/media/{pk}/info/", {})
+    items = data.get("items") or []
+    return items[0] if items else {}
+
+
+@run_in_thread
+def media_info(media_pk: str) -> dict:
+    return media_info_sync(media_pk)
+
+
 @run_in_thread
 def _send(user_id: str, text: str) -> bool:
     """Reply in the DM. Best effort - pairing feedback only."""

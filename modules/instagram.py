@@ -599,7 +599,15 @@ def fetch_info(shortcode: str) -> PostInfo:
     does: logged out, Instagram withholds this for anything it considers
     restricted, and returns a login page rather than an error.
     """
-    from modules import ig_private
+    from modules import ig_private, ig_web
+
+    if ig_web.usable():
+        try:
+            item = ig_web.media_info_sync(_shortcode_to_media_id(shortcode))
+            if item:
+                return _parse_media_item(item, shortcode)
+        except Exception as e:
+            log.info("instagram: web media info failed for %s: %s", shortcode, e)
 
     if ig_private.usable():
         try:
@@ -638,14 +646,28 @@ def fetch_by_pk(media_pk: str) -> list[Path]:
     Posts go through here too when an account is configured: the pk came
     straight off the DM, while a shortcode is something we computed from it.
     """
-    from modules import ig_private
-
-    if not ig_private.usable():
-        raise RuntimeError("no Instagram account configured")
+    from modules import ig_private, ig_web
 
     pk = str(media_pk).split("_")[0]
-    client = ig_private.client()
     target = settings.download_dir / "instagram" / f"pk_{pk}"
+
+    # The web session first, for the same reason it leads the route ladder:
+    # it is the credential that works. A story is served here too, so this
+    # usually answers on its own.
+    if ig_web.usable():
+        try:
+            item = ig_web.media_info_sync(pk)
+            if item:
+                urls = _parse_media_item(item, "").urls
+                if urls:
+                    return _download_urls(urls, target)
+        except Exception as e:
+            log.info("instagram: web media_info(%s) failed (%s)", pk, e)
+
+    if not ig_private.usable():
+        raise _friendly_error(RuntimeError("no Instagram session could fetch this"))
+
+    client = ig_private.client()
 
     urls: list[str] = []
     try:
@@ -723,6 +745,32 @@ def _urls_from_instagrapi(media) -> list[str]:
     else:
         one(media)
     return [u for u in out if u]
+
+
+def _try_web_api(shortcode: str) -> list[str]:
+    """The logged-in WEB route, using the browser cookies.
+
+    First, because it is the session that actually works: the same cookies
+    that read the DM inbox read a post, while the mobile api refuses this
+    account entirely. Reading the inbox and then downloading over a refused
+    api would have left the feature half working.
+
+    Costs nothing when unconfigured - returns before touching the network.
+    """
+    from modules import ig_web
+
+    if not ig_web.usable():
+        _last_reason["web"] = "no browser cookies"
+        return []
+    try:
+        item = ig_web.media_info_sync(_shortcode_to_media_id(shortcode))
+    except Exception as e:
+        _last_reason["web"] = str(e)[:80]
+        return []
+    if not item:
+        _last_reason["web"] = "no media in response"
+        return []
+    return _parse_media_item(item, shortcode).urls
 
 
 def _try_private_api(shortcode: str) -> list[str]:
@@ -992,8 +1040,12 @@ def _download_urls(urls: list[str], target: Path) -> list[Path]:
 _preferred_route: str | None = None
 
 _HTTP_ROUTES = {
-    # Logged in first: it is the only route that is not asking Instagram what
-    # it will show a stranger. Skipped in microseconds when no account is set.
+    # Logged in first: these are the only routes not asking Instagram what it
+    # will show a stranger. Both skip in microseconds when unconfigured.
+    #
+    # web before private because the browser cookies are the credential that
+    # works - the mobile api refuses this account outright.
+    "web": _try_web_api,
     "private": _try_private_api,
     "graphql": _try_graphql,
     "api_v1": _try_api_v1,
