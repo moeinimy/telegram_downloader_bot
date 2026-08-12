@@ -674,6 +674,33 @@ try:
 
     check("ig web: the cookie jar is protected from the sweeper",
           _limits._is_protected(sweep_root / "ig_web_cookies.json", sweep_root))
+
+    # The mobile pending-inbox path 404s on the web api, and the 404 body is a
+    # whole html page - logged raw it filled the journal twice a minute.
+    page = '<!DOCTYPE html>\n<html lang="None" class="no-js not-logged-in ">\n  <head>\n' * 30
+    short = _web._short(page)
+    check("ig web: a 404 page collapses to one bounded line",
+          "\n" not in short and len(short) <= 120, f"{len(short)} chars")
+
+    _real_get, _tries = _web._get, []
+
+    def _always_404(url, params):
+        _tries.append(url)
+        raise LookupError("HTTP 404: not found")
+
+    try:
+        _web._get = _always_404
+        _web._pending_route = None
+        check("ig web: every pending spelling is tried once",
+              _web._pending_threads() == [] and len(_tries) == len(_web.PENDING_CANDIDATES),
+              f"{len(_tries)} attempts")
+        before = len(_tries)
+        _web._pending_threads()
+        check("ig web: it gives up instead of retrying every sweep",
+              len(_tries) == before, f"{len(_tries) - before} extra attempts")
+    finally:
+        _web._get = _real_get
+        _web._pending_route = None
 finally:
     _web._COOKIE_PATH = _web_cookie_backup
 

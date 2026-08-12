@@ -46,7 +46,27 @@ from utils.helpers import run_in_thread
 log = logging.getLogger(__name__)
 
 INBOX = "https://www.instagram.com/api/v1/direct_v2/inbox/"
-PENDING = "https://www.instagram.com/api/v1/direct_v2/pending_inbox/"
+
+# Message requests, where a first-time sender's DM lands - which is where the
+# pairing token arrives from anyone the account does not already have a thread
+# with. Worth some effort to get right.
+#
+# The mobile endpoint answers 404 on the web api, so several spellings are
+# tried once and the one that works is remembered. If none do, the check is
+# switched off rather than repeated every sweep: it was logging a whole 404
+# html page into the journal twice a minute.
+PENDING_CANDIDATES = (
+    ("https://www.instagram.com/api/v1/direct_v2/pending_inbox/",
+     {"visual_message_return_type": "unseen", "persistentBadging": "true",
+      "is_prefetching": "false"}),
+    (INBOX, {"visual_message_return_type": "unseen", "persistentBadging": "true",
+             "folder": "1", "thread_message_limit": 5, "limit": 10}),
+    (INBOX, {"visual_message_return_type": "unseen", "persistentBadging": "true",
+             "pending": "true", "thread_message_limit": 5, "limit": 10}),
+)
+
+# None = not tried yet, False = none of them work, or (url, params).
+_pending_route: object = None
 
 # The public web-client id instagram.com sends with its own XHRs. Without it
 # these endpoints answer 403 even with a perfectly good cookie.
@@ -116,6 +136,16 @@ def _headers() -> dict:
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Dest": "empty",
     }
+
+
+def _short(text: str, limit: int = 120) -> str:
+    """One line, bounded.
+
+    Instagram answers errors with a full html page. Interpolated raw it goes
+    into the journal as dozens of lines, twice a minute, burying everything
+    else - which is what a 404 on the pending inbox was doing.
+    """
+    return " ".join((text or "").split())[:limit]
 
 
 def _load_cookies() -> dict:
@@ -213,6 +243,8 @@ def _get(url: str, params: dict) -> dict:
         _www_claim = claim
     _save_cookies(client)
 
+    if response.status_code == 404:
+        raise LookupError(f"HTTP 404: {_short(response.text)}")
     if response.status_code == 401:
         raise RuntimeError("sessionid رد شد (401) - کوکی منقضی شده، یه تازه بگیر")
     if response.status_code == 403:
@@ -220,13 +252,46 @@ def _get(url: str, params: dict) -> dict:
             "403 from the web api - the cookie is not accepted from this address"
         )
     if response.status_code != 200:
-        raise RuntimeError(f"HTTP {response.status_code}: {response.text[:160]}")
+        raise RuntimeError(f"HTTP {response.status_code}: {_short(response.text)}")
 
     try:
         return response.json()
     except Exception:
         # A login wall is html, and it comes back with a 200.
         raise RuntimeError(f"not json ({len(response.content)} bytes) - probably a login page")
+
+
+def _pending_threads() -> list:
+    """Message requests, or [] when this account's web api has no route to them."""
+    global _pending_route
+
+    if _pending_route is False:
+        return []
+
+    candidates = PENDING_CANDIDATES if _pending_route is None else [_pending_route]
+    for url, params in candidates:
+        try:
+            data = _get(url, params)
+        except LookupError:
+            continue  # 404: wrong spelling, try the next
+        except Exception as e:
+            # A real failure - auth, network - is not a reason to give up on
+            # the route, so leave the choice alone and report it.
+            log.info("ig web: pending inbox failed (%s)", _short(str(e)))
+            return []
+
+        if _pending_route is None:
+            _pending_route = (url, params)
+            log.info("ig web: message requests via %s", url.rsplit("/", 2)[-2])
+        return ((data.get("inbox") or {}).get("threads")) or []
+
+    _pending_route = False
+    log.warning(
+        "ig web: no working message-requests endpoint - first-time senders will "
+        "only be seen once they have a thread. Following the account first is "
+        "what avoids that."
+    )
+    return []
 
 
 @run_in_thread
@@ -240,12 +305,7 @@ def _collect(limit: int, since: float, with_pending: bool = True) -> list[Direct
     threads = list(((data.get("inbox") or {}).get("threads")) or [])
 
     if with_pending:
-        try:
-            pending = _get(PENDING, {"visual_message_return_type": "unseen",
-                                     "persistentBadging": "true"})
-            threads += ((pending.get("inbox") or {}).get("threads")) or []
-        except Exception as e:
-            log.info("ig web: pending inbox unavailable (%s)", e)
+        threads += _pending_threads()
 
     me = settings.ig_dm_ds_user_id or str((data.get("viewer") or {}).get("pk") or "")
 
