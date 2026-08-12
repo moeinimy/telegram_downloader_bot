@@ -154,6 +154,10 @@ PROTECTED_NAMES = frozenset({
     # Losing this one changes the device Instagram sees, which is what made
     # the direct endpoints start refusing us.
     "ig_device.json",
+    # And this one holds the ROTATED session cookie. The value in .env is only
+    # the seed; deleting the jar sends the bot back to a cookie Instagram has
+    # already replaced.
+    "ig_web_cookies.json",
 })
 
 # Subdirectories that hold something expensive to re-acquire rather than

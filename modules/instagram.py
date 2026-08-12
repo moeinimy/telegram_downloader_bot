@@ -773,6 +773,32 @@ def _try_web_api(shortcode: str) -> list[str]:
     return _parse_media_item(item, shortcode).urls
 
 
+def _try_web_api(shortcode: str) -> list[str]:
+    """The logged-in WEB route, using the browser cookies.
+
+    First, because it is the session that actually works: the mobile api
+    refuses a browser-issued cookie, so the instagrapi route below fails for
+    the same account that reads its inbox fine over the web api. Reading and
+    downloading should not disagree about which session to use.
+    """
+    from modules import ig_web
+
+    if not ig_web.usable():
+        _last_reason["web"] = "no cookies configured"
+        return []
+
+    try:
+        item = ig_web.media_info_sync(_shortcode_to_media_id(shortcode))
+    except Exception as e:
+        _last_reason["web"] = str(e)[:80]
+        return []
+
+    if not item:
+        _last_reason["web"] = "no media in response"
+        return []
+    return _parse_media_item(item, shortcode).urls
+
+
 def _try_private_api(shortcode: str) -> list[str]:
     """The logged-in route.
 
@@ -1100,6 +1126,7 @@ def _probe_routes(shortcode: str) -> dict[str, int]:
     """How many media each cookie-free route yields. -1 means it errored."""
     results: dict[str, int] = {}
     for name, fn in (
+        ("web", _try_web_api),
         ("private", _try_private_api),
         ("graphql", _try_graphql),
         ("api_v1", _try_api_v1),

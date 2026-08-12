@@ -33,7 +33,9 @@ Needs three cookies, all from the same browser panel:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import threading
 import time
 
 from config import settings
@@ -58,6 +60,25 @@ _task: asyncio.Task | None = None
 _seen_after = 0.0
 _last_error = ""
 
+# ONE long-lived client, with its cookie jar kept on disk.
+#
+# Instagram rotates `sessionid` and hands the new value back in Set-Cookie.
+# The first version built a fresh httpx.Client per request from the static
+# config, so every rotation was discarded and the next call went out with a
+# dead cookie - which is why the reader worked, then returned a 608KB login
+# page a few requests later.
+#
+# The same jar also carries csrftoken, mid and ig_did, which the web app
+# keeps for the life of a tab.
+_COOKIE_PATH = settings.download_dir / "ig_web_cookies.json"
+_session = None
+_session_lock = threading.Lock()
+
+# instagram.com issues this on a response and expects it echoed on the next
+# request. Sending a hardcoded "0" forever both marks the client as not-a-
+# browser and, left stale, gets the session invalidated.
+_www_claim = "0"
+
 
 def usable() -> bool:
     """Only the sessionid is strictly required; the rest improve reliability."""
@@ -74,17 +95,54 @@ def _cookies() -> dict:
 
 
 def _headers() -> dict:
+    # csrftoken comes from the live jar when Instagram has rotated it; the
+    # configured value is only the seed.
+    csrf = settings.ig_dm_csrftoken
+    if _session is not None:
+        csrf = _session.cookies.get("csrftoken") or csrf
+
     return {
         "User-Agent": _UA,
         "X-IG-App-ID": _APP_ID,
         "X-ASBD-ID": "129477",
-        "X-IG-WWW-Claim": "0",
-        "X-CSRFToken": settings.ig_dm_csrftoken or "missing",
+        # Echoed from the last response rather than hardcoded.
+        "X-IG-WWW-Claim": _www_claim,
+        "X-CSRFToken": csrf or "missing",
         "X-Requested-With": "XMLHttpRequest",
         "Referer": "https://www.instagram.com/direct/inbox/",
         "Accept": "*/*",
         "Accept-Language": "en-US,en;q=0.9",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Dest": "empty",
     }
+
+
+def _load_cookies() -> dict:
+    """The jar as last saved, seeded from .env for anything missing."""
+    jar = dict(_cookies())
+    try:
+        stored = json.loads(_COOKIE_PATH.read_text(encoding="utf-8"))
+        # Stored values win: they are the rotated ones, .env holds the seed.
+        jar.update({k: v for k, v in stored.items() if v})
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        log.warning("ig web: cookie store unreadable (%s) - using .env", e)
+    return jar
+
+
+def _save_cookies(client) -> None:
+    try:
+        jar = {k: v for k, v in client.cookies.items() if v}
+        if not jar.get("sessionid"):
+            return  # never overwrite a good jar with a logged-out one
+        tmp = _COOKIE_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(jar), encoding="utf-8")
+        tmp.replace(_COOKIE_PATH)
+        _COOKIE_PATH.chmod(0o600)
+    except Exception as e:
+        log.warning("ig web: could not persist cookies (%s)", e)
 
 
 def _proxy_url() -> str | None:
@@ -108,19 +166,52 @@ def _proxy_url() -> str | None:
 
 
 def _client():
-    import httpx
+    """The one shared session. Built once, kept for the life of the process."""
+    global _session
 
-    proxy = _proxy_url()
-    # httpx names it `proxy` from 0.26 and `proxies` before that.
-    try:
-        return httpx.Client(timeout=25, follow_redirects=True, proxy=proxy)
-    except TypeError:
-        return httpx.Client(timeout=25, follow_redirects=True, proxies=proxy)
+    with _session_lock:
+        if _session is not None:
+            return _session
+
+        import httpx
+
+        proxy = _proxy_url()
+        # httpx names it `proxy` from 0.26 and `proxies` before that.
+        try:
+            _session = httpx.Client(timeout=25, follow_redirects=True, proxy=proxy)
+        except TypeError:
+            _session = httpx.Client(timeout=25, follow_redirects=True, proxies=proxy)
+
+        for name, value in _load_cookies().items():
+            _session.cookies.set(name, value, domain=".instagram.com")
+        return _session
+
+
+def reset_client() -> None:
+    """Drop the session so new cookies or a new proxy take effect."""
+    global _session
+
+    with _session_lock:
+        if _session is not None:
+            try:
+                _session.close()
+            except Exception:
+                pass
+        _session = None
 
 
 def _get(url: str, params: dict) -> dict:
-    with _client() as client:
-        response = client.get(url, params=params, headers=_headers(), cookies=_cookies())
+    global _www_claim
+
+    client = _client()
+    response = client.get(url, params=params, headers=_headers())
+
+    # Instagram hands back a rotated claim and, periodically, a rotated
+    # sessionid. Both have to be kept or the session dies a few calls later.
+    claim = response.headers.get("x-ig-set-www-claim")
+    if claim:
+        _www_claim = claim
+    _save_cookies(client)
 
     if response.status_code == 401:
         raise RuntimeError("sessionid رد شد (401) - کوکی منقضی شده، یه تازه بگیر")
@@ -192,13 +283,14 @@ def media_info(media_pk: str) -> dict:
 @run_in_thread
 def _send(user_id: str, text: str) -> bool:
     """Reply in the DM. Best effort - pairing feedback only."""
-    with _client() as client:
-        response = client.post(
-            "https://www.instagram.com/api/v1/direct_v2/threads/broadcast/text/",
-            data={"recipient_users": f'[[{user_id}]]', "text": text,
-                  "action": "send_item"},
-            headers=_headers(), cookies=_cookies(),
-        )
+    client = _client()
+    response = client.post(
+        "https://www.instagram.com/api/v1/direct_v2/threads/broadcast/text/",
+        data={"recipient_users": f"[[{user_id}]]", "text": text,
+              "action": "send_item"},
+        headers=_headers(),
+    )
+    _save_cookies(client)
     return response.status_code == 200
 
 

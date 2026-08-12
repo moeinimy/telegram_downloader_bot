@@ -646,6 +646,37 @@ try:
 finally:
     object.__setattr__(_web.settings, "ig_dm_proxy", _saved_proxy)
 
+# Instagram rotates sessionid and hands the new value back in Set-Cookie. The
+# first version built a fresh client per request from the static config, threw
+# every rotation away, and a few calls later got a 608KB login page - which
+# read as "your cookie expired" when the cookie had merely moved.
+_web_cookie_backup = _web._COOKIE_PATH
+_web._COOKIE_PATH = Path(_TMP) / "ig_web_cookies.json"
+try:
+    for name, value in (("ig_dm_sessionid", "seed-session"),
+                        ("ig_dm_csrftoken", "seed-csrf"),
+                        ("ig_dm_ds_user_id", "123")):
+        object.__setattr__(_web.settings, name, value)
+
+    check("ig web: with nothing stored, the .env seed is used",
+          _web._load_cookies().get("sessionid") == "seed-session")
+
+    _web._COOKIE_PATH.write_text(json.dumps({
+        "sessionid": "rotated-session", "csrftoken": "rotated-csrf", "mid": "abc",
+    }), encoding="utf-8")
+    jar = _web._load_cookies()
+    check("ig web: a rotated sessionid beats the .env seed",
+          jar.get("sessionid") == "rotated-session", jar.get("sessionid"))
+    check("ig web: a rotated csrftoken beats the .env seed",
+          jar.get("csrftoken") == "rotated-csrf")
+    check("ig web: cookies Instagram added are kept", jar.get("mid") == "abc")
+    check("ig web: seed-only cookies survive", jar.get("ds_user_id") == "123")
+
+    check("ig web: the cookie jar is protected from the sweeper",
+          _limits._is_protected(sweep_root / "ig_web_cookies.json", sweep_root))
+finally:
+    _web._COOKIE_PATH = _web_cookie_backup
+
 # The device fingerprint must survive a session reset. Losing it is what made
 # the direct endpoints start refusing an account that was otherwise fine.
 check("ig poll: the device file is protected from the sweeper",

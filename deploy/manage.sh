@@ -815,9 +815,19 @@ _igdirect_standby() {
 
     if [[ "$how" == "1" ]]; then
         echo
-        info "تو مرورگر با همین اکانت وارد instagram.com شو، بعد:"
-        echo "  F12 → Application → Cookies → instagram.com"
-        echo "  سه تا کوکی لازمه: sessionid, csrftoken, ds_user_id"
+        # A cookie taken from a tab you keep using is fragile: Instagram
+        # rotates the session, and the browser gets the new value while the
+        # server keeps the old one. An incognito window closed without
+        # logging out leaves the session alive and nothing rotating it.
+        info "مهم - کوکی رو اینجوری بگیر که دووم بیاره:"
+        echo "  ۱. یه پنجره‌ی ناشناس (Incognito) باز کن"
+        echo "  ۲. با اکانت بات وارد instagram.com شو"
+        echo "  ۳. F12 → Application → Cookies → instagram.com"
+        echo "     سه تا کوکی: sessionid, csrftoken, ds_user_id"
+        echo "  ۴. پنجره رو *بدون Log out* ببند"
+        echo
+        warn "تو همون مرورگر دوباره با این اکانت لاگین نکن - اینستاگرام سشن رو"
+        warn "می‌چرخونه، مرورگر مقدار جدید رو می‌گیره و سرور با قدیمی می‌مونه."
         warn "این کوکی‌ها رو من نمی‌بینم؛ مستقیم تو .env همین سرور ذخیره می‌شن."
         # All three, because with them the WEB api can be used - and that is
         # the api this cookie belongs to. Given only sessionid we are back to
