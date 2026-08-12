@@ -54,7 +54,14 @@ def lyrics_button(
         rows.append([
             InlineKeyboardButton(
                 t(chat_id, "🎚 نسخه‌های دیگه"), callback_data=f"sp:ver:{track_id}"
-            )
+            ),
+            # The best the source actually has, in its native codec. Labelled
+            # "بالاترین کیفیت" rather than FLAC because the sources are lossy
+            # and a FLAC made from them would be a bigger file with identical
+            # audio - it says FLAC in the reply only when it really is.
+            InlineKeyboardButton(
+                t(chat_id, "💎 بالاترین کیفیت"), callback_data=f"sp:hq:{track_id}"
+            ),
         ])
     return InlineKeyboardMarkup(rows)
 

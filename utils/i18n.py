@@ -100,6 +100,17 @@ _EN: dict[str, str] = {
     "🎧 دنبال آهنگ‌های شبیه می‌گردم…": "🎧 Looking for similar tracks…",
     "چیزی شبیه این پیدا نکردم.": "Nothing similar found.",
     "🎚 نسخه‌های دیگه": "🎚 Other versions",
+    "💎 بالاترین کیفیت": "💎 Best quality",
+    "💎 دنبال بهترین نسخه می‌گردم…": "💎 Looking for the best version…",
+    "💎 *{name}*\n\nبدون فشرده‌سازی ({codec}) · {size:.1f}MB":
+        "💎 *{name}*\n\nLossless ({codec}) · {size:.1f}MB",
+    "💎 *{name}*\n\nبهترین نسخه‌ی موجود: {codec} · {size:.1f}MB\n\n"
+    "منبع خودش فشرده‌ست، پس نسخه‌ی بدون افت وجود نداره — "
+    "تبدیلش به FLAC فقط حجم رو زیاد می‌کرد بدون اینکه کیفیت اضافه شه.":
+        "💎 *{name}*\n\nBest available: {codec} · {size:.1f}MB\n\n"
+        "The source is itself compressed, so there is no lossless version to "
+        "get — converting it to FLAC would only make the file bigger without "
+        "adding any quality.",
     "🎚 دنبال نسخه‌های دیگه می‌گردم…": "🎚 Looking for other versions…",
     "نسخه دیگه‌ای از این آهنگ پیدا نکردم.": "No other version of this track found.",
     "🎚 نسخه‌های «{name}»": "🎚 Versions of “{name}”",

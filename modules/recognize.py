@@ -208,6 +208,21 @@ _WHOLE_FILE_MAX_MB = _int_env("RECOGNIZE_WHOLE_FILE_MAX_MB", 4)
 # whole-file attempt is a minute of doing nothing.
 _WHOLE_FILE_TIMEOUT = _int_env("RECOGNIZE_WHOLE_FILE_TIMEOUT", 15)
 
+# shazamio splits whatever it is given into segments of this length:
+#
+#   shazamio_core | Recognizer created with segment_duration_seconds = 10
+#
+# and on a miss it waits out the retryms Shazam returns - 12000 - before the
+# next segment. So a 12-second window is two segments and one of those sleeps,
+# which is why five windows of a long track took 53 seconds while five windows
+# of a short one took 1.7. Keeping a window at or under the segment length
+# means one segment, no internal retry, and no sleeping. Shazam matches
+# comfortably on 5-12 seconds, so nothing is given up.
+_SEGMENT = _int_env("RECOGNIZE_WINDOW_SECONDS", 10)
+
+# One window must not be able to hold up the sweep either.
+_WINDOW_TIMEOUT = _int_env("RECOGNIZE_WINDOW_TIMEOUT", 20)
+
 # Where the wall clock actually goes, per phase. Guessing at latency has been
 # wrong every time this session; each phase reports itself instead.
 last_timing: dict[str, float] = {}
@@ -342,10 +357,11 @@ def _sample_plan(duration: float) -> tuple[int, list[int]]:
     Returns (window_seconds, offsets).
     """
     if duration <= 0:
-        return 12, [0]
+        return _SEGMENT, [0]
 
-    # Shazam matches comfortably on 5-12 seconds.
-    window = 12 if duration >= 20 else max(5, int(duration * 0.6))
+    # Shazam matches comfortably on 5-12 seconds, and the cap is what keeps a
+    # window to ONE shazamio segment. See _SEGMENT.
+    window = _SEGMENT if duration >= 20 else max(5, min(_SEGMENT, int(duration * 0.6)))
     last = max(int(duration - window), 0)
     if last == 0:
         return window, [0]
@@ -430,7 +446,14 @@ async def recognize_candidates(path: Path) -> list[tuple[RecognizedSong, int]]:
             clip_path.unlink(missing_ok=True)
             return None
         try:
-            return await _recognize_once(clip_path)
+            # Bounded, so one window that hits an internal retry cannot hold
+            # the whole batch - and the batch is what the user waits for.
+            return await asyncio.wait_for(
+                _recognize_once(clip_path), timeout=_WINDOW_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            log.info("window @%ds timed out after %ds", off, _WINDOW_TIMEOUT)
+            return None
         finally:
             clip_path.unlink(missing_ok=True)
 

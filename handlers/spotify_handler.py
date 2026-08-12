@@ -568,6 +568,55 @@ async def _send_cached(msg, meta, file_id: str, *, with_cover: bool = True) -> b
     return True
 
 
+async def _send_best_quality(query, track_id: str) -> None:
+    """The best audio the source actually has, sent as a file.
+
+    Sent as a document rather than audio on purpose: Telegram re-encodes and
+    caps what it streams as music, and the whole point of this button is to
+    hand over the bytes untouched.
+
+    The reply says what it really is. "FLAC" is only claimed when the source
+    was lossless - YouTube and SoundCloud are not, and transcoding lossy audio
+    into FLAC produces a file several times larger carrying identical sound.
+    """
+    from utils import limits
+    from utils.helpers import safe_filename
+
+    chat_id = query.message.chat_id
+    status = await query.message.reply_text(t(chat_id, "💎 دنبال بهترین نسخه می‌گردم…"))
+
+    try:
+        meta = await sp.get_track_meta(track_id)
+        async with limits.download_slot(chat_id):
+            path, codec, lossless = await sp.download_best(meta)
+    except Exception as e:
+        await status.edit_text(t(chat_id, "❌ خطا: {err}").format(err=e))
+        return
+
+    size_mb = path.stat().st_size / 1e6
+    if lossless:
+        note = t(chat_id, "💎 *{name}*\n\nبدون فشرده‌سازی ({codec}) · {size:.1f}MB")
+    else:
+        note = t(
+            chat_id,
+            "💎 *{name}*\n\nبهترین نسخه‌ی موجود: {codec} · {size:.1f}MB\n\n"
+            "منبع خودش فشرده‌ست، پس نسخه‌ی بدون افت وجود نداره — "
+            "تبدیلش به FLAC فقط حجم رو زیاد می‌کرد بدون اینکه کیفیت اضافه شه.",
+        )
+
+    try:
+        with path.open("rb") as handle:
+            await query.message.reply_document(
+                document=handle,
+                filename=f"{safe_filename(meta.display)}.{path.suffix.lstrip('.')}",
+                caption=note.format(name=meta.display, codec=codec or "?", size=size_mb),
+                parse_mode="Markdown",
+            )
+        await status.delete()
+    except Exception as e:
+        await status.edit_text(t(chat_id, "❌ آپلود ناموفق: {err}").format(err=e))
+
+
 async def _send_and_download_track(msg, meta, *, quiet: bool = False) -> bool:
     from utils import file_cache
 
@@ -672,6 +721,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             tracks=tracks,
             bulk_callback=None,
         )
+        return
+
+    if data.startswith("sp:hq:"):
+        await _send_best_quality(query, data.split(":", 2)[2])
         return
 
     if data.startswith("sp:ver:"):

@@ -1682,6 +1682,102 @@ def download_track(meta: TrackMeta) -> Path:
     return out_path
 
 
+_LOSSLESS_CODECS = ("flac", "alac", "wav", "pcm")
+
+
+def _audio_formats(target: str) -> list[dict]:
+    """Every audio-only format the source offers, best bitrate first."""
+    from modules.youtube import ytdlp_run
+
+    info = ytdlp_run(
+        {"skip_download": True, "quiet": True},
+        lambda ydl: ydl.extract_info(target, download=False),
+    )
+    formats = [
+        f for f in ((info or {}).get("formats") or [])
+        if f.get("acodec") and f["acodec"] != "none" and f.get("vcodec") in (None, "none")
+    ]
+    return sorted(formats, key=lambda f: f.get("abr") or 0, reverse=True)
+
+
+def describe_best(target: str) -> tuple[str, float, bool]:
+    """(codec, bitrate kbps, is_lossless) for the best audio the source has.
+
+    Used to tell the user what they are actually getting instead of promising
+    a quality nobody can deliver: YouTube and SoundCloud are lossy, so a FLAC
+    made from them is a bigger file carrying the same audio.
+    """
+    try:
+        formats = _audio_formats(target)
+    except Exception as e:
+        log.info("could not list formats for %s: %s", target, e)
+        return "", 0.0, False
+    if not formats:
+        return "", 0.0, False
+
+    best = formats[0]
+    codec = (best.get("acodec") or "").lower()
+    lossless = any(c in codec for c in _LOSSLESS_CODECS)
+    return codec, float(best.get("abr") or 0), lossless
+
+
+@run_in_thread(heavy=True)
+def download_best(meta: TrackMeta) -> tuple[Path, str, bool]:
+    """The best audio the source actually has, kept in its native codec.
+
+    (path, codec, is_lossless). Nothing is re-encoded: the source is already
+    lossy in almost every case, and a second lossy pass - or an inflating pass
+    to FLAC - can only make it worse or bigger. FLAC comes out only when the
+    source really was lossless.
+    """
+    from modules.youtube import ytdlp_run
+
+    _ensure_credits(meta)
+    ensure_cover(meta)
+
+    out_dir = settings.download_dir / "spotify"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    base = out_dir / f"{safe_filename(meta.display)} [{_id_tag(meta.id)}] best"
+
+    existing = _find_output(base)
+    if existing is not None:
+        codec = existing.suffix.lstrip(".").lower()
+        return existing, codec, codec in _LOSSLESS_CODECS
+
+    if meta.id.startswith(("yt_", "sc_")) and meta.spotify_url.startswith("http"):
+        targets = [meta.spotify_url]
+    elif meta.id.startswith("yt_"):
+        targets = [f"https://www.youtube.com/watch?v={meta.id[3:]}"]
+    else:
+        targets = _locate_audio(meta)
+
+    last: Exception | None = None
+    for target in targets:
+        codec, _abr, lossless = describe_best(target)
+        extra = {
+            "format": "bestaudio/best",
+            "format_sort": ["abr", "asr"],
+            "outtmpl": str(base) + ".%(ext)s",
+            # Remux into a container Telegram shows as playable audio, without
+            # touching the samples. No FFmpegExtractAudio: that re-encodes.
+            "postprocessors": [{"key": "FFmpegMetadata"}],
+        }
+        try:
+            ytdlp_run(extra, lambda ydl: ydl.download([target]))
+        except Exception as e:
+            last = e
+            continue
+        out_path = _find_output(base)
+        if out_path is not None:
+            _embed_cover_and_tags(out_path, meta)
+            return out_path, codec or out_path.suffix.lstrip("."), lossless
+
+    raise RuntimeError(
+        f"نسخه‌ی باکیفیت «{meta.display}» پیدا نشد"
+        + (f" — {str(last)[:120]}" if last else "")
+    )
+
+
 _AUDIO_EXTS = {".m4a", ".mp3", ".opus", ".ogg", ".oga", ".webm", ".aac", ".mp4", ".flac", ".wav"}
 
 

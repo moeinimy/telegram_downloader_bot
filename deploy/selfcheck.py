@@ -762,6 +762,17 @@ for why, want, label in [
     check(f"engines: {label} -> auth failure={want}",
           _engines._is_auth_failure(why) is want, why[:40])
 
+# shazamio splits what it is given into 10-second segments and, on a miss,
+# waits out the retryms Shazam returns (12000) before the next one. A
+# 12-second window was therefore two segments and one 12s sleep - five windows
+# of a 172s track took 53 seconds while five windows of a 20s clip took 1.7.
+# Every window must be one segment.
+for _duration in (7, 14, 20, 45, 172, 600):
+    _window, _offsets = _rec._sample_plan(_duration)
+    check(f"recognize: a {_duration}s file windows to one segment",
+          _window <= _rec._SEGMENT and len(_offsets) >= 1,
+          f"window {_window}s, {len(_offsets)} offsets")
+
 check("recognize: the last error is recorded for /recstatus",
       (_rec._note_error(_FailedDecodeJson("Failed to decode json")) is None)
       and "FailedDecodeJson" in _rec.last_error,
