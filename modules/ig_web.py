@@ -138,6 +138,83 @@ def _headers() -> dict:
     }
 
 
+# --------------------------------------------------------------------------
+# Request accounting
+#
+# Every number given for "how much traffic does this generate" so far has been
+# a model with an assumed hour of daily use. What actually matters is the rate
+# this account is really producing, so it is counted rather than predicted.
+#
+# One counter per hour, kept for a day. Cheap to hold, cheap to persist, and
+# it survives the restarts that a day-long picture would otherwise lose.
+# --------------------------------------------------------------------------
+
+_RATE_PATH = settings.download_dir / "ig_web_rate.json"
+_rate: dict[str, int] = {}
+_rate_saved = 0.0
+
+# Not published limits - nobody has those. Anchored on this bot's own history:
+# a flat 15s poll was ~5,700/day and the account was actioned within days.
+_RATE_BANDS = ((2000, "محتاطانه"), (3500, "متعادل"), (5000, "پرریسک"))
+
+
+def _count_request() -> None:
+    global _rate_saved
+
+    hour = str(int(time.time()) // 3600)
+    _rate[hour] = _rate.get(hour, 0) + 1
+
+    cutoff = int(time.time()) // 3600 - 24
+    for key in [k for k in _rate if int(k) < cutoff]:
+        _rate.pop(key, None)
+
+    # At most once a minute: this runs on every request and the point is to
+    # measure the load, not add to it.
+    if time.time() - _rate_saved > 60:
+        _rate_saved = time.time()
+        try:
+            _RATE_PATH.write_text(json.dumps(_rate), encoding="utf-8")
+        except Exception:
+            pass
+
+
+def _load_rate() -> None:
+    try:
+        stored = json.loads(_RATE_PATH.read_text(encoding="utf-8"))
+        cutoff = int(time.time()) // 3600 - 24
+        _rate.update({k: int(v) for k, v in stored.items() if int(k) >= cutoff})
+    except Exception:
+        pass
+
+
+def rate() -> dict:
+    """What this account is actually doing, and what that means."""
+    if not _rate:
+        _load_rate()
+
+    now_hour = int(time.time()) // 3600
+    last_hour = _rate.get(str(now_hour), 0) + _rate.get(str(now_hour - 1), 0)
+    day = sum(_rate.values())
+    hours = max(1, len(_rate))
+
+    # A partial day extrapolates; a full one speaks for itself.
+    projected = day if hours >= 24 else round(day / hours * 24)
+
+    verdict = "بن‌آور"
+    for ceiling, label in _RATE_BANDS:
+        if projected < ceiling:
+            verdict = label
+            break
+
+    return {
+        "last_hour": last_hour,
+        "day": day,
+        "hours_measured": hours,
+        "projected": projected,
+        "verdict": verdict,
+    }
+
+
 def _short(text: str, limit: int = 120) -> str:
     """One line, bounded.
 
@@ -253,6 +330,7 @@ def _get(url: str, params: dict) -> dict:
     global _www_claim
 
     client = _client()
+    _count_request()
     response = client.get(url, params=params, headers=_headers())
 
     # Instagram hands back a rotated claim and, periodically, a rotated

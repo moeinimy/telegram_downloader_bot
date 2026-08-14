@@ -158,6 +158,9 @@ PROTECTED_NAMES = frozenset({
     # the seed; deleting the jar sends the bot back to a cookie Instagram has
     # already replaced.
     "ig_web_cookies.json",
+    # The request-rate history: small, and the only record of what this
+    # account has actually been doing over the last day.
+    "ig_web_rate.json",
 })
 
 # Subdirectories that hold something expensive to re-acquire rather than

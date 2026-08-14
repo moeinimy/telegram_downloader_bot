@@ -718,6 +718,33 @@ try:
         check(f"ig web: soft block -> {_want} for {_text[:34]!r}",
               _web._is_soft_block(_text) is _want)
 
+    # Every traffic figure quoted so far has been a model with an assumed hour
+    # of daily use. The bot now counts what it actually sends, so "is this
+    # setting safe" stops being answered from a spreadsheet.
+    _hour = int(time.time()) // 3600
+
+    def _load_rate(per_hour, hours=24):
+        _web._rate.clear()
+        for _h in range(hours):
+            _web._rate[str(_hour - _h)] = per_hour
+
+    # Anchored on this bot's own history: a flat 15s poll is 240/hour, which
+    # is what the account was actioned on.
+    for _per_hour, _want in ((40, "محتاطانه"), (118, "متعادل"),
+                             (150, "پرریسک"), (240, "بن‌آور")):
+        _load_rate(_per_hour)
+        check(f"ig web: {_per_hour}/hour reads as {_want}",
+              _web.rate()["verdict"] == _want, _web.rate()["verdict"])
+
+    # A few hours in, the day's total is small. Reporting it raw would make a
+    # dangerous rate look safe for most of the day it is being measured.
+    _web._rate.clear()
+    for _h in range(3):
+        _web._rate[str(_hour - _h)] = 100
+    check("ig web: a partial day extrapolates rather than under-reporting",
+          _web.rate()["projected"] == 2400, str(_web.rate()))
+    _web._rate.clear()
+
     check("ig web: the cookie jar is protected from the sweeper",
           _limits._is_protected(sweep_root / "ig_web_cookies.json", sweep_root))
 

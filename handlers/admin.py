@@ -366,6 +366,23 @@ def _ig_direct_lines() -> list[str]:
         except Exception:
             pass
 
+    if snapshot["sources"].get("web", {}).get("running"):
+        try:
+            from modules import ig_web
+
+            r = ig_web.rate()
+            icon = {"محتاطانه": "✅", "متعادل": "✅", "پرریسک": "⚠️"}.get(r["verdict"], "❌")
+            lines.append(
+                f"{icon} نرخ درخواست: {r['last_hour']} تو ساعت گذشته · "
+                f"~{r['projected']} در روز ({r['verdict']})"
+            )
+            if r["hours_measured"] < 24:
+                lines.append(f"   ↳ بر اساس {r['hours_measured']} ساعت اندازه‌گیری")
+            if r["verdict"] in ("پرریسک", "بن‌آور"):
+                lines.append("   ↳ IG_DM_MAX_INTERVAL رو ببر بالاتر")
+        except Exception:
+            pass
+
     left = ig_graph.days_left()
     if left is not None:
         lines.append(
