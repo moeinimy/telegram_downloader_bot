@@ -86,6 +86,15 @@ class Settings:
     ig_dm_poll_seconds: float
     ig_dm_fast_seconds: float
     ig_dm_fast_window: int
+    # Ceiling on the idle ladder: the worst case a user can wait. Lower means
+    # a snappier first message and more requests per day - the two cannot both
+    # be improved, and this is where the choice is made.
+    ig_dm_max_interval: float
+    # "2-8" = between 02:00 and 08:00 server time, poll at quiet_interval
+    # instead. Nobody shares reels at 4am, and a session that keeps exactly
+    # the same rhythm around the clock does not look like a person.
+    ig_dm_quiet_hours: str
+    ig_dm_quiet_interval: float
 
     # Optional: local Bot API server (https://github.com/tdlib/telegram-bot-api)
     # e.g. http://127.0.0.1:8081 - raises the upload limit from 50MB to 2GB.
@@ -270,6 +279,9 @@ settings = Settings(
     ig_dm_poll_seconds=_float("IG_DM_POLL_SECONDS", 8),
     ig_dm_fast_seconds=_float("IG_DM_FAST_SECONDS", 3),
     ig_dm_fast_window=_int("IG_DM_FAST_WINDOW", 120),
+    ig_dm_max_interval=_float("IG_DM_MAX_INTERVAL", 30),
+    ig_dm_quiet_hours=_get("IG_DM_QUIET_HOURS"),
+    ig_dm_quiet_interval=_float("IG_DM_QUIET_INTERVAL", 300),
     bot_api_base_url=_get("BOT_API_BASE_URL"),
     download_dir=Path(_get("DOWNLOAD_DIR", "./downloads")).resolve(),
     max_upload_mb=int(_get("MAX_UPLOAD_MB", "50") or 50),

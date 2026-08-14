@@ -8,6 +8,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(r"D:\claude projects\telegram_downloader_bot")
@@ -684,6 +685,38 @@ try:
     check("ig web: a newly pasted sessionid discards the stale jar",
           _web._load_cookies().get("sessionid") == "seed-session",
           _web._load_cookies().get("sessionid"))
+
+    # A ceiling on the idle ladder is the promise "nobody waits longer than
+    # this", and it is what makes a low request count and a fast first
+    # message pull against each other.
+    object.__setattr__(_web.settings, "ig_dm_max_interval", 30.0)
+    object.__setattr__(_web.settings, "ig_dm_quiet_hours", "")
+    _delays = [_web._next_delay(30.0, 5.0, 60.0, 10800) for _ in range(500)]
+    check("ig web: the idle ladder respects the ceiling",
+          max(_delays) <= 30.0 * 1.25 + 0.01, f"worst {max(_delays):.1f}s")
+    check("ig web: intervals are jittered, not identical",
+          len(set(round(d, 3) for d in _delays)) > 100,
+          f"{len(set(round(d, 3) for d in _delays))} distinct")
+    check("ig web: an active conversation still polls fast",
+          max(_web._next_delay(30.0, 5.0, 60.0, 10) for _ in range(200)) <= 5.0 * 1.25 + 0.01)
+
+    object.__setattr__(_web.settings, "ig_dm_quiet_hours", "2-8")
+    for _hour, _want in ((1, False), (2, True), (7, True), (8, False), (23, False)):
+        _stamp = time.struct_time((2026, 8, 12, _hour, 0, 0, 0, 224, 0))
+        check(f"ig web: {_hour:02d}:00 quiet={_want}",
+              _web._in_quiet_hours(_stamp) is _want)
+
+    # Instagram warns before it acts. Continuing at the same rate into a
+    # warning is how the warning becomes an action.
+    for _text, _want in (
+        ("Please wait a few minutes before you try again", True),
+        ("HTTP 429: rate limit", True),
+        ("feedback_required", True),
+        ("not json (410166 bytes) - probably a login page", False),
+        ("Connection timed out", False),
+    ):
+        check(f"ig web: soft block -> {_want} for {_text[:34]!r}",
+              _web._is_soft_block(_text) is _want)
 
     check("ig web: the cookie jar is protected from the sweeper",
           _limits._is_protected(sweep_root / "ig_web_cookies.json", sweep_root))

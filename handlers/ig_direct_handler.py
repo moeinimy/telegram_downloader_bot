@@ -346,6 +346,13 @@ async def on_startup(application) -> None:
         ig_graph.set_alert(_alert_admins)
         ig_graph.start_refresh_loop()
 
+    if settings.has_ig_web:
+        from modules import ig_web
+
+        # A warning from Instagram is the one chance to back off before it
+        # becomes an action, and it is worth waking somebody for.
+        ig_web.set_alert(_alert_admins)
+
     if settings.has_ig_private:
         try:
             from modules import ig_private

@@ -381,6 +381,60 @@ async def send_text(user_id: str, text: str) -> bool:
         return False
 
 
+# Instagram's vocabulary for "slow down" - short of an actual action. Every
+# one of these is a warning that the account is being noticed.
+_SOFT_BLOCK_MARKERS = (
+    "please wait a few minutes", "wait a few minutes", "try again later",
+    "429", "rate limit", "too many requests", "spam", "feedback_required",
+    "action blocked", "we restrict certain activity",
+)
+
+# Long enough that Instagram sees the behaviour stop, not merely slow.
+_SOFT_BLOCK_PAUSE = 3600
+
+_alert = None
+
+
+def set_alert(fn) -> None:
+    """Where to report a warning. Wired to the admin chat at startup."""
+    global _alert
+    _alert = fn
+
+
+def _is_soft_block(text: str) -> bool:
+    lowered = (text or "").lower()
+    return any(marker in lowered for marker in _SOFT_BLOCK_MARKERS)
+
+
+async def _warn_admin(message: str) -> None:
+    if _alert is None:
+        return
+    try:
+        await _alert(message)
+    except Exception as e:
+        log.info("ig web: could not reach an admin (%s)", e)
+
+
+def _in_quiet_hours(now: time.struct_time | None = None) -> bool:
+    """True inside the configured overnight window, e.g. IG_DM_QUIET_HOURS=2-8.
+
+    Nobody shares reels at 4am, so those requests buy nothing - and a session
+    holding exactly the same rhythm around the clock is one of the plainest
+    signals that nobody is holding the phone.
+    """
+    spec = (settings.ig_dm_quiet_hours or "").strip()
+    if "-" not in spec:
+        return False
+    try:
+        start, end = (int(part) % 24 for part in spec.split("-", 1))
+    except ValueError:
+        return False
+
+    hour = (now or time.localtime()).tm_hour
+    # A window that wraps past midnight (22-6) is the normal case.
+    return start <= hour < end if start < end else (hour >= start or hour < end)
+
+
 def _next_delay(idle: float, fast: float, window: float, quiet_for: float) -> float:
     """How long to wait before the next sweep.
 
@@ -412,6 +466,17 @@ def _next_delay(idle: float, fast: float, window: float, quiet_for: float) -> fl
         base = idle * 3
     else:
         base = idle * 8
+
+    # The ceiling is the promise made to the user: nobody waits longer than
+    # this. It caps the ladder, so a low ceiling and a low request count pull
+    # against each other - that trade is IG_DM_MAX_INTERVAL and belongs to
+    # whoever runs the bot, not to this function.
+    base = min(base, max(fast, settings.ig_dm_max_interval))
+
+    # Except overnight, where the promise does not apply because there is
+    # nobody to make it to.
+    if _in_quiet_hours() and quiet_for >= window:
+        base = max(base, settings.ig_dm_quiet_interval)
 
     return max(0.3, base * random.uniform(0.75, 1.25))
 
@@ -462,10 +527,29 @@ async def _loop(dispatch: Dispatch) -> None:
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            _last_error = str(e)[:200]
+            _last_error = _short(str(e), 200)
             failures += 1
+
+            # Instagram almost always pushes back before it acts: a spam
+            # flag, a wait-a-few-minutes, a 429. Continuing at the same rate
+            # into that is how a warning becomes an action, so it is treated
+            # as a full stop rather than one more failure to retry through.
+            if _is_soft_block(_last_error):
+                log.error("ig web: Instagram is pushing back (%s) - pausing %ds",
+                          _last_error, _SOFT_BLOCK_PAUSE)
+                await _warn_admin(
+                    "⚠️ اینستاگرام داره به بات تذکر می‌ده (نه بن).\n\n"
+                    f"«{_last_error[:120]}»\n\n"
+                    f"پولینگ {_SOFT_BLOCK_PAUSE // 60} دقیقه متوقف شد تا تشدید نشه.\n"
+                    "اگه تکرار شد، IG_DM_POLL_SECONDS رو ببر بالاتر."
+                )
+                await asyncio.sleep(_SOFT_BLOCK_PAUSE)
+                failures = 0
+                continue
+
             penalty = min(600, idle * (2 ** failures))
-            log.warning("ig web: sweep failed (%s) - backing off to %.0fs", e, penalty)
+            log.warning("ig web: sweep failed (%s) - backing off to %.0fs",
+                        _last_error, penalty)
             await asyncio.sleep(penalty)
             continue
 
