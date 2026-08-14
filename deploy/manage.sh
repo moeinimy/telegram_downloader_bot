@@ -841,8 +841,14 @@ _igdirect_standby() {
         set_env IG_DM_CSRFTOKEN  "$csrf"
         set_env IG_DM_DS_USER_ID "$dsid"
         set_env IG_DM_PASSWORD ""
+
+        # The saved jar holds the cookies Instagram rotated to from the OLD
+        # session. Left in place it overrides the one just pasted, and the bot
+        # keeps using a cookie that already stopped working.
+        rm -f "$PROJECT_DIR/downloads/ig_web_cookies.json"
+        ok "کوکی‌جار قبلی پاک شد"
+
         if [[ -n "$csrf" && -n "$dsid" ]]; then
-            set_env IG_DIRECT_SOURCES "web,poll"
             ok "هر سه کوکی ست شد - از API وب استفاده می‌شه (بدون instagrapi)"
         else
             warn "بدون csrftoken و ds_user_id فقط مسیر موبایل می‌مونه، که همون ۴۰۳ رو می‌ده."
@@ -903,11 +909,16 @@ do_igdirect() {
     # collected them, and this block used to overwrite that with a bare
     # "poll" - so the web reader was set up correctly and then switched off
     # one line later.
-    local sources=""
+    local sources="" have_web=0
     if [[ -n "$(get_env IG_DM_CSRFTOKEN)" && -n "$(get_env IG_DM_DS_USER_ID)" ]]; then
         sources="web"
+        have_web=1
     fi
-    if (( want_standby )); then
+    # The mobile path is only added when the web one is NOT available. On an
+    # account whose browser cookie is what we hold, instagrapi is refused
+    # every time - and each attempt is more refused traffic against the very
+    # account we are trying to keep alive.
+    if (( want_standby && !have_web )); then
         sources="${sources:+$sources,}poll"
     fi
     if (( want_official )); then

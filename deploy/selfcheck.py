@@ -662,6 +662,7 @@ try:
           _web._load_cookies().get("sessionid") == "seed-session")
 
     _web._COOKIE_PATH.write_text(json.dumps({
+        "_seed": "seed-session",
         "sessionid": "rotated-session", "csrftoken": "rotated-csrf", "mid": "abc",
     }), encoding="utf-8")
     jar = _web._load_cookies()
@@ -671,6 +672,18 @@ try:
           jar.get("csrftoken") == "rotated-csrf")
     check("ig web: cookies Instagram added are kept", jar.get("mid") == "abc")
     check("ig web: seed-only cookies survive", jar.get("ds_user_id") == "123")
+    check("ig web: bookkeeping does not leak into the jar", "_seed" not in jar)
+
+    # The hole in "stored always wins": after a session died, pasting a fresh
+    # sessionid changed nothing, because the dead stored cookie kept
+    # overriding it. Every retry used the cookie that had already stopped
+    # working, and the bot told the user to get a fresh one - which they had.
+    _web._COOKIE_PATH.write_text(json.dumps({
+        "_seed": "an-older-session", "sessionid": "dead-rotated",
+    }), encoding="utf-8")
+    check("ig web: a newly pasted sessionid discards the stale jar",
+          _web._load_cookies().get("sessionid") == "seed-session",
+          _web._load_cookies().get("sessionid"))
 
     check("ig web: the cookie jar is protected from the sweeper",
           _limits._is_protected(sweep_root / "ig_web_cookies.json", sweep_root))

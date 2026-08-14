@@ -149,16 +149,32 @@ def _short(text: str, limit: int = 120) -> str:
 
 
 def _load_cookies() -> dict:
-    """The jar as last saved, seeded from .env for anything missing."""
+    """The jar as last saved, unless .env has been given a newer seed.
+
+    Stored values normally win - they are the ones Instagram rotated to, and
+    .env only holds what was first pasted in. But that rule had a hole: after
+    a session died, pasting a FRESH sessionid into .env changed nothing,
+    because the dead stored cookie kept overriding it. Every retry used the
+    cookie that had already stopped working, and the bot reported "expired -
+    get a fresh one" to somebody who just had.
+
+    So the seed the jar was built from is recorded with it. A different seed
+    means a human typed a new one, and that always wins.
+    """
     jar = dict(_cookies())
     try:
         stored = json.loads(_COOKIE_PATH.read_text(encoding="utf-8"))
-        # Stored values win: they are the rotated ones, .env holds the seed.
-        jar.update({k: v for k, v in stored.items() if v})
     except FileNotFoundError:
-        pass
+        return jar
     except Exception as e:
         log.warning("ig web: cookie store unreadable (%s) - using .env", e)
+        return jar
+
+    if stored.get("_seed") and stored["_seed"] != settings.ig_dm_sessionid:
+        log.info("ig web: IG_DM_SESSIONID changed - discarding the stored jar")
+        return jar
+
+    jar.update({k: v for k, v in stored.items() if v and not k.startswith("_")})
     return jar
 
 
@@ -167,6 +183,9 @@ def _save_cookies(client) -> None:
         jar = {k: v for k, v in client.cookies.items() if v}
         if not jar.get("sessionid"):
             return  # never overwrite a good jar with a logged-out one
+        # Which .env value this jar grew from, so a newly pasted one can be
+        # told apart from a rotation and take precedence.
+        jar["_seed"] = settings.ig_dm_sessionid
         tmp = _COOKIE_PATH.with_suffix(".tmp")
         tmp.write_text(json.dumps(jar), encoding="utf-8")
         tmp.replace(_COOKIE_PATH)
