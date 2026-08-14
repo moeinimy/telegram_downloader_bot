@@ -362,6 +362,41 @@ async def send_text(user_id: str, text: str) -> bool:
         return False
 
 
+def _next_delay(idle: float, fast: float, window: float, quiet_for: float) -> float:
+    """How long to wait before the next sweep.
+
+    A flat 15s poll is ~5,700 requests a day from what Instagram believes is
+    a browser tab, at exactly the same rate at 4am as at 8pm, on intervals
+    regular to the millisecond. That is the shape of the traffic, and the
+    shape is what gets an account actioned - not any single request.
+
+    So the loop backs off while nothing is happening and comes straight back
+    the moment something does. Sharing is bursty: the cost is only ever on
+    the FIRST message after a long silence, and that message puts the loop
+    into fast mode for everything that follows it.
+
+        active (within the fast window)   fast, ~1-5s
+        recently quiet (< 10 min)         idle
+        quiet 10-60 min                   idle x 3
+        quiet over an hour                idle x 8
+
+    Plus +/-25% of jitter, because a perfectly regular interval is a
+    signature on its own.
+    """
+    import random
+
+    if quiet_for < window:
+        base = fast
+    elif quiet_for < 600:
+        base = idle
+    elif quiet_for < 3600:
+        base = idle * 3
+    else:
+        base = idle * 8
+
+    return max(0.3, base * random.uniform(0.75, 1.25))
+
+
 async def _loop(dispatch: Dispatch) -> None:
     global _seen_after, _last_error
 
@@ -374,8 +409,22 @@ async def _loop(dispatch: Dispatch) -> None:
     last_activity = 0.0
     sweeps = 0
     failures = 0
+    idle_logged = False
 
     while True:
+        # Nobody paired means nothing to deliver, so every request is pure
+        # risk with no upside. The bot still answers /igdirect, and the first
+        # pairing brings the loop back within one interval.
+        from modules import ig_pairing
+
+        if not ig_pairing.count() and not ig_pairing.pending_count():
+            if not idle_logged:
+                log.info("ig web: no pairings - polling paused until someone connects")
+                idle_logged = True
+            await asyncio.sleep(60)
+            continue
+        idle_logged = False
+
         hot = (time.time() - last_activity) < window
         sweeps += 1
         started = time.monotonic()
@@ -403,7 +452,8 @@ async def _loop(dispatch: Dispatch) -> None:
 
         # Paced from the start of the sweep, so the request time is inside the
         # interval rather than added to it.
-        await asyncio.sleep(max(0.0, (fast if hot else idle) - (time.monotonic() - started)))
+        delay = _next_delay(idle, fast, window, time.time() - (last_activity or 0))
+        await asyncio.sleep(max(0.0, delay - (time.monotonic() - started)))
 
 
 async def start(dispatch: Dispatch) -> None:

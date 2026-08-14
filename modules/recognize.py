@@ -197,7 +197,7 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
-_BATCH = _int_env("RECOGNIZE_BATCH", 5)
+_BATCH = _int_env("RECOGNIZE_BATCH", 8)
 
 # Above this, the whole-file fallback is skipped: the upload cost grows with
 # the file while the chance of a match does not.
@@ -222,6 +222,12 @@ _SEGMENT = _int_env("RECOGNIZE_WINDOW_SECONDS", 10)
 
 # One window must not be able to hold up the sweep either.
 _WINDOW_TIMEOUT = _int_env("RECOGNIZE_WINDOW_TIMEOUT", 20)
+
+# How many points in the track to fingerprint. Raised from 5 once windows
+# became single-segment: the per-window cost collapsed, they run in one
+# batch, and coverage is what decides whether a song with a long intro or a
+# talky opening gets matched at all.
+_MAX_WINDOWS = _int_env("RECOGNIZE_MAX_WINDOWS", 8)
 
 # Where the wall clock actually goes, per phase. Guessing at latency has been
 # wrong every time this session; each phase reports itself instead.
@@ -366,7 +372,11 @@ def _sample_plan(duration: float) -> tuple[int, list[int]]:
     if last == 0:
         return window, [0]
 
-    count = min(5, max(3, last // max(window // 2, 3) + 1))
+    # More samples than before. Capping the window at one shazamio segment
+    # removed the 12-second sleep that used to make each one expensive, and
+    # they run concurrently - so eight windows of a long track now cost about
+    # what three used to, and eight chances to match beat five.
+    count = min(_MAX_WINDOWS, max(3, last // max(window // 2, 3) + 1))
     offsets = sorted({int(last * i / (count - 1)) for i in range(count)})
     return window, offsets
 
