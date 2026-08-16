@@ -371,9 +371,26 @@ async def stop() -> None:
             _states[name].running = False
 
 
+# The first health check runs about a second after start, which is before
+# realtime can have finished its handshake - it took seven. So it reads
+# "connecting…", which is correct for six more seconds and then sits in
+# /srcstatus as the source's status for the whole interval: the panel said
+# "connecting…" about a channel that had been up for five minutes.
+#
+# Re-check once the connect window has closed, then settle into the configured
+# cadence. This costs no Instagram traffic: while realtime holds, the only
+# health() reached reads module state and asks Instagram nothing.
+_SETTLE_SECONDS = 75.0
+
+
+def _health_wait(first_pass: bool, interval: float) -> float:
+    return min(_SETTLE_SECONDS, interval) if first_pass else interval
+
+
 async def _health_loop() -> None:
     """Decide, on a real signal, whether the standby should be awake."""
     interval = max(60, settings.ig_health_minutes * 60)
+    first_pass = True
     while True:
         try:
             await _check_and_failover()
@@ -381,7 +398,8 @@ async def _health_loop() -> None:
             raise
         except Exception:
             log.exception("ig direct: health check blew up")
-        await asyncio.sleep(interval)
+        await asyncio.sleep(_health_wait(first_pass, interval))
+        first_pass = False
 
 
 async def _check_and_failover() -> None:

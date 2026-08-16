@@ -541,6 +541,18 @@ for _name in ("mqtt", "poll", "webhook"):
     check(f"igdirect: rebuilding the source list preserves {_name}",
           _name in _rebuild)
 
+# /srcstatus prints what the health loop last saw, and the first thing it sees
+# is realtime mid-handshake. With one interval between checks, "connecting…"
+# was still on screen five minutes after the channel came up.
+import modules.ig_direct as _igd  # noqa: E402
+
+check("health: the first re-check beats the 10-minute interval",
+      _igd._health_wait(True, 600) == 75.0)
+check("health: later checks use the configured interval",
+      _igd._health_wait(False, 600) == 600)
+check("health: the settle wait never exceeds a short interval",
+      _igd._health_wait(True, 60) == 60)
+
 check("item: deep nesting terminates",
       _priv._walk_json({"a": {"b": {"c": {"d": {"e": {"f": {"pk": "1"}}}}}}}) == ("", "", ""))
 

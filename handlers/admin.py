@@ -336,7 +336,15 @@ def _ig_direct_lines() -> list[str]:
         else:
             icon = "✅" if state["healthy"] else "❌"
         role = "فعال" if state["running"] else "آماده‌باش"
-        lines.append(f"{icon} {name} ({role}): {_md(state['detail'] or '-')}")
+
+        # These readings are taken by the health loop on its own timer, not by
+        # this command - so a line can be minutes old. Saying when it was taken
+        # is what separates "it is doing that now" from "that is the last thing
+        # we saw", which is the difference that made a connected channel read
+        # as still connecting.
+        checked = state["last_check"]
+        age = f" · بررسی {ago(checked)}" if checked and time.time() - checked > 120 else ""
+        lines.append(f"{icon} {name} ({role}): {_md(state['detail'] or '-')}{age}")
         lines.append(f"   ↳ {state['events']} پیام · آخری {ago(state['last_event'])}")
 
     try:
