@@ -39,6 +39,7 @@ import time
 from config import settings
 from modules.ig_direct import Dispatch, Source
 from modules.ig_items import to_direct_message
+from utils import proxies
 
 log = logging.getLogger(__name__)
 
@@ -86,11 +87,15 @@ async def _connect():
     from aiograpi import Client
 
     client = Client()
-    if settings.ig_dm_proxy:
-        try:
-            client.set_proxy(settings.ig_dm_proxy)
-        except Exception as e:
-            log.warning("ig mqtt: proxy rejected (%s) - going direct", e)
+
+    # aiograpi is async and rejects socks5h the way httpx does. Going direct
+    # on a refused proxy is also wrong here: the sign-in that follows would
+    # leave from the server's own address, which is the address Instagram has
+    # been refusing all along - so a proxy that was asked for and not applied
+    # has to be an error, not a warning.
+    proxy = proxies.normalize(settings.ig_dm_proxy)
+    if proxy:
+        client.set_proxy(proxy)
 
     signed_in = False
     if settings.ig_dm_sessionid:

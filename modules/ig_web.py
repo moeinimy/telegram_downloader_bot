@@ -41,6 +41,7 @@ import time
 from config import settings
 from modules.ig_direct import DirectMessage, Dispatch, Source
 from modules.ig_items import to_direct_message, to_epoch
+from utils import proxies
 from utils.helpers import run_in_thread
 
 log = logging.getLogger(__name__)
@@ -272,23 +273,8 @@ def _save_cookies(client) -> None:
 
 
 def _proxy_url() -> str | None:
-    """The proxy, in the spelling httpx accepts.
-
-    Same trap as aiohttp-socks: httpx does not know the "h" suffix and raises
-
-        ValueError: Unknown scheme for proxy URL URL('socks5h://...')
-
-    before any request is made. curl and requests use socks5h to mean "resolve
-    DNS at the proxy"; httpx's socks transport does that anyway, so the suffix
-    is dropped rather than translated.
-    """
-    proxy = settings.ig_dm_proxy
-    if not proxy:
-        return None
-    for suffix, plain in (("socks5h://", "socks5://"), ("socks4a://", "socks4://")):
-        if proxy.lower().startswith(suffix):
-            return plain + proxy[len(suffix):]
-    return proxy
+    """The proxy in the spelling httpx accepts. See utils/proxies.py."""
+    return proxies.normalize(settings.ig_dm_proxy)
 
 
 def _client():
