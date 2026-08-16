@@ -58,6 +58,20 @@ async def main() -> int:
         print("[X] کوکی‌های وب ست نشدن. botctl igdirect")
         return 1
 
+    # Genuinely read-only, which the first version was not.
+    #
+    # _get persists the cookie jar after every request, so this tool and the
+    # running bot would both be writing downloads/ig_web_cookies.json. If
+    # Instagram rotated the sessionid while both were mid-flight, one would
+    # overwrite the other's copy with a stale one and kill the session - the
+    # exact failure this tool exists to investigate, caused by the tool.
+    #
+    # The rate file is left alone for the same reason: two writers lose data,
+    # and a diagnostic must not corrupt the record it is there to read. These
+    # few requests therefore go uncounted, which is the right way round.
+    ig_web._save_cookies = lambda *_a, **_kw: None
+    ig_web._count_request = lambda *_a, **_kw: None
+
     links = ig_pairing.count()
     print(f"[*] {links} اکانت وصل · پروکسی {settings.ig_dm_proxy or 'ندارد'}")
     print(f"[*] {duration} ثانیه گوش می‌دم.")
