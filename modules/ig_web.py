@@ -481,10 +481,16 @@ _SOFT_BLOCK_MARKERS = (
 # Long enough that Instagram sees the behaviour stop, not merely slow.
 _SOFT_BLOCK_PAUSE = 3600
 
-# Not a slow-down: a wall. Instagram has flagged the account and wants a human
-# in the official app. No amount of waiting or retrying clears it, and every
-# further request is another automated call against an account already under
-# review - so this stops the loop dead rather than backing off.
+# A checkpoint is heavier than a rate limit and lighter than a ban.
+#
+# I first made this stop the loop permanently, on the reasoning that only a
+# human clears a checkpoint. That was wrong, and the bot disproved it: one
+# appeared, the loop backed off, and some hours later Instagram lifted it on
+# its own and five queued messages were delivered. Stopping dead would have
+# left the bot switched off through a recovery that happened by itself.
+#
+# So: back off hard and keep checking, slowly. Long enough that Instagram sees
+# the automated traffic stop, short enough to notice when the wall comes down.
 _CHECKPOINT_MARKERS = (
     # What the api returns.
     "checkpoint_required", "challenge_required", "checkpoint_url", "/challenge/",
@@ -492,8 +498,14 @@ _CHECKPOINT_MARKERS = (
     "challengerequired", "checkpointrequired", "manual verification",
 )
 
-# Set when that happens, cleared when a new sessionid is pasted in.
+# Set while one is in force; cleared by the first sweep that succeeds.
 checkpointed = ""
+checkpoint_since = 0.0
+
+# 30 minutes, then an hour, then two - capped. Retrying a checkpoint every few
+# seconds is what turns it into a disable; retrying it never is what turns a
+# temporary one into a dead feature.
+_CHECKPOINT_WAITS = (1800, 3600, 7200)
 
 
 class CheckpointRequired(RuntimeError):
@@ -596,7 +608,7 @@ def _next_delay(idle: float, fast: float, window: float, quiet_for: float) -> fl
 
 
 async def _loop(dispatch: Dispatch) -> None:
-    global _seen_after, _last_error
+    global _seen_after, _last_error, checkpointed, checkpoint_since
 
     if not _seen_after:
         _seen_after = time.time()
@@ -608,6 +620,10 @@ async def _loop(dispatch: Dispatch) -> None:
     sweeps = 0
     failures = 0
     idle_logged = False
+    checkpoint_tries = 0
+    # When the inbox was last read successfully. /srcstatus shows a stale
+    # health error otherwise, which reads as broken while it is working.
+    last_ok = 0.0
 
     while True:
         # Nobody paired means nothing to deliver, so every request is pure
@@ -631,6 +647,21 @@ async def _loop(dispatch: Dispatch) -> None:
             messages = await _collect(3 if hot else 8, _seen_after,
                                       not hot or sweeps % 10 == 1)
             _last_error, failures = "", 0
+            last_ok = time.time()
+
+            # A successful read IS the checkpoint being lifted - which does
+            # happen on its own, and is how the queued messages got through
+            # the first time.
+            if checkpointed:
+                held = (time.time() - checkpoint_since) / 60
+                log.info("ig web: checkpoint cleared after %.0f min - resuming", held)
+                await _warn_admin(
+                    f"✅ checkpoint اینستاگرام بعد از {held:.0f} دقیقه برداشته شد. "
+                    "دایرکت دوباره کار می‌کنه."
+                )
+                checkpointed = ""
+                checkpoint_tries = 0
+
             for dm in sorted(messages, key=lambda m: m.timestamp):
                 _seen_after = max(_seen_after, dm.timestamp)
                 last_activity = time.time()
@@ -641,24 +672,33 @@ async def _loop(dispatch: Dispatch) -> None:
         except asyncio.CancelledError:
             raise
         except CheckpointRequired as e:
-            # Stop entirely. A checkpoint is cleared by a person in the app,
-            # never by waiting, and continuing to poll an account that is
-            # already under review is how a checkpoint becomes a disable.
-            global checkpointed
+            first = not checkpointed
             checkpointed = _short(str(e))
             _last_error = checkpointed
-            log.error("ig web: CHECKPOINT - polling stopped until a human clears it")
-            await _warn_admin(
-                "🛑 اینستاگرام روی اکانت بات checkpoint گذاشته.\n\n"
-                "پولینگ *کاملا متوقف شد* — ادامه دادن فقط بدترش می‌کنه.\n\n"
-                "برای برگردوندنش:\n"
-                "۱. تو اپ رسمی اینستاگرام با همون اکانت وارد شو\n"
-                "۲. تاییدیه‌ای که می‌خواد رو کامل کن (کد ایمیل/پیامک)\n"
-                "۳. یکی دو روز فقط از گوشی باهاش کار کن\n"
-                "۴. بعد رو سرور: botctl igdirect و کوکی تازه بذار\n\n"
-                f"جزئیات: {checkpointed[:120]}"
-            )
-            return
+            if first:
+                checkpoint_since = time.time()
+                checkpoint_tries = 0
+
+            wait = _CHECKPOINT_WAITS[min(checkpoint_tries, len(_CHECKPOINT_WAITS) - 1)]
+            checkpoint_tries += 1
+            log.error("ig web: CHECKPOINT - pausing %d min (try %d)",
+                      wait // 60, checkpoint_tries)
+
+            # Once. Repeating it every half hour would train the admin to
+            # ignore the one message that matters.
+            if first:
+                await _warn_admin(
+                    "🛑 اینستاگرام روی اکانت بات checkpoint گذاشته.\n\n"
+                    "پولینگ خیلی کند شد (نیم‌ساعت تا ۲ ساعت) تا فشار برداشته شه.\n"
+                    "بعضی وقتا خودش برداشته می‌شه و بات ادامه می‌ده.\n\n"
+                    "اگه چند ساعت طول کشید:\n"
+                    "۱. تو اپ رسمی اینستاگرام با همون اکانت وارد شو\n"
+                    "۲. تاییدیه‌ای که می‌خواد رو کامل کن\n"
+                    "۳. بعد رو سرور: botctl igdirect و کوکی تازه بذار\n\n"
+                    f"جزئیات: {checkpointed[:120]}"
+                )
+            await asyncio.sleep(wait)
+            continue
         except Exception as e:
             _last_error = _short(str(e), 200)
             failures += 1
