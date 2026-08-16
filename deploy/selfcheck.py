@@ -529,6 +529,18 @@ check("realtime: logout() is unreachable - it would kill the session",
       not [n for n in ast.walk(_rt_tree)
            if isinstance(n, ast.Attribute) and n.attr == "logout"])
 
+# botctl igdirect rebuilds IG_DIRECT_SOURCES from scratch, so every source not
+# named in that block is dropped by a cookie refresh. It cost the realtime
+# channel once already: botctl igmqtt set mqtt,web, then pasting a fresh cookie
+# wrote back a bare "web" and the bot came up polling with no error to show for
+# it. The same overwrite had already eaten the web source once.
+_mgr = Path("deploy/manage.sh").read_text(encoding="utf-8")
+_rebuild = _mgr[_mgr.index('if (( want_standby && !have_web ))'):
+                _mgr.index('set_env IG_DIRECT_SOURCES "$sources"')]
+for _name in ("mqtt", "poll", "webhook"):
+    check(f"igdirect: rebuilding the source list preserves {_name}",
+          _name in _rebuild)
+
 check("item: deep nesting terminates",
       _priv._walk_json({"a": {"b": {"c": {"d": {"e": {"f": {"pk": "1"}}}}}}}) == ("", "", ""))
 

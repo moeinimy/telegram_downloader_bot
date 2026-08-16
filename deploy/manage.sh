@@ -921,6 +921,15 @@ do_igdirect() {
     if (( want_standby && !have_web )); then
         sources="${sources:+$sources,}poll"
     fi
+    # Realtime is installed out of band by `botctl igmqtt`, which records the
+    # choice by putting mqtt in this same variable. Rebuilding the list from
+    # scratch here threw that away, so refreshing a cookie silently demoted the
+    # account back to polling - the identical overwrite the web source was
+    # losing to above, one source further along. It reads the same cookie web
+    # does, so it is available on exactly the same condition.
+    if (( have_web )) && [[ "$(get_env IG_DIRECT_SOURCES)" == *mqtt* ]]; then
+        sources="mqtt${sources:+,$sources}"
+    fi
     if (( want_official )); then
         sources="webhook${sources:+,$sources}"
     fi
