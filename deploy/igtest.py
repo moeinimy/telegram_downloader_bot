@@ -68,12 +68,45 @@ def main() -> int:
 
         try:
             messages = _asyncio.run(_web_probe(ig_web))
-            print(f"  {OK}اینباکس وب خونده شد - {len(messages)} پیام جدید")
-            for m in messages[:5]:
-                print(f"     [{m.raw.get('item_type','?')}] "
-                      f"{(m.permalink or m.media_id or m.text or '')[:70]}")
+            print(f"  {OK}اینباکس وب خونده شد - {len(messages)} پیام")
             print()
+
+            # The age is the number that matters. The loop only delivers
+            # messages newer than where it started, so a timestamp parsed in
+            # the wrong unit reads the inbox perfectly and delivers nothing -
+            # and looks exactly like a quiet inbox from the outside.
+            import time as _time
+
+            now = _time.time()
+            fresh = 0
+            for m in sorted(messages, key=lambda x: x.timestamp, reverse=True)[:6]:
+                age = now - m.timestamp
+                if age < 0 or age > 10 * 365 * 86400:
+                    when = f"!! تایم‌استمپ نامعتبر ({m.timestamp:.0f})"
+                elif age < 3600:
+                    when = f"{age / 60:.0f} دقیقه پیش"
+                    fresh += 1
+                elif age < 86400:
+                    when = f"{age / 3600:.0f} ساعت پیش"
+                else:
+                    when = f"{age / 86400:.0f} روز پیش"
+                print(f"     [{m.raw.get('item_type','?'):<16}] {when:<22} "
+                      f"{(m.permalink or m.media_id or m.text or '')[:48]}")
+
+            print()
+            if any((now - m.timestamp) < 0 or (now - m.timestamp) > 10 * 365 * 86400
+                   for m in messages):
+                print(f"  {BAD}تایم‌استمپ‌ها غلط پارس شدن - حلقه همه رو قدیمی می‌بینه")
+                print("      و هیچ‌وقت چیزی تحویل نمی‌ده. این یه باگ کده.")
+                return 1
+
             print(f"  {OK}دایرکت از این مسیر کار می‌کنه. مسیر موبایل لازم نیست.")
+            if not fresh:
+                print()
+                print(f"  {INFO}هیچ پیام تازه‌ای (زیر یک ساعت) نیست.")
+                print("      برای تست واقعی: همین الان یه ریلز به پیج بات share کن،")
+                print("      بعد یه دقیقه صبر کن و دوباره igtest2 بزن - باید")
+                print("      بالای لیست با «۰ دقیقه پیش» ظاهر شه.")
             return 0
         except Exception as e:
             print(f"  {BAD}{type(e).__name__}: {str(e)[:250]}")

@@ -40,7 +40,7 @@ import time
 
 from config import settings
 from modules.ig_direct import DirectMessage, Dispatch, Source
-from modules.ig_items import to_direct_message
+from modules.ig_items import to_direct_message, to_epoch
 from utils.helpers import run_in_thread
 
 log = logging.getLogger(__name__)
@@ -407,14 +407,23 @@ def _collect(limit: int, since: float, with_pending: bool = True) -> list[Direct
     me = settings.ig_dm_ds_user_id or str((data.get("viewer") or {}).get("pk") or "")
 
     out: list[DirectMessage] = []
+    seen_any = skipped = 0
     for thread in threads:
         for item in thread.get("items") or []:
-            ts = float(item.get("timestamp") or 0) / 1_000_000
+            seen_any += 1
+            ts = to_epoch(item.get("timestamp"))
             if ts <= since:
+                skipped += 1
                 continue
             message = to_direct_message(item, "web", me)
             if message:
                 out.append(message)
+
+    # Reading an inbox full of messages and delivering none of them is what a
+    # mis-parsed timestamp looks like, and it is otherwise indistinguishable
+    # from a quiet inbox. Say it once when it happens.
+    if seen_any and not out and skipped == seen_any:
+        log.debug("ig web: %d item(s) read, all older than the high-water mark", skipped)
     return out
 
 

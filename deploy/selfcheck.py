@@ -432,6 +432,32 @@ check("item: xma prefers the permalink over the signed url",
       _priv._media_from_item(xma_item)[0] == "https://www.instagram.com/reel/ABC123xyz/",
       str(_priv._media_from_item(xma_item)))
 
+# The timestamp unit was hardcoded to microseconds, which is what the MOBILE
+# api sends. Wrong by a factor of a million, a message lands in 1970, tests as
+# older than the poll loop's high-water mark, and is never delivered - while
+# the inbox reads perfectly. /srcstatus showed it as "0 پیام · آخری هیچ‌وقت"
+# next to an igtest2 that listed 21 messages.
+_now = time.time()
+for _raw, _unit in ((int(_now * 1_000_000), "microseconds"),
+                    (int(_now * 1_000), "milliseconds"),
+                    (int(_now), "seconds"),
+                    (str(int(_now * 1_000_000)), "microseconds as a string")):
+    check(f"timestamp: {_unit} land on now",
+          abs(_items.to_epoch(_raw) - _now) < 1.0,
+          f"{_items.to_epoch(_raw):.0f} vs {_now:.0f}")
+
+for _junk in (None, 0, "", "garbage", -5):
+    check(f"timestamp: {_junk!r} is 0, not a date", _items.to_epoch(_junk) == 0.0)
+
+# The end-to-end version of the same bug: an item timestamped now must be
+# newer than a high-water mark set a second ago.
+_item = {"item_id": "9", "item_type": "text", "user_id": 7, "text": "hi",
+         "timestamp": int(_now * 1_000_000)}
+_parsed = _items.to_direct_message(_item, "web", "42")
+check("timestamp: a message sent now is newer than a mark set a second ago",
+      _parsed is not None and _parsed.timestamp > _now - 1,
+      f"{_parsed.timestamp:.0f} vs {_now - 1:.0f}")
+
 check("item: deep nesting terminates",
       _priv._walk_json({"a": {"b": {"c": {"d": {"e": {"f": {"pk": "1"}}}}}}}) == ("", "", ""))
 

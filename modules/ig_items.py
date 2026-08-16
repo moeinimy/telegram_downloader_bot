@@ -49,6 +49,37 @@ SHORTCODE_IN_URL = re.compile(r"/(?:reels?|p|tv)/([A-Za-z0-9_-]{5,})", re.I)
 STORY_IN_URL = re.compile(r"/stories/[^/?#]+/(\d+)")
 
 
+def to_epoch(raw) -> float:
+    """A DM item's timestamp as seconds, whatever unit it arrived in.
+
+    This was hardcoded to microseconds, which is what the mobile api sends.
+    Getting it wrong is not a small error and it is not visible: the poll loop
+    only dispatches messages newer than a high-water mark, so a timestamp
+    divided by a million too many lands in 1970, every message tests as older
+    than the mark, and the inbox reads perfectly while nothing is ever
+    delivered. /srcstatus said it exactly:
+
+        ✅ web (فعال): web api reachable
+           ↳ 0 پیام · آخری هیچ‌وقت
+
+    So the unit is derived from the magnitude instead of assumed. Present-day
+    epochs are ~1.7e9 seconds, ~1.7e12 milliseconds, ~1.7e15 microseconds -
+    three orders of magnitude apart, so there is no ambiguity to get wrong.
+    """
+    try:
+        value = float(raw or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    if value <= 0:
+        return 0.0
+
+    if value > 1e14:        # microseconds
+        return value / 1_000_000
+    if value > 1e11:        # milliseconds
+        return value / 1_000
+    return value            # already seconds
+
+
 def best_url(node: dict) -> str:
     for version in node.get("video_versions") or []:
         if version.get("url"):
@@ -183,8 +214,7 @@ def to_direct_message(item: dict, source: str, me: str = ""):
         media_url=media_url,
         permalink=permalink,
         media_id=media_id,
-        # Instagram timestamps DM items in MICROseconds.
-        timestamp=float(item.get("timestamp") or 0) / 1_000_000,
+        timestamp=to_epoch(item.get("timestamp")),
         source=source,
         # The item's own keys. When extraction finds nothing this is the only
         # thing that says where the media was hiding.
