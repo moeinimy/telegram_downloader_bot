@@ -98,17 +98,25 @@ async def _connect():
         client.set_proxy(proxy)
 
     signed_in = False
+    cookie_error = ""
     if settings.ig_dm_sessionid:
         try:
             await client.login_by_sessionid(settings.ig_dm_sessionid)
             signed_in = True
             log.info("ig mqtt: signed in with the sessionid cookie")
         except Exception as e:
+            cookie_error = str(e)
             log.warning("ig mqtt: sessionid login failed (%s)", e)
 
     if not signed_in:
         if not settings.ig_dm_password:
-            raise RuntimeError("sessionid login failed and no IG_DM_PASSWORD is set")
+            # WHY the cookie was refused decides whether retrying can ever
+            # work, so it has to travel with the exception. Leaving it behind
+            # in a log line left the reconnect loop unable to tell a dead
+            # credential from a dropped socket, and it retried for both.
+            raise RuntimeError(
+                "sessionid login failed and no IG_DM_PASSWORD is set: " + cookie_error
+            )
         await client.login(settings.ig_dm_username, settings.ig_dm_password)
         log.info("ig mqtt: signed in with a password")
 
@@ -137,8 +145,47 @@ def _on_message(payload) -> None:
         log.exception("ig mqtt: could not handle a realtime payload")
 
 
+# Instagram saying the credential itself is gone, as opposed to the socket
+# being gone. `user_has_logged_out` with `logout_reason` is what a session that
+# was invalidated server-side answers - which is exactly what the old teardown
+# did to this account by calling accounts/logout/ on every reconnect.
+#
+# NOT in this list, deliberately: checkpoint_required and challenge_required. A
+# checkpoint lifts by itself within hours and the poller is built to wait it
+# out; treating it as terminal switches the feature off through a recovery that
+# would have happened on its own.
+_DEAD_MARKERS = ("user_has_logged_out", "logout_reason",
+                 "login_required", "loginrequired")
+
 _IDLE_MARKERS = ("timed out", "timeout", "temporarily unavailable",
                  "would block", "read operation")
+
+# Set when the cookie is refused outright. A human has to paste a new one, so
+# the loop stops rather than signing in forever against a dead session.
+dead_reason: str = ""
+dead_since: float = 0.0
+
+_alert = None
+
+
+def set_alert(fn) -> None:
+    """Where to shout when the cookie dies. Wired to the admin chat."""
+    global _alert
+    _alert = fn
+
+
+async def _warn_admin(message: str) -> None:
+    if _alert is None:
+        return
+    try:
+        await _alert(message)
+    except Exception as e:
+        log.info("ig mqtt: could not reach an admin (%s)", e)
+
+
+def _is_dead_credential(text: str) -> bool:
+    lowered = (text or "").lower()
+    return any(marker in lowered for marker in _DEAD_MARKERS)
 
 
 def _is_idle_timeout(error: Exception) -> bool:
@@ -226,8 +273,35 @@ async def _loop(dispatch: Dispatch) -> None:
         except asyncio.CancelledError:
             raise
         except Exception as e:
+            global dead_reason, dead_since
+
             connected_since = 0.0
             last_error = str(e)[:200]
+
+            # A dead cookie is not a dropped connection, and the ladder below
+            # is the wrong answer to it. Every rung re-runs the sign-in, so a
+            # session Instagram has already answered with user_has_logged_out
+            # would be posting a login every five minutes, forever, with no
+            # reachable outcome - which is precisely the mechanical request
+            # pattern that got this account checkpointed three times. Retrying
+            # here cannot succeed and can only make the flag worse.
+            if _is_dead_credential(last_error):
+                dead_reason, dead_since = last_error, time.time()
+                log.error("ig mqtt: the sessionid is dead (%s) - stopping. "
+                          "A new cookie has to be pasted: botctl igdirect", last_error)
+                await _close()
+                await _warn_admin(
+                    "🔑 کوکی اینستاگرام بات باطل شده و دایرکت خوابید.\n\n"
+                    "اینستاگرام می‌گه این session خارج شده، پس هیچ تلاش دوباره‌ای "
+                    "جواب نمی‌ده و بات دست از تلاش برداشت تا اکانت flag نشه.\n\n"
+                    "برای راه‌اندازی دوباره:\n"
+                    "۱. با مرورگر (نه اپ) با همون اکانت وارد اینستاگرام شو\n"
+                    "۲. کوکی sessionid تازه رو بردار\n"
+                    "۳. رو سرور: botctl igdirect → گزینه ۲\n\n"
+                    f"جزئیات: {last_error[:120]}"
+                )
+                return
+
             attempt += 1
             # A realtime drop is normal - phones lose connections too. Rebuild
             # calmly rather than hammering, and cap the wait so a night-time
@@ -274,6 +348,8 @@ async def start(dispatch: Dispatch) -> None:
 
     if not usable():
         raise RuntimeError("aiograpi is not installed, or no credentials are set")
+    if dead_reason:
+        raise RuntimeError(f"the sessionid is dead: {dead_reason[:120]}")
     _started_at = time.time()
     if _task is None or _task.done():
         _task = asyncio.create_task(_loop(dispatch))
@@ -291,6 +367,12 @@ async def stop() -> None:
 async def health() -> tuple[bool, str]:
     if not available():
         return False, "aiograpi not installed"
+
+    # Ahead of the grace period: a dead cookie is not "still connecting", and
+    # reporting it as such would hide the one failure a human has to fix.
+    if dead_reason:
+        held = (time.time() - dead_since) / 60
+        return False, f"sessionid is dead ({held:.0f}m) - paste a fresh one: {dead_reason[:90]}"
 
     if not connected_since:
         # Connecting means signing in and completing an MQTT handshake, which

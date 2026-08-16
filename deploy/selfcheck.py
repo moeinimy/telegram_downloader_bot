@@ -492,6 +492,35 @@ for _exc, _want, _label in (
     check(f"realtime: idle={_want} for {_label}",
           _rt._is_idle_timeout(_exc) is _want)
 
+# The cookie being gone and the socket being gone need opposite answers. The
+# reconnect ladder retried both, so a session Instagram had already invalidated
+# got a fresh login POST every five minutes, forever - the same mechanical
+# pattern that caused the checkpoints, aimed at an outcome it could never reach.
+#
+# A checkpoint must NOT land here: it lifts by itself and the poller waits it
+# out.
+for _text, _want, _label in (
+    ('{"message":"user_has_logged_out","logout_reason":9}', True,
+     "the logout Instagram actually returned"),
+    ("sessionid login failed and no IG_DM_PASSWORD is set: user_has_logged_out",
+     True, "the reason carried out of _connect"),
+    ("login_required", True, "a refused session"),
+    ("checkpoint_required", False, "a checkpoint, which lifts on its own"),
+    ("challenge_required", False, "a challenge, which lifts on its own"),
+    ("Connection reset by peer", False, "a dropped socket"),
+    ("The read operation timed out", False, "an idle read"),
+):
+    check(f"realtime: dead={_want} for {_label}",
+          _rt._is_dead_credential(_text) is _want, _text[:60])
+
+# The reason used to stay behind in a log line, leaving the loop with
+# "sessionid login failed and no IG_DM_PASSWORD is set" - which matches no
+# marker, so a dead cookie read as a transient fault.
+check("realtime: _connect carries the refusal into the error it raises",
+      any(isinstance(n, ast.Raise) and "cookie_error" in ast.dump(n)
+          for n in ast.walk(ast.parse(
+              Path("modules/ig_realtime.py").read_text(encoding="utf-8")))))
+
 # logout() does not close a socket - it tells Instagram to invalidate the
 # session, which destroys the cookie this whole feature runs on. It was being
 # called on every reconnect.

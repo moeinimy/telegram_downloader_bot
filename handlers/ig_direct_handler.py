@@ -353,6 +353,16 @@ async def on_startup(application) -> None:
         # becomes an action, and it is worth waking somebody for.
         ig_web.set_alert(_alert_admins)
 
+    try:
+        from modules import ig_realtime
+
+        # A dead cookie stops realtime for good, and every other source shares
+        # that same cookie - so this is the whole feature going down, not one
+        # source failing over to the next. It has to reach a person.
+        ig_realtime.set_alert(_alert_admins)
+    except Exception:
+        pass
+
     if settings.has_ig_private:
         try:
             from modules import ig_private
