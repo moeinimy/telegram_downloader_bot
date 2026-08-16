@@ -1216,6 +1216,14 @@ do_igreset() {
     warn "اگه دوباره ۴۰۳ داد، اکانت هنوز فلگه. یکی دو روز دست بهش نزن."
 }
 
+do_igwatch() {
+    echo; info "=== نگاه زنده به زنجیره‌ی دایرکت ==="
+    # "Nothing arrives" has six possible causes that look identical from the
+    # outside. This shows every stage, so whichever one drops the message is
+    # the one you see.
+    sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/python"         "$PROJECT_DIR/deploy/igwatch.py" "${1:-120}"
+}
+
 do_igtest() {
     echo; info "=== تست زنده‌ی اینستاگرام دایرکت ==="
     # The bot's log only shows the end of the story. This runs the same
@@ -1734,7 +1742,8 @@ menu() {
     echo " 26) ریست سشن اینستاگرام (بعد از بلاک)"
     echo " 27) پروکسی (شزم / اینستاگرام)"
     echo " 28) تست زنده‌ی اینستاگرام دایرکت"
-    echo " 29) نصب مجدد از صفر (پاک کردن همه چی)"
+    echo " 29) نگاه زنده به دایرکت (چرا پیام نمیاد)"
+    echo " 30) نصب مجدد از صفر (پاک کردن همه چی)"
     echo "  0) خروج"
     echo
 }
@@ -1756,6 +1765,7 @@ case "${1:-}" in
     deps)    do_deps;    exit 0 ;;
     shazamtest) do_shazamtest "${2:-}"; exit $? ;;
     igtest2) do_igtest; exit $? ;;
+    igwatch) do_igwatch "${2:-}"; exit $? ;;
     igreset) do_igreset; exit $? ;;
     proxy)   do_proxy;   exit $? ;;
     engines) do_engines; exit $? ;;
@@ -1801,7 +1811,8 @@ while true; do
         26) do_igreset; pause ;;
         27) do_proxy; pause ;;
         28) do_igtest; pause ;;
-        29) do_reset; pause ;;
+        29) do_igwatch; pause ;;
+        30) do_reset; pause ;;
         0)  echo; exit 0 ;;
         *)  err "گزینه نامعتبر"; sleep 1 ;;
     esac
