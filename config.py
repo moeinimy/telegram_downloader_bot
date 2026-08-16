@@ -175,6 +175,7 @@ class Settings:
         """True when at least one configured source is also switched on."""
         return bool(
             ("webhook" in self.ig_direct_sources and self.has_ig_webhook)
+            or ("mqtt" in self.ig_direct_sources and self.has_ig_web)
             or ("web" in self.ig_direct_sources and self.has_ig_web)
             or ("poll" in self.ig_direct_sources and self.has_ig_private)
         )
@@ -256,7 +257,7 @@ settings = Settings(
     ig_csrftoken=_get("IG_CSRFTOKEN"),
     ig_ds_user_id=_get("IG_DS_USER_ID"),
     ig_direct_sources=tuple(
-        s for s in _get("IG_DIRECT_SOURCES", "webhook,web,poll").replace(" ", "").lower().split(",") if s
+        s for s in _get("IG_DIRECT_SOURCES", "webhook,mqtt,web,poll").replace(" ", "").lower().split(",") if s
     ),
     ig_app_id=_get("IG_APP_ID"),
     ig_app_secret=_get("IG_APP_SECRET"),
@@ -311,11 +312,11 @@ if settings.audio_format not in ("m4a", "mp3", "flac"):
         f"AUDIO_FORMAT={settings.audio_format!r} is not one of: m4a, mp3, flac"
     )
 
-_unknown_sources = set(settings.ig_direct_sources) - {"webhook", "web", "poll"}
+_unknown_sources = set(settings.ig_direct_sources) - {"webhook", "mqtt", "web", "poll"}
 if _unknown_sources:
     raise RuntimeError(
         f"IG_DIRECT_SOURCES contains unknown source(s): {', '.join(sorted(_unknown_sources))}. "
-        "Valid names are: webhook, web, poll"
+        "Valid names are: webhook, mqtt, web, poll"
     )
 
 settings.download_dir.mkdir(parents=True, exist_ok=True)

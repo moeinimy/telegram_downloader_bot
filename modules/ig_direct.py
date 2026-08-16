@@ -215,6 +215,7 @@ class _SourceState:
 
 _states: dict[str, _SourceState] = {
     "webhook": _SourceState(),
+    "mqtt": _SourceState(),
     "web": _SourceState(),
     "poll": _SourceState(),
 }
@@ -272,6 +273,16 @@ def _build_sources() -> dict[str, Source]:
             _states["webhook"].detail = f"unavailable: {e}"
             log.error("ig direct: webhook source unavailable (%s)", e)
 
+    if "mqtt" in settings.ig_direct_sources and settings.has_ig_web:
+        try:
+            from modules import ig_realtime
+
+            built["mqtt"] = ig_realtime.source()
+            _states["mqtt"].configured = True
+        except Exception as e:
+            _states["mqtt"].detail = f"unavailable: {e}"
+            log.info("ig direct: realtime source unavailable (%s)", e)
+
     if "web" in settings.ig_direct_sources and settings.has_ig_web:
         try:
             from modules import ig_web
@@ -320,7 +331,19 @@ async def start(on_message: Dispatch) -> None:
     # is not a last resort like the mobile poller: it uses the api its cookie
     # was actually issued for, so it has no device to be unknown and nothing
     # to sign.
-    if "web" in _sources and "webhook" not in _sources:
+    # Realtime before the pollers. It is the only source that does not ask
+    # Instagram anything on a timer - one connection, held open, exactly what
+    # the app does - so while it is up there is no request rate to notice.
+    if "mqtt" in _sources and "webhook" not in _sources:
+        try:
+            await _sources["mqtt"].start(_dispatch)
+            _states["mqtt"].running = True
+            log.info("ig direct: realtime channel starting - no polling while it holds")
+        except Exception as e:
+            _states["mqtt"].detail = str(e)[:120]
+            log.warning("ig direct: realtime source failed to start (%s)", e)
+
+    if "web" in _sources and "webhook" not in _sources and not _states["mqtt"].running:
         try:
             await _sources["web"].start(_dispatch)
             _states["web"].running = True
@@ -376,7 +399,42 @@ async def _check_and_failover() -> None:
         if not healthy:
             log.warning("ig direct: official path unhealthy - %s", detail)
 
+    # The realtime channel is the preferred source, so the pollers exist to
+    # cover it being down - which means its health decides whether they run.
+    mqtt = _sources.get("mqtt")
+    mqtt_ok = False
+    if mqtt:
+        try:
+            mqtt_ok, mqtt_detail = await mqtt.health()
+        except Exception as e:
+            mqtt_ok, mqtt_detail = False, f"{type(e).__name__}: {e}"
+        _states["mqtt"].healthy = mqtt_ok
+        _states["mqtt"].detail = mqtt_detail
+        _states["mqtt"].last_check = time.time()
+
     web = _sources.get("web")
+
+    # Poll only while realtime is not carrying the inbox, and stand the poller
+    # down again the moment it recovers. Two sources reading the same inbox is
+    # double the traffic for no extra coverage.
+    if web and mqtt:
+        if mqtt_ok and _states["web"].running:
+            log.info("ig direct: realtime is up - standing the web poller down")
+            try:
+                await web.stop()
+            except Exception as e:
+                log.warning("ig direct: stopping the web poller failed: %s", e)
+            _states["web"].running = False
+            _states["web"].detail = "standby (realtime is up)"
+        elif not mqtt_ok and not _states["web"].running and not healthy:
+            log.warning("ig direct: realtime down (%s) - falling back to polling",
+                        _states["mqtt"].detail)
+            try:
+                await web.start(_dispatch)
+                _states["web"].running = True
+            except Exception as e:
+                log.error("ig direct: web poller failed to start: %s", e)
+
     if web and _states["web"].running:
         try:
             web_ok, web_detail = await web.health()

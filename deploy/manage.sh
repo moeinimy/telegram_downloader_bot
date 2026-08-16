@@ -1216,6 +1216,44 @@ do_igreset() {
     warn "اگه دوباره ۴۰۳ داد، اکانت هنوز فلگه. یکی دو روز دست بهش نزن."
 }
 
+do_igmqtt() {
+    echo; info "=== دایرکت بدون پولینگ (MQTT) ==="; echo
+    warn "چرا این فرق داره:"
+    echo "  اپ واقعی اینستاگرام هیچ‌وقت اینباکس رو poll نمی‌کنه - یه اتصال"
+    echo "  دائمی MQTT باز می‌کنه و منتظر می‌مونه. هر فاصله‌ی پولینگی که"
+    echo "  انتخاب کنیم، شکل ترافیک همونیه که اپ هیچ‌وقت تولید نمی‌کنه."
+    echo
+    echo "  با این: صفر درخواست در ساعت، و تحویل به محض رسیدن پیام."
+    echo
+    warn "پشتیبانی realtime تو aiograpi آزمایشیه و اینستاگرام می‌تونه"
+    warn "این کانال خصوصی رو بدون اطلاع عوض کنه. اگه وصل نشد، بات"
+    warn "خودکار برمی‌گرده به پولینگ فعلی - چیزی از دست نمی‌ره."
+    echo
+    read -rp "نصب کنم؟ (y/n) " a
+    [[ "$a" != "y" ]] && return 0
+
+    # Separate install for the same reason instagrapi is: a resolver problem
+    # here must not be able to break a working venv on the next update.
+    if ! sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/pip" install --progress-bar off aiograpi; then
+        err "نصب aiograpi شکست خورد - بات با پولینگ ادامه می‌ده"
+        return 1
+    fi
+
+    local sources
+    sources=$(get_env IG_DIRECT_SOURCES)
+    [[ "$sources" != *mqtt* ]] && set_env IG_DIRECT_SOURCES "mqtt,${sources:-web}"
+
+    systemctl restart "$SERVICE_NAME"
+    sleep 5
+    ok "نصب شد. تو لاگ دنبال این بگرد:"
+    echo "    ig mqtt: realtime connected - polling is no longer needed"
+    echo
+    info "اگه وصل نشد، این خط رو می‌بینی و بات با پولینگ ادامه می‌ده:"
+    echo "    ig direct: realtime down (...) - falling back to polling"
+    echo
+    info "بعدش:  botctl logs   و   /srcstatus"
+}
+
 do_igwatch() {
     echo; info "=== نگاه زنده به زنجیره‌ی دایرکت ==="
     # "Nothing arrives" has six possible causes that look identical from the
@@ -1743,7 +1781,8 @@ menu() {
     echo " 27) پروکسی (شزم / اینستاگرام)"
     echo " 28) تست زنده‌ی اینستاگرام دایرکت"
     echo " 29) نگاه زنده به دایرکت (چرا پیام نمیاد)"
-    echo " 30) نصب مجدد از صفر (پاک کردن همه چی)"
+    echo " 30) دایرکت بدون پولینگ (MQTT)"
+    echo " 31) نصب مجدد از صفر (پاک کردن همه چی)"
     echo "  0) خروج"
     echo
 }
@@ -1766,6 +1805,7 @@ case "${1:-}" in
     shazamtest) do_shazamtest "${2:-}"; exit $? ;;
     igtest2) do_igtest; exit $? ;;
     igwatch) do_igwatch "${2:-}"; exit $? ;;
+    igmqtt)  do_igmqtt;  exit $? ;;
     igreset) do_igreset; exit $? ;;
     proxy)   do_proxy;   exit $? ;;
     engines) do_engines; exit $? ;;
@@ -1812,7 +1852,8 @@ while true; do
         27) do_proxy; pause ;;
         28) do_igtest; pause ;;
         29) do_igwatch; pause ;;
-        30) do_reset; pause ;;
+        30) do_igmqtt; pause ;;
+        31) do_reset; pause ;;
         0)  echo; exit 0 ;;
         *)  err "گزینه نامعتبر"; sleep 1 ;;
     esac

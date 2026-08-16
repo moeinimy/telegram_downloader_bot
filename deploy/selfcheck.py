@@ -458,6 +458,27 @@ check("timestamp: a message sent now is newer than a mark set a second ago",
       _parsed is not None and _parsed.timestamp > _now - 1,
       f"{_parsed.timestamp:.0f} vs {_now - 1:.0f}")
 
+# The realtime transport is private and undocumented, and the library's own
+# docs say not to depend on nested keys. So items are found by SHAPE - a dict
+# with an item_id and a timestamp is a message, wherever it is wrapped.
+import modules.ig_realtime as _rt  # noqa: E402
+
+for _payload, _want, _label in (
+    ({"event": "patch", "data": [{"op": "add", "value": {
+        "item_id": "111", "timestamp": 1786860000000000, "item_type": "clip"}}]},
+     1, "a patch operation"),
+    ({"message": {"items": [{"item_id": "222", "timestamp": 1786860000000000,
+                             "text": "IG-ABC123"}]}}, 1, "an items list"),
+    ({"a": {"b": {"c": {"item_id": "333", "timestamp": 1786860000000000}}}},
+     1, "something buried"),
+    ({"unrelated": "nothing here"}, 0, "a payload with no message"),
+):
+    check(f"realtime: {_label} yields {_want} item(s)",
+          len(_rt._items_in(_payload)) == _want)
+
+check("realtime: it is off unless aiograpi is installed and configured",
+      _rt.usable() is False)
+
 check("item: deep nesting terminates",
       _priv._walk_json({"a": {"b": {"c": {"d": {"e": {"f": {"pk": "1"}}}}}}}) == ("", "", ""))
 
