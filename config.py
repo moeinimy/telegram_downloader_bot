@@ -337,6 +337,8 @@ def setup_logging() -> None:
     logging.getLogger("instagrapi").setLevel(logging.WARNING)
     logging.getLogger("private_request").setLevel(logging.WARNING)
     logging.getLogger("public_request").setLevel(logging.WARNING)
+    logging.getLogger("aiograpi").setLevel(logging.WARNING)
+    logging.getLogger("graphql_request").setLevel(logging.WARNING)
 
     # shazamio-core's Rust mp3 demuxer logs one WARNING per junk byte it
     # skips. On a 2MB file that is tens of thousands of lines PER

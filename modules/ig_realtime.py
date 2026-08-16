@@ -51,6 +51,12 @@ connected_since = 0.0
 last_event = 0.0
 last_error = ""
 
+# When start() was called. Connecting involves a sign-in and an MQTT
+# handshake and took nine seconds on the first run, so "not connected"
+# during that window means "still connecting", not "broken".
+_started_at = 0.0
+_CONNECT_GRACE = 60.0
+
 
 def available() -> bool:
     try:
@@ -126,6 +132,23 @@ def _on_message(payload) -> None:
         log.exception("ig mqtt: could not handle a realtime payload")
 
 
+_IDLE_MARKERS = ("timed out", "timeout", "temporarily unavailable",
+                 "would block", "read operation")
+
+
+def _is_idle_timeout(error: Exception) -> bool:
+    """An empty read, not a broken connection.
+
+    MQTT holds the socket open and delivers nothing while the inbox is quiet,
+    so the read hitting its deadline is the expected state - it is what "no
+    new messages" looks like on a push channel.
+    """
+    if isinstance(error, (asyncio.TimeoutError, TimeoutError)):
+        return True
+    text = f"{type(error).__name__} {error}".lower()
+    return any(marker in text for marker in _IDLE_MARKERS)
+
+
 def _items_in(payload) -> list[dict]:
     """Every DM item inside a realtime payload, whatever it is wrapped in.
 
@@ -171,8 +194,29 @@ async def _loop(dispatch: Dispatch) -> None:
 
             # One connection, read until it drops. No requests are made while
             # this waits; that is the entire point.
+            #
+            # A read that times out is the NORMAL case, not a failure: an idle
+            # inbox has nothing to deliver and the socket says so on a timer.
+            # Treating that as a lost connection tore down and rebuilt a
+            # perfectly healthy channel every few seconds - and, worse, ran
+            # the teardown that was signing the session out.
+            idle_reads = 0
             while True:
-                await client.realtime_read_once()
+                try:
+                    await client.realtime_read_once()
+                    idle_reads = 0
+                except Exception as read_error:
+                    if not _is_idle_timeout(read_error):
+                        raise
+                    idle_reads += 1
+                    # A keepalive now and then, so a socket that is genuinely
+                    # dead is still noticed instead of looking merely quiet.
+                    if idle_reads % 10 == 0:
+                        ping = getattr(realtime, "ping", None)
+                        if ping:
+                            result = ping()
+                            if asyncio.iscoroutine(result):
+                                await result
 
         except asyncio.CancelledError:
             raise
@@ -190,19 +234,29 @@ async def _loop(dispatch: Dispatch) -> None:
 
 
 async def _close() -> None:
+    """Drop the transport. Never the session.
+
+    The first version called client.logout() here, which does not close a
+    socket - it tells Instagram to invalidate the session, server-side:
+
+        POST https://i.instagram.com/api/v1/accounts/logout/
+
+    That destroys the sessionid cookie this whole feature is built on, and it
+    ran on every reconnect. A dropped connection is not a reason to sign out;
+    a phone that loses signal does not log you out of Instagram.
+    """
     global _client, _realtime
 
-    for obj, name in ((_realtime, "disconnect"), (_client, "logout")):
-        if obj is None:
-            continue
+    if _realtime is not None:
         try:
-            call = getattr(obj, name, None)
+            call = getattr(_realtime, "disconnect", None)
             if call:
                 result = call()
                 if asyncio.iscoroutine(result):
                     await result
         except Exception:
             pass
+
     _realtime = _client = None
 
 
@@ -211,8 +265,11 @@ async def _close() -> None:
 async def start(dispatch: Dispatch) -> None:
     global _task
 
+    global _started_at
+
     if not usable():
         raise RuntimeError("aiograpi is not installed, or no credentials are set")
+    _started_at = time.time()
     if _task is None or _task.done():
         _task = asyncio.create_task(_loop(dispatch))
 
@@ -229,7 +286,15 @@ async def stop() -> None:
 async def health() -> tuple[bool, str]:
     if not available():
         return False, "aiograpi not installed"
+
     if not connected_since:
+        # Connecting means signing in and completing an MQTT handshake, which
+        # took nine seconds on the first run. The supervisor's first health
+        # check lands a second after start, so without this grace period it
+        # declared realtime dead and started the poller against a channel that
+        # was about to come up.
+        if _started_at and time.time() - _started_at < _CONNECT_GRACE:
+            return True, "connecting…"
         return False, last_error or "not connected yet"
 
     up = (time.time() - connected_since) / 60

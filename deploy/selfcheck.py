@@ -479,6 +479,27 @@ for _payload, _want, _label in (
 check("realtime: it is off unless aiograpi is installed and configured",
       _rt.usable() is False)
 
+# An idle MQTT read times out because there is nothing to deliver. Treating
+# that as a lost connection rebuilt a healthy channel every few seconds - and
+# ran a teardown that was calling accounts/logout/.
+for _exc, _want, _label in (
+    (Exception("The read operation timed out"), True, "the reported message"),
+    (TimeoutError("timed out"), True, "a socket timeout"),
+    (BlockingIOError("would block"), True, "an empty socket"),
+    (ConnectionResetError("reset by peer"), False, "a real disconnect"),
+    (Exception("login_required"), False, "a dead session"),
+):
+    check(f"realtime: idle={_want} for {_label}",
+          _rt._is_idle_timeout(_exc) is _want)
+
+# logout() does not close a socket - it tells Instagram to invalidate the
+# session, which destroys the cookie this whole feature runs on. It was being
+# called on every reconnect.
+_rt_tree = ast.parse(Path("modules/ig_realtime.py").read_text(encoding="utf-8"))
+check("realtime: logout() is unreachable - it would kill the session",
+      not [n for n in ast.walk(_rt_tree)
+           if isinstance(n, ast.Attribute) and n.attr == "logout"])
+
 check("item: deep nesting terminates",
       _priv._walk_json({"a": {"b": {"c": {"d": {"e": {"f": {"pk": "1"}}}}}}}) == ("", "", ""))
 
