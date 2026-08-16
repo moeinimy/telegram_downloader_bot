@@ -771,6 +771,27 @@ try:
           _web.rate()["projected"] == 2400, str(_web.rate()))
     _web._rate.clear()
 
+    # A checkpoint is not a rate limit. Instagram has flagged the account and
+    # wants a person in the app; no amount of waiting clears it, and every
+    # further request is another automated call against an account already
+    # under review. It must stop the loop, not back it off.
+    _real_checkpoint = (
+        '{"message":"checkpoint_required","checkpoint_url":'
+        '"https://www.instagram.com/challenge/?next=/api/v1/direct_v2/inbox/"}'
+    )
+    for _text, _want, _label in (
+        (_real_checkpoint, True, "the reported 400"),
+        ("ChallengeRequired: Manual verification required", True, "instagrapi's wording"),
+        ("Please wait a few minutes before you try again", False, "a soft block"),
+        ("not json (410166 bytes) - probably a login page", False, "an expired cookie"),
+        ("Connection timed out", False, "a network drop"),
+    ):
+        check(f"ig web: checkpoint={_want} for {_label}",
+              _web._is_checkpoint(_text) is _want)
+
+    check("ig web: a checkpoint is not treated as a soft block",
+          not _web._is_soft_block(_real_checkpoint))
+
     check("ig web: the cookie jar is protected from the sweeper",
           _limits._is_protected(sweep_root / "ig_web_cookies.json", sweep_root))
 

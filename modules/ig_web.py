@@ -348,6 +348,8 @@ def _get(url: str, params: dict) -> dict:
         raise RuntimeError(
             "403 from the web api - the cookie is not accepted from this address"
         )
+    if _is_checkpoint(response.text):
+        raise CheckpointRequired(_short(response.text))
     if response.status_code != 200:
         raise RuntimeError(f"HTTP {response.status_code}: {_short(response.text)}")
 
@@ -478,6 +480,31 @@ _SOFT_BLOCK_MARKERS = (
 
 # Long enough that Instagram sees the behaviour stop, not merely slow.
 _SOFT_BLOCK_PAUSE = 3600
+
+# Not a slow-down: a wall. Instagram has flagged the account and wants a human
+# in the official app. No amount of waiting or retrying clears it, and every
+# further request is another automated call against an account already under
+# review - so this stops the loop dead rather than backing off.
+_CHECKPOINT_MARKERS = (
+    # What the api returns.
+    "checkpoint_required", "challenge_required", "checkpoint_url", "/challenge/",
+    # And what instagrapi raises, whose prose contains none of the above.
+    "challengerequired", "checkpointrequired", "manual verification",
+)
+
+# Set when that happens, cleared when a new sessionid is pasted in.
+checkpointed = ""
+
+
+class CheckpointRequired(RuntimeError):
+    """Instagram wants manual verification. Distinct from every other failure
+    because it is the only one a human has to clear, and the only one where
+    retrying makes things worse rather than merely wasting a request."""
+
+
+def _is_checkpoint(text: str) -> bool:
+    lowered = (text or "").lower()
+    return any(marker in lowered for marker in _CHECKPOINT_MARKERS)
 
 _alert = None
 
@@ -613,6 +640,25 @@ async def _loop(dispatch: Dispatch) -> None:
                 await dispatch(dm)
         except asyncio.CancelledError:
             raise
+        except CheckpointRequired as e:
+            # Stop entirely. A checkpoint is cleared by a person in the app,
+            # never by waiting, and continuing to poll an account that is
+            # already under review is how a checkpoint becomes a disable.
+            global checkpointed
+            checkpointed = _short(str(e))
+            _last_error = checkpointed
+            log.error("ig web: CHECKPOINT - polling stopped until a human clears it")
+            await _warn_admin(
+                "🛑 اینستاگرام روی اکانت بات checkpoint گذاشته.\n\n"
+                "پولینگ *کاملا متوقف شد* — ادامه دادن فقط بدترش می‌کنه.\n\n"
+                "برای برگردوندنش:\n"
+                "۱. تو اپ رسمی اینستاگرام با همون اکانت وارد شو\n"
+                "۲. تاییدیه‌ای که می‌خواد رو کامل کن (کد ایمیل/پیامک)\n"
+                "۳. یکی دو روز فقط از گوشی باهاش کار کن\n"
+                "۴. بعد رو سرور: botctl igdirect و کوکی تازه بذار\n\n"
+                f"جزئیات: {checkpointed[:120]}"
+            )
+            return
         except Exception as e:
             _last_error = _short(str(e), 200)
             failures += 1
@@ -647,10 +693,15 @@ async def _loop(dispatch: Dispatch) -> None:
 
 
 async def start(dispatch: Dispatch) -> None:
-    global _task
+    global _task, checkpointed
 
     if not usable():
         raise RuntimeError("IG_DM_SESSIONID is not set")
+
+    # A new cookie is the signal that somebody dealt with the checkpoint;
+    # _load_cookies already discards the stale jar on a changed seed.
+    checkpointed = ""
+
     if _task is None or _task.done():
         _task = asyncio.create_task(_loop(dispatch))
 
@@ -666,6 +717,8 @@ async def stop() -> None:
 async def health() -> tuple[bool, str]:
     if not usable():
         return False, "no sessionid"
+    if checkpointed:
+        return False, "checkpoint - تایید دستی تو اپ لازمه"
     try:
         await _collect(1, time.time(), False)
         return True, "web api reachable"
