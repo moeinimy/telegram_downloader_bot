@@ -154,8 +154,14 @@ def _on_message(payload) -> None:
 # checkpoint lifts by itself within hours and the poller is built to wait it
 # out; treating it as terminal switches the feature off through a recovery that
 # would have happened on its own.
+#
+# A redirect loop belongs here too, and it is not a network fault: an expired
+# cookie makes Instagram answer the sign-in with a bounce to the login page,
+# which bounces again, until the client gives up counting. A proxy that is
+# genuinely broken fails to connect - it does not redirect.
 _DEAD_MARKERS = ("user_has_logged_out", "logout_reason",
-                 "login_required", "loginrequired")
+                 "login_required", "loginrequired",
+                 "exceeded maximum allowed redirects", "too many redirects")
 
 _IDLE_MARKERS = ("timed out", "timeout", "temporarily unavailable",
                  "would block", "read operation")

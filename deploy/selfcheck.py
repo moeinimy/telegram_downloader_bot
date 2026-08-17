@@ -553,6 +553,39 @@ check("health: later checks use the configured interval",
 check("health: the settle wait never exceeds a short interval",
       _igd._health_wait(True, 60) == 60)
 
+# Both sources spent eight hours asking a session that had stopped being one:
+# realtime climbing its reconnect ladder, the web poller backing off to its
+# 600s ceiling and retrying, 288 requests a day, on an account whose entire
+# problem is being noticed. Neither could tell "the cookie is gone" from
+# "the network hiccuped".
+for _text, _want, _label in (
+    ("Exceeded maximum allowed redirects.", True, "the redirect loop from the log"),
+    ("sessionid login failed and no IG_DM_PASSWORD is set: "
+     "Exceeded maximum allowed redirects.", True, "as realtime reported it"),
+    ("Connection reset by peer", False, "a dropped socket"),
+):
+    check(f"realtime: dead={_want} for {_label}",
+          _rt._is_dead_credential(_text) is _want, _text[:60])
+
+import modules.ig_web as _web  # noqa: E402
+
+for _text, _want, _label in (
+    ("not json (407317 bytes) - probably a login page", True,
+     "the login page from the log"),
+    ("sessionid رد شد (401) - کوکی منقضی شده، یه تازه بگیر", True, "a refused cookie"),
+    ("403 from the web api - the cookie is not accepted from this address",
+     True, "a cookie refused from this address"),
+    ("checkpoint_required", False, "a checkpoint, which lifts on its own"),
+    ("HTTP 500: server error", False, "an Instagram fault"),
+    ("Cannot connect to host", False, "the network being down"),
+):
+    check(f"ig web: login wall={_want} for {_label}",
+          _web._is_login_wall(_text) is _want, _text[:60])
+
+# One bad hop through the proxy can return a login page. Standing a working
+# session down over a single one costs more than the extra sweep does.
+check("ig web: one login page is not enough to stop", _web._LOGIN_WALL_LIMIT > 1)
+
 check("item: deep nesting terminates",
       _priv._walk_json({"a": {"b": {"c": {"d": {"e": {"f": {"pk": "1"}}}}}}}) == ("", "", ""))
 

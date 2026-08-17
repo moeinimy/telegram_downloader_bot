@@ -467,6 +467,35 @@ _SOFT_BLOCK_MARKERS = (
 # Long enough that Instagram sees the behaviour stop, not merely slow.
 _SOFT_BLOCK_PAUSE = 3600
 
+# A login wall is not a failed sweep. It means the session is no longer a
+# session, and the backoff below cannot make it one - it just re-asks, at the
+# 600s ceiling, 144 times a day, on behalf of an account whose whole problem is
+# being noticed. Eight hours of that bought nothing but traffic.
+#
+# Distinct from a checkpoint, which is handled above and does lift by itself.
+# Nothing lifts this one except a new cookie.
+_LOGIN_WALL_MARKERS = (
+    "probably a login page", "cookie is not accepted",
+    "exceeded maximum allowed redirects", "too many redirects",
+    # The 401 text, matched on the machine-readable half so the Persian
+    # wording can change without switching this off.
+    "(401)",
+)
+
+# Twice in a row before believing it. A single login page can come from one bad
+# hop through the proxy, and standing a working session down over that costs
+# more than one extra sweep does.
+_LOGIN_WALL_LIMIT = 2
+
+# Set when the session is refused outright; cleared by a new cookie.
+session_dead: str = ""
+session_dead_at: float = 0.0
+
+
+def _is_login_wall(text: str) -> bool:
+    lowered = (text or "").lower()
+    return any(marker in lowered for marker in _LOGIN_WALL_MARKERS)
+
 # A checkpoint is heavier than a rate limit and lighter than a ban.
 #
 # I first made this stop the loop permanently, on the reasoning that only a
@@ -605,6 +634,7 @@ async def _loop(dispatch: Dispatch) -> None:
     last_activity = 0.0
     sweeps = 0
     failures = 0
+    login_walls = 0
     idle_logged = False
     checkpoint_tries = 0
     # When the inbox was last read successfully. /srcstatus shows a stale
@@ -632,7 +662,7 @@ async def _loop(dispatch: Dispatch) -> None:
         try:
             messages = await _collect(3 if hot else 8, _seen_after,
                                       not hot or sweeps % 10 == 1)
-            _last_error, failures = "", 0
+            _last_error, failures, login_walls = "", 0, 0
             last_ok = time.time()
 
             # A successful read IS the checkpoint being lifted - which does
@@ -706,6 +736,28 @@ async def _loop(dispatch: Dispatch) -> None:
                 failures = 0
                 continue
 
+            if _is_login_wall(_last_error):
+                login_walls += 1
+                if login_walls >= _LOGIN_WALL_LIMIT:
+                    global session_dead, session_dead_at
+
+                    session_dead, session_dead_at = _last_error, time.time()
+                    log.error("ig web: login wall %d sweeps running (%s) - stopping. "
+                              "A new cookie has to be pasted", login_walls, _last_error)
+                    await _warn_admin(
+                        "🔑 کوکی اینستاگرام دیگه معتبر نیست و دایرکت خوابید.\n\n"
+                        "به‌جای اینباکس، صفحه‌ی لاگین برمی‌گرده. پولینگ متوقف شد "
+                        "چون تکرارش این رو درست نمی‌کنه و فقط ترافیک بی‌فایده‌ست.\n\n"
+                        "برای راه‌اندازی دوباره:\n"
+                        "۱. با مرورگر (نه اپ) با همون اکانت وارد شو\n"
+                        "۲. کوکی sessionid تازه رو بردار\n"
+                        "۳. رو سرور: botctl igdirect → گزینه ۲\n\n"
+                        f"جزئیات: {_last_error[:120]}"
+                    )
+                    return
+            else:
+                login_walls = 0
+
             penalty = min(600, idle * (2 ** failures))
             log.warning("ig web: sweep failed (%s) - backing off to %.0fs",
                         _last_error, penalty)
@@ -719,7 +771,7 @@ async def _loop(dispatch: Dispatch) -> None:
 
 
 async def start(dispatch: Dispatch) -> None:
-    global _task, checkpointed
+    global _task, checkpointed, session_dead, session_dead_at
 
     if not usable():
         raise RuntimeError("IG_DM_SESSIONID is not set")
@@ -727,6 +779,7 @@ async def start(dispatch: Dispatch) -> None:
     # A new cookie is the signal that somebody dealt with the checkpoint;
     # _load_cookies already discards the stale jar on a changed seed.
     checkpointed = ""
+    session_dead, session_dead_at = "", 0.0
 
     if _task is None or _task.done():
         _task = asyncio.create_task(_loop(dispatch))
@@ -745,6 +798,11 @@ async def health() -> tuple[bool, str]:
         return False, "no sessionid"
     if checkpointed:
         return False, "checkpoint - تایید دستی تو اپ لازمه"
+    # Ahead of the probe below, which would otherwise spend a request
+    # rediscovering the login wall that already stopped the loop.
+    if session_dead:
+        held = (time.time() - session_dead_at) / 60
+        return False, f"کوکی باطله ({held:.0f}m) - یه تازه لازمه: {session_dead[:80]}"
     try:
         await _collect(1, time.time(), False)
         return True, "web api reachable"
