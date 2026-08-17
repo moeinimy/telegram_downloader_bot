@@ -78,6 +78,12 @@ class Settings:
     # with.
     ig_dm_csrftoken: str
     ig_dm_ds_user_id: str
+    # The browser the cookie was taken from. Instagram ties a session to the
+    # client that created it, so sending someone else's User-Agent with it is
+    # the session moving to a different machine as far as Instagram is
+    # concerned - and it ends the session. The built-in default is also a
+    # Chrome that stopped being current years ago, which is a flag on its own.
+    ig_dm_user_agent: str
     # Route instagrapi through a proxy. Unlike SHAZAM_PROXY this one accepts
     # socks5:// as well - instagrapi uses requests, which speaks SOCKS.
     ig_dm_proxy: str
@@ -283,6 +289,7 @@ settings = Settings(
     # someone who set those has already done the work.
     ig_dm_csrftoken=_get("IG_DM_CSRFTOKEN") or _get("IG_CSRFTOKEN"),
     ig_dm_ds_user_id=_get("IG_DM_DS_USER_ID") or _get("IG_DS_USER_ID"),
+    ig_dm_user_agent=_get("IG_DM_USER_AGENT"),
     ig_dm_proxy=_get("IG_DM_PROXY"),
     # Raised after the account was blocked at ~1s polling. See .env.example.
     ig_dm_poll_seconds=_float("IG_DM_POLL_SECONDS", 8),

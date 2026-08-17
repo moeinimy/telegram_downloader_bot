@@ -391,6 +391,13 @@ def _ig_direct_lines() -> list[str]:
         except Exception:
             pass
 
+    # A default User-Agent is a session announcing that it moved machines, on
+    # every request. It is silent, it looks like nothing, and it is the best
+    # explanation on hand for cookies that die in hours.
+    if not settings.ig_dm_user_agent and snapshot["sources"].get("web", {}).get("configured"):
+        lines.append("⚠️ User-Agent مرورگر ست نشده — کوکی با UA پیش‌فرض فرستاده می‌شه")
+        lines.append("   ↳ عمر کوکی رو کوتاه می‌کنه:  botctl igdirect → گزینه ۲")
+
     try:
         from utils import exit_ip
 

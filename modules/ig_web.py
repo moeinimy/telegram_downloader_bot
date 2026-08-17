@@ -72,10 +72,22 @@ _pending_route: object = None
 # The public web-client id instagram.com sends with its own XHRs. Without it
 # these endpoints answer 403 even with a perfectly good cookie.
 _APP_ID = "936619743392459"
-_UA = (
+# The fallback only. Instagram ties a session to the client that created it,
+# so the User-Agent that goes with a cookie has to be the one from the browser
+# that produced it - otherwise every request is that session appearing on a
+# different machine, and sessions do not survive that for long. Sessions here
+# have been dying within hours, which is what that looks like.
+#
+# This default is also a Chrome that stopped being current two years ago, so
+# on its own it is a thing to notice rather than a thing to blend in with.
+_UA_FALLBACK = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
+
+
+def _user_agent() -> str:
+    return settings.ig_dm_user_agent or _UA_FALLBACK
 
 _task: asyncio.Task | None = None
 _seen_after = 0.0
@@ -123,7 +135,7 @@ def _headers() -> dict:
         csrf = _session.cookies.get("csrftoken") or csrf
 
     return {
-        "User-Agent": _UA,
+        "User-Agent": _user_agent(),
         "X-IG-App-ID": _APP_ID,
         "X-ASBD-ID": "129477",
         # Echoed from the last response rather than hardcoded.

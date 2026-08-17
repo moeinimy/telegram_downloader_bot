@@ -846,6 +846,34 @@ _ytsrc = Path("modules/youtube.py").read_text(encoding="utf-8")
 check("download: a stale file on disk is overwritten, not inherited",
       _ytsrc.count('"overwrites": True') == 2)
 
+# Instagram ties a session to the client that created it. The cookie comes
+# from the user's browser; the requests went out as a hardcoded Chrome/124 on
+# Windows, so every one of them was that session appearing on a different
+# machine. Sessions have been dying within hours, repeatedly, on two different
+# exit addresses - this is the best-supported explanation left.
+_real_ua = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
+            "(KHTML, like Gecko) Version/18.0 Safari/605.1.15")
+import dataclasses as _dc  # noqa: E402
+
+_saved_settings = _web.settings
+try:
+    _web.settings = _dc.replace(_saved_settings, ig_dm_user_agent=_real_ua)
+    check("ua: the browser's own string is used when given",
+          _web._user_agent() == _real_ua)
+    _web.settings = _dc.replace(_saved_settings, ig_dm_user_agent="")
+    check("ua: it falls back rather than sending nothing",
+          _web._user_agent() == _web._UA_FALLBACK)
+finally:
+    _web.settings = _saved_settings
+
+check("ua: the header is built from the setting, not the constant",
+      '"User-Agent": _user_agent()' in Path("modules/ig_web.py").read_text(encoding="utf-8"))
+check("ua: taking a cookie also asks for the browser it came from",
+      "IG_DM_USER_AGENT" in _mgr)
+check("ua: a missing one is surfaced rather than left silent",
+      "IG_DM_USER_AGENT" in Path("config.py").read_text(encoding="utf-8")
+      and "User-Agent مرورگر ست نشده" in Path("handlers/admin.py").read_text(encoding="utf-8"))
+
 check("item: deep nesting terminates",
       _priv._walk_json({"a": {"b": {"c": {"d": {"e": {"f": {"pk": "1"}}}}}}}) == ("", "", ""))
 

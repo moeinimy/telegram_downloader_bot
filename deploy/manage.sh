@@ -984,6 +984,26 @@ _igdirect_standby() {
         set_env IG_DM_SESSIONID  "$sid"
         set_env IG_DM_CSRFTOKEN  "$csrf"
         set_env IG_DM_DS_USER_ID "$dsid"
+
+        # A cookie and the browser that made it are one thing, not two.
+        # Instagram ties the session to the client, so sending this cookie
+        # with the bot's built-in Chrome/124 string is that session showing up
+        # on a different machine - every single request. Sessions have been
+        # dying within hours, which is what that looks like from the far side.
+        echo
+        info "آخرین تیکه: User-Agent همون مرورگر."
+        echo "  تو همون پنجره‌ی ناشناس، تو Console بزن:  navigator.userAgent"
+        echo "  یا برو به:  whatmyuseragent.com"
+        warn "بدون این، کوکی با یه مرورگر دیگه فرستاده می‌شه و اینستاگرام"
+        warn "سشن رو زودتر می‌بنده. این محتمل‌ترین دلیل عمر چندساعته‌ست."
+        local ua
+        read -rp "User-Agent: " ua
+        if [[ -n "$ua" ]]; then
+            set_env IG_DM_USER_AGENT "$ua"
+            ok "UA ذخیره شد"
+        else
+            warn "خالی موند - از UA پیش‌فرض استفاده می‌شه (Chrome 124)"
+        fi
         set_env IG_DM_PASSWORD ""
 
         # The saved jar holds the cookies Instagram rotated to from the OLD
