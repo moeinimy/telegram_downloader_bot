@@ -959,6 +959,17 @@ def _feat_names(title: str) -> list[str]:
     ]
 
 
+def _yt_blocked() -> bool:
+    """Whether YouTube has just refused this server outright, rather than
+    simply having nothing that matches."""
+    try:
+        from modules.youtube import bot_checked_recently
+
+        return bot_checked_recently()
+    except Exception:
+        return False
+
+
 def _merge_names(*groups: list[str]) -> list[str]:
     """Order-preserving union, case- and spacing-insensitive.
 
@@ -1593,6 +1604,19 @@ def _locate_audio(meta: TrackMeta) -> list[str]:
     # Two different failures wear the same face, and telling them apart is the
     # difference between "wait and retry" and "this is not out there".
     looked_at = sum(len(v) for v in (pools or {}).values())
+
+    # A third one hides behind both: YouTube refusing to answer this server at
+    # all. Then ytsearch returns nothing, SoundCloud alone has no version, and
+    # the bot reports the track as absent from the internet - which is a claim
+    # about the track made from evidence about the server.
+    if not (pools or {}).get("ytsearch") and _yt_blocked():
+        raise RuntimeError(
+            f"«{meta.display}» رو نتونستم بگردم چون یوتیوب جواب سرور رو نداد "
+            "(«Sign in to confirm you're not a bot»).\n"
+            "این یعنی ترک نیست نداره — یعنی سرچ انجام نشد.\n"
+            "روی سرور:  botctl ytcookies"
+        )
+
     if looked_at:
         detail = (
             "چیزی که پیدا شد آهنگ‌های دیگه‌ای بودن — نه نسخه‌ای از این ترک، "

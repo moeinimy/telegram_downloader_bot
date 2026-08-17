@@ -644,6 +644,65 @@ refresh_ytdlp() {
     ensure_deno
 }
 
+# "Sign in to confirm you're not a bot" is not a yt-dlp problem and no client
+# in the ladder gets around it any more - it is YouTube declining to serve a
+# datacenter address anonymously. yt-dlp's own answer is a cookie jar, and
+# modules/youtube.py already reads one and reorders the ladder when it exists.
+# There was simply no way to put one there.
+do_ytcookies() {
+    local jar="$PROJECT_DIR/youtube_cookies.txt"
+
+    echo; info "=== کوکی یوتیوب ==="; echo
+    warn "این کوکی یعنی دسترسی کامل به اون اکانت گوگل."
+    warn "با اکانت اصلیت این کارو نکن. یه اکانت گوگل یه‌بارمصرف بساز،"
+    warn "با همون تو یوتیوب لاگین کن، و کوکی اونو بذار."
+    echo
+    echo "روی کامپیوتر خودت:"
+    echo "  ۱. با اکانت یه‌بارمصرف تو مرورگر وارد یوتیوب شو"
+    echo "  ۲. یه افزونه‌ی «Get cookies.txt» نصب کن (فرمت Netscape)"
+    echo "  ۳. روی youtube.com فایل رو export کن"
+    echo "  ۴. محتواشو کپی کن"
+    echo
+    read -rp "آماده‌ای؟ (y/n) " a
+    [[ "$a" != "y" ]] && return 0
+
+    echo
+    info "حالا محتوای فایل رو پیست کن، بعد Enter و Ctrl+D بزن:"
+    local tmp
+    tmp=$(mktemp)
+    cat > "$tmp"
+
+    if [[ ! -s "$tmp" ]]; then
+        err "چیزی پیست نشد"; rm -f "$tmp"; return 1
+    fi
+    # A cookie jar that yt-dlp cannot parse fails at download time with a
+    # message about formats, which is the same message this is meant to cure.
+    if ! grep -qi '^\.\?youtube\.com' "$tmp"; then
+        err "این فایل کوکی یوتیوب نیست - هیچ خطی برای youtube.com توش نیست"
+        rm -f "$tmp"; return 1
+    fi
+
+    mv "$tmp" "$jar"
+    chmod 600 "$jar"
+    chown "$BOT_USER:$BOT_USER" "$jar"
+    set_env YT_COOKIES_FILE "$jar"
+    ok "کوکی ذخیره شد ($(grep -c . "$jar") خط)"
+
+    echo; info "تست با یه ویدیو..."
+    if sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/python" -m yt_dlp \
+        --cookies "$jar" --skip-download --print '%(title)s' \
+        'https://www.youtube.com/watch?v=jNQXAC9IVRw' 2>&1 | tail -3
+    then
+        ok "یوتیوب با این کوکی جواب داد"
+    else
+        warn "تست جواب نداد - ممکنه کوکی منقضی باشه یا اکانت تایید بخواد"
+    fi
+
+    systemctl restart "$SERVICE_NAME"
+    ok "ریستارت شد. حالا تو لاگ باید ببینی client 'default' سریع جواب می‌ده:"
+    echo "    botctl find 'yt-dlp client'"
+}
+
 do_ytdlp() {
     echo; info "آپدیت yt-dlp (وقتی یوتیوب خراب می‌شه اینو بزن)..."
     refresh_ytdlp
@@ -1941,6 +2000,7 @@ case "${1:-}" in
     proxy)   do_proxy;   exit $? ;;
     engines) do_engines; exit $? ;;
     ytdlp)   do_ytdlp;   exit $? ;;
+    ytcookies) do_ytcookies; exit $? ;;
     update)  do_update;  exit $? ;;
     restart) systemctl restart "$SERVICE_NAME"; exit $? ;;
     status)  do_status;  exit 0 ;;

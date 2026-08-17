@@ -146,6 +146,19 @@ def _is_retryable(e: Exception) -> bool:
     return any(marker in s for marker in _RETRYABLE)
 
 
+# YouTube declining to serve this address anonymously, as opposed to a video
+# being gone. Searching callers need the difference: with the search refused,
+# "nothing matched" is a statement about the server, not about the track, and
+# reporting it as the latter told users a song did not exist.
+_BOT_CHECK = ("sign in to confirm", "confirm you're not a bot", "not a bot",
+              "use --cookies")
+_last_bot_check = 0.0
+
+
+def bot_checked_recently(within: float = 600.0) -> bool:
+    return bool(_last_bot_check and time.monotonic() - _last_bot_check < within)
+
+
 def _friendly(e: Exception | None) -> RuntimeError:
     s = str(e or "").lower()
     if "private" in s or "members-only" in s:
@@ -182,6 +195,12 @@ def ytdlp_run(extra: dict, fn: Callable[[YoutubeDL], T], kind: str = "") -> T:
         except Exception as e:
             if not _is_retryable(e):
                 raise
+
+            if any(marker in str(e).lower() for marker in _BOT_CHECK):
+                global _last_bot_check
+
+                _last_bot_check = time.monotonic()
+
             # It led the ladder because it worked last time and it has just
             # stopped, so drop it rather than paying for the same refusal on
             # every subsequent request.

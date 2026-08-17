@@ -755,6 +755,41 @@ check("logs: a line count can be asked for without following",
       "--no-pager -n" in _logs)
 check("logs: searching the history has its own command", "    find)" in _dispatch)
 
+# "Sign in to confirm you're not a bot" refuses the SEARCH as well as the
+# download. With ytsearch returning nothing and SoundCloud alone having no
+# version, the bot reported the track as absent from the internet - a claim
+# about the track, made from evidence about the server.
+_yt._last_bot_check = 0.0
+check("bot check: nothing seen means not blocked", _yt.bot_checked_recently() is False)
+check("bot check: spotify agrees when nothing was seen", _sp._yt_blocked() is False)
+
+for _text, _want, _label in (
+    ("ERROR: [youtube] YJdCpltq-_k: Sign in to confirm you’re not a bot. "
+     "Use --cookies-from-browser or --cookies for the authentication", True,
+     "the refusal from the log"),
+    ("Requested format is not available", False, "a missing format"),
+    ("HTTP Error 403: Forbidden", False, "a refused client"),
+):
+    check(f"bot check: detected={_want} for {_label}",
+          any(m in _text.lower() for m in _yt._BOT_CHECK) is _want, _text[:60])
+
+_yt._last_bot_check = __import__("time").monotonic()
+check("bot check: a fresh refusal is remembered", _yt.bot_checked_recently() is True)
+check("bot check: spotify sees it too", _sp._yt_blocked() is True)
+check("bot check: it expires rather than sticking forever",
+      _yt.bot_checked_recently(within=-1) is False)
+_yt._last_bot_check = 0.0
+
+# yt-dlp's documented answer to the bot check is a cookie jar, and
+# modules/youtube.py already reads one - there was just no way to install it.
+check("botctl: a youtube cookie jar can be installed", "    ytcookies)" in _dispatch)
+_ytc = _mgr[_mgr.index("do_ytcookies() {"):_mgr.index("do_ytdlp() {")]
+check("ytcookies: it refuses a file with no youtube.com in it",
+      "youtube.com" in _ytc and "err" in _ytc)
+check("ytcookies: the jar is not left world-readable", "chmod 600" in _ytc)
+check("ytcookies: it warns that this is account access",
+      "اکانت اصلیت" in _ytc)
+
 check("item: deep nesting terminates",
       _priv._walk_json({"a": {"b": {"c": {"d": {"e": {"f": {"pk": "1"}}}}}}}) == ("", "", ""))
 
