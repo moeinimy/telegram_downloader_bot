@@ -105,9 +105,17 @@ class Settings:
     max_upload_mb: int
 
     # YouTube cookies (optional). Path to a Netscape-format cookies.txt.
-    # Leave empty: the client ladder in modules/youtube.py handles the
-    # "Sign in to confirm you're not a bot" check without an account.
+    # The client ladder in modules/youtube.py used to handle the "Sign in to
+    # confirm you're not a bot" check without an account; it no longer does on
+    # every video, so this or YT_PROXY is the way through.
     yt_cookies_file: str
+
+    # Route yt-dlp through a proxy. The bot check is decided by the address the
+    # request comes from, so moving the address is the alternative to handing
+    # YouTube an account. Separate from SHAZAM_PROXY and IG_DM_PROXY because
+    # all three are refused by different things at different times, and one
+    # setting for all of them meant fixing one broke another.
+    yt_proxy: str
 
     # Video subtitles. An OpenAI-compatible transcription endpoint is used
     # when a key is set - it is both better at Persian and free of CPU cost
@@ -287,6 +295,7 @@ settings = Settings(
     download_dir=Path(_get("DOWNLOAD_DIR", "./downloads")).resolve(),
     max_upload_mb=int(_get("MAX_UPLOAD_MB", "50") or 50),
     yt_cookies_file=_cookies_path(),
+    yt_proxy=_get("YT_PROXY"),
     whisper_api_url=_get("WHISPER_API_URL", "https://api.groq.com/openai/v1"),
     whisper_api_key=_get("WHISPER_API_KEY"),
     whisper_api_model=_get("WHISPER_API_MODEL", "whisper-large-v3") or "whisper-large-v3",

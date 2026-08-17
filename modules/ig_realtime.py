@@ -350,13 +350,18 @@ async def _loop(dispatch: Dispatch) -> None:
             # optimism, and keep trying after that.
             if attempt == _ALERT_AFTER:
                 if _is_refusal(last_error):
+                    # Said "your address is blocked" here once. Then the web
+                    # source kept working from that same address with that
+                    # same cookie, which disproves it: what is refused is this
+                    # cookie on the MOBILE api, the split this feature has
+                    # known about since the beginning. realtime is the only
+                    # source that goes there.
                     detail = (
-                        "این جواب همون چیزیه که اینستاگرام به IP دیتاسنتر می‌ده. "
-                        "الان ترافیک مستقیم از خود سرور می‌ره، بدون پروکسی.\n\n"
-                        "یعنی کوکی تازه هم درست نمی‌کنه — تا وقتی آدرس خروجی "
-                        "دیتاسنتریه، اینستاگرام همین رو برمی‌گردونه.\n\n"
-                        "راه‌حل: یه پروکسی residential/mobile با IP ثابت، و "
-                        "کوکی رو از داخل همون بگیر."
+                        "این خطای عمومی اینستاگرامه و مخصوص realtimeست، چون "
+                        "تنها منبعیه که از API موبایل رد می‌شه — و کوکی مرورگر "
+                        "اونجا همیشگی نیست.\n\n"
+                        "اگه دایرکت داره کار می‌کنه، یعنی منبع web با همین کوکی "
+                        "سالمه و چیزی از دست نرفته؛ فقط پولینگ به‌جای realtime."
                     )
                 else:
                     detail = "بات هر ۵ دقیقه دوباره تلاش می‌کنه."

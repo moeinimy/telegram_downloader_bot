@@ -1160,6 +1160,7 @@ do_proxy() {
     echo "  3) پروکسی‌ای که خودم دارم رو وارد می‌کنم"
     echo "  4) خاموش کردن پروکسی (برگشت به حالت مستقیم)"
     echo "  5) خاموش کردن فقط برای اینستاگرام (شازام روی پروکسی می‌مونه)"
+    echo "  6) یوتیوب رو از پروکسی رد کن / بردار (برای «not a bot»)"
     echo "  0) برگرد"
     echo
     read -rp "انتخاب: " how
@@ -1199,6 +1200,50 @@ do_proxy() {
             echo "    botctl igdirect  →  گزینه ۲"
             echo
             info "تست:  botctl igtest2"
+            return 0
+            ;;
+        6)
+            # YouTube's bot check is decided by the address, so the cheapest
+            # thing to try before handing it an account is a different exit.
+            # Kept separate from the Instagram and Shazam settings: all three
+            # are refused by different things at different times, and one
+            # setting for all of them meant fixing one broke another.
+            local cur
+            cur=$(get_env YT_PROXY)
+            if [[ -n "$cur" ]]; then
+                info "الان یوتیوب از این رد می‌شه: $cur"
+                read -rp "برش دارم؟ (y/n) " a
+                if [[ "$a" == "y" ]]; then
+                    set_env YT_PROXY ""
+                    systemctl restart "$SERVICE_NAME"
+                    ok "یوتیوب برگشت به مستقیم"
+                fi
+                return 0
+            fi
+
+            local yp
+            yp=$(get_env SHAZAM_PROXY)
+            [[ -z "$yp" ]] && yp="socks5h://127.0.0.1:40000"
+            read -rp "آدرس پروکسی برای یوتیوب [$yp]: " a
+            [[ -n "$a" ]] && yp="$a"
+
+            info "تست..."
+            local code
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 \
+                --proxy "$yp" https://www.youtube.com/ 2>/dev/null)
+            echo "  youtube.com -> HTTP ${code:-timeout}"
+            if [[ -z "$code" || "$code" == "000" ]]; then
+                err "پروکسی جواب نداد - ذخیره نکردم"
+                return 1
+            fi
+
+            set_env YT_PROXY "$yp"
+            systemctl restart "$SERVICE_NAME"
+            ok "یوتیوب از پروکسی رد می‌شه"
+            echo
+            info "یه ویدیو تست کن، بعد:  botctl find 'yt-dlp client'"
+            warn "اگه بازم «not a bot» گرفتی، این IP هم دیتاسنتریه و"
+            warn "تنها راه باقی‌مونده کوکیه:  botctl ytcookies"
             return 0
             ;;
         1) _proxy_warp || return 1; p="socks5h://127.0.0.1:40000" ;;

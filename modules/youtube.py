@@ -30,6 +30,7 @@ from typing import Callable, TypeVar
 from yt_dlp import YoutubeDL
 
 from config import settings
+from utils import proxies
 from utils.helpers import run_in_thread, safe_filename
 
 log = logging.getLogger(__name__)
@@ -104,6 +105,13 @@ def _base_opts(client: str = "") -> dict:
         opts["extractor_args"] = {"youtube": {"player_client": [client]}}
     if settings.yt_cookies_file:
         opts["cookiefile"] = settings.yt_cookies_file
+
+    # The bot check is decided by where the request comes from, so a different
+    # exit is the alternative to handing YouTube an account. yt-dlp rejects the
+    # socks5h spelling exactly like every other library here.
+    proxy = proxies.normalize(settings.yt_proxy)
+    if proxy:
+        opts["proxy"] = proxy
     return opts
 
 

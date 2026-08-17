@@ -545,7 +545,7 @@ for _name in ("mqtt", "poll", "webhook"):
 # session bound to whatever address issued it, and WARP does not hold an
 # address still. Turning the proxy off for one used to mean turning it off for
 # both, so testing the Instagram side cost music recognition.
-_off_ig = _mgr[_mgr.index("        5)"):_mgr.index("        1) _proxy_warp")]
+_off_ig = _mgr[_mgr.index("        5)"):_mgr.index("        6)")]
 check("proxy: Instagram can be taken off the proxy on its own",
       'set_env IG_DM_PROXY ""' in _off_ig)
 check("proxy: doing so leaves Shazam's proxy alone",
@@ -783,6 +783,17 @@ _yt._last_bot_check = 0.0
 # yt-dlp's documented answer to the bot check is a cookie jar, and
 # modules/youtube.py already reads one - there was just no way to install it.
 check("botctl: a youtube cookie jar can be installed", "    ytcookies)" in _dispatch)
+
+# The bot check is decided by the address the request comes from, so moving
+# the address is the alternative to handing YouTube an account - and there was
+# no proxy setting for yt-dlp at all, only for Shazam and Instagram.
+check("proxy: yt-dlp has a proxy setting of its own", "YT_PROXY" in _mgr)
+check("proxy: youtube's proxy is separate from Instagram's",
+      _mgr.count('set_env YT_PROXY') >= 1 and "yt_proxy" in
+      Path("config.py").read_text(encoding="utf-8"))
+check("proxy: it goes through the socks5h normaliser like everything else",
+      "proxies.normalize(settings.yt_proxy)" in
+      Path("modules/youtube.py").read_text(encoding="utf-8"))
 _ytc = _mgr[_mgr.index("do_ytcookies() {"):_mgr.index("do_ytdlp() {")]
 check("ytcookies: it refuses a file with no youtube.com in it",
       "youtube.com" in _ytc and "err" in _ytc)
