@@ -643,6 +643,17 @@ check("artists: a partial restatement is not silently dropped",
 check("artists: case and spacing still collapse",
       _sp._merge_names(["Koorosh"], ["  koorosh "]) == ["Koorosh"])
 
+# amazonMusic and amazonStore are two platforms with one Persian name, so the
+# "you can find it here instead" line read "آمازون، آمازون".
+_labels = [_sp._PLATFORM_FA.get(p, p)
+           for p in ("amazonMusic", "amazonStore", "deezer", "pandora")]
+check("platforms: one name is not listed twice",
+      list(dict.fromkeys(_labels)) == ["آمازون", "دیزر", "پاندورا"])
+_join = [ln for ln in Path("modules/spotify.py").read_text(encoding="utf-8").splitlines()
+         if "_PLATFORM_FA.get(" in ln and ".join(" in ln]
+check("platforms: the line that renders them is the one that de-duplicates",
+      len(_join) == 1 and "dict.fromkeys" in _join[0], "; ".join(_join)[:80])
+
 # requirements.txt keeps yt-dlp unpinned on purpose - "sites break often" -
 # but pip leaves an installed unpinned package alone, so nothing on the update
 # path ever moved it. YouTube stopped serving formats and the bot had no way
@@ -760,6 +771,13 @@ for name in ("whisper/model.bin", "ig_pairing.json", "ig_token.json",
              "ig_seen.json", "ig_private_session.json", "file_ids.json", "stats.db"):
     check(f"sweep: {name} is protected",
           _limits._is_protected(sweep_root / name, sweep_root))
+# yt-dlp's cachedir lives under downloads/ and holds the EJS challenge solver
+# fetched from GitHub. It is cache by name and state by behaviour: the sweeper
+# hunts the oldest untouched files and that is exactly what a warm cache looks
+# like. Deleting it made every extraction re-fetch and re-solve - two minutes
+# to open a quality menu that had just been working.
+check("sweep: the yt-dlp cache is protected",
+      _limits._is_protected(sweep_root / ".ytdlp-cache" / "youtube-nsig" / "abc", sweep_root))
 check("sweep: ordinary media is not protected",
       not _limits._is_protected(sweep_root / "instagram" / "00.mp4", sweep_root))
 

@@ -1606,7 +1606,10 @@ def _locate_audio(meta: TrackMeta) -> list[str]:
     elsewhere = [p for p in _where_else(meta) if p not in ("spotify",)]
     hint = ""
     if elsewhere:
-        names = "، ".join(_PLATFORM_FA.get(p, p) for p in elsewhere)
+        # amazonMusic and amazonStore are two entries with one Persian name,
+        # so the list read "آمازون، آمازون" - which looks like the bot cannot
+        # count rather than like Amazon sells it twice.
+        names = "، ".join(dict.fromkeys(_PLATFORM_FA.get(p, p) for p in elsewhere))
         reachable = [p for p in elsewhere if p in ("youtube", "youtubeMusic", "soundcloud")]
         hint = f"\nاین ترک روی {names} هست"
         hint += (

@@ -22,6 +22,7 @@ extraction in the bot gets the same retry ladder.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, TypeVar
@@ -140,13 +141,22 @@ def ytdlp_run(extra: dict, fn: Callable[[YoutubeDL], T]) -> T:
     last: Exception | None = None
     for client in _ladder():
         opts = _base_opts(client) | extra
+        started = time.monotonic()
         try:
             with YoutubeDL(opts) as ydl:
-                return fn(ydl)
+                result = fn(ydl)
+            # Which client actually carries this account, and what the ones
+            # ahead of it cost. The ladder is ordered by a guess about what
+            # YouTube accepts today; without a number per attempt, reordering
+            # it is guesswork too.
+            log.info("yt-dlp client '%s' served it in %.1fs", client or "default",
+                     time.monotonic() - started)
+            return result
         except Exception as e:
             if not _is_retryable(e):
                 raise
-            log.warning("yt-dlp client '%s' refused (%s) — trying next.", client or "default", e)
+            log.warning("yt-dlp client '%s' refused after %.1fs (%s) — trying next.",
+                        client or "default", time.monotonic() - started, e)
             last = e
     raise _friendly(last)
 

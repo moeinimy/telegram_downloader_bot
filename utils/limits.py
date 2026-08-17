@@ -167,7 +167,16 @@ PROTECTED_NAMES = frozenset({
 # something we downloaded for a user. whisper/ is 1.5GB of model weights;
 # deleting it to make room for a reel means the next subtitle request
 # re-downloads the lot.
-PROTECTED_DIRS = frozenset({"whisper"})
+PROTECTED_DIRS = frozenset({
+    "whisper",
+    # yt-dlp's cachedir: the EJS challenge solver fetched from GitHub, plus
+    # the signature caches. It is cache by name and state by behaviour - a
+    # sweeper looking for the oldest untouched files finds exactly this, and
+    # deleting it makes every extraction re-fetch and re-solve from scratch.
+    # That is what turned a working YouTube download into a two-minute wait
+    # for the quality menu.
+    ".ytdlp-cache",
+})
 
 
 def _is_protected(path: Path, root: Path) -> bool:
