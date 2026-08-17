@@ -194,6 +194,18 @@ def _is_dead_credential(text: str) -> bool:
     return any(marker in lowered for marker in _DEAD_MARKERS)
 
 
+def _exit_ip_line() -> str:
+    """A cookie is bound to the address it was issued to, so whether that
+    address moved belongs in the message that asks for a new one."""
+    try:
+        from utils import exit_ip
+
+        line = exit_ip.summary()
+        return f"{line}\n\n" if line else ""
+    except Exception:
+        return ""
+
+
 def _is_idle_timeout(error: Exception) -> bool:
     """An empty read, not a broken connection.
 
@@ -304,6 +316,7 @@ async def _loop(dispatch: Dispatch) -> None:
                     "۱. با مرورگر (نه اپ) با همون اکانت وارد اینستاگرام شو\n"
                     "۲. کوکی sessionid تازه رو بردار\n"
                     "۳. رو سرور: botctl igdirect → گزینه ۲\n\n"
+                    f"{_exit_ip_line()}"
                     f"جزئیات: {last_error[:120]}"
                 )
                 return

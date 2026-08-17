@@ -391,6 +391,24 @@ def _ig_direct_lines() -> list[str]:
         except Exception:
             pass
 
+    try:
+        from utils import exit_ip
+
+        ip = exit_ip.status()
+        if ip["current"]:
+            held = ip["held_minutes"]
+            age = f"{held:.0f} دقیقه" if held < 90 else f"{held / 60:.0f} ساعت"
+            if ip["moves_24h"]:
+                lines.append(
+                    f"⚠️ IP خروجی: {_md(ip['current'])} · {ip['moves_24h']} بار "
+                    f"جابه‌جا شد تو ۲۴ ساعت (الان {age} ثابت)"
+                )
+                lines.append("   ↳ کوکی به IP صادرکننده‌ش گره خورده — این عمرش رو کوتاه می‌کنه")
+            else:
+                lines.append(f"🌐 IP خروجی: {_md(ip['current'])} · {age} ثابت")
+    except Exception:
+        pass
+
     left = ig_graph.days_left()
     if left is not None:
         lines.append(

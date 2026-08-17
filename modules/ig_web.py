@@ -496,6 +496,18 @@ def _is_login_wall(text: str) -> bool:
     lowered = (text or "").lower()
     return any(marker in lowered for marker in _LOGIN_WALL_MARKERS)
 
+
+def _exit_ip_line() -> str:
+    """Whether the address moved, put in front of the person who has to decide
+    between pasting another cookie and changing the proxy."""
+    try:
+        from utils import exit_ip
+
+        line = exit_ip.summary()
+        return f"{line}\n\n" if line else ""
+    except Exception:
+        return ""
+
 # A checkpoint is heavier than a rate limit and lighter than a ban.
 #
 # I first made this stop the loop permanently, on the reasoning that only a
@@ -752,6 +764,7 @@ async def _loop(dispatch: Dispatch) -> None:
                         "۱. با مرورگر (نه اپ) با همون اکانت وارد شو\n"
                         "۲. کوکی sessionid تازه رو بردار\n"
                         "۳. رو سرور: botctl igdirect → گزینه ۲\n\n"
+                        f"{_exit_ip_line()}"
                         f"جزئیات: {_last_error[:120]}"
                     )
                     return

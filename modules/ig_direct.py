@@ -406,6 +406,14 @@ async def _check_and_failover() -> None:
     webhook = _sources.get("webhook")
     poll = _sources.get("poll")
 
+    # Read the exit address on the same cadence, so a cookie that dies has a
+    # record of whether the address moved under it first. Costs no Instagram
+    # traffic and never decides a failover - it is evidence, not a signal.
+    if _sources:
+        from utils import exit_ip
+
+        await exit_ip.refresh(settings.ig_dm_proxy)
+
     healthy = False
     if webhook:
         state = _states["webhook"]

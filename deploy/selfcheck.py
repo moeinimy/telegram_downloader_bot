@@ -586,6 +586,28 @@ for _text, _want, _label in (
 # session down over a single one costs more than the extra sweep does.
 check("ig web: one login page is not enough to stop", _web._LOGIN_WALL_LIMIT > 1)
 
+# The cookie died twice in twelve hours and the leading suspect is the exit
+# address moving under it - WARP is anycast and promises nothing about staying
+# put. That is a theory, and this feature has lost nights to theories argued
+# instead of measured, so the address is recorded and the next death carries
+# the evidence with it.
+import utils.exit_ip as _xip  # noqa: E402
+
+_xip.current, _xip.since, _xip.moves[:] = "", 0.0, []
+check("exit ip: the first reading is not a move", _xip._note("104.28.197.9") is False)
+check("exit ip: the same address again is not a move", _xip._note("104.28.197.9") is False)
+check("exit ip: a different address is a move", _xip._note("104.28.200.4") is True)
+check("exit ip: an unreadable address is not a move", _xip._note("") is False)
+check("exit ip: the move is kept with both addresses",
+      _xip.moves[-1][1:] == ("104.28.197.9", "104.28.200.4"))
+check("exit ip: a moved address shows in the alert line",
+      "1 بار عوض شد" in _xip.summary(), _xip.summary())
+
+_xip.current, _xip.since, _xip.moves[:] = "1.2.3.4", time.time(), []
+check("exit ip: a stable address says so", "ثابت بوده" in _xip.summary(), _xip.summary())
+_xip.current, _xip.since, _xip.moves[:] = "", 0.0, []
+check("exit ip: nothing measured yet says nothing", _xip.summary() == "")
+
 check("item: deep nesting terminates",
       _priv._walk_json({"a": {"b": {"c": {"d": {"e": {"f": {"pk": "1"}}}}}}}) == ("", "", ""))
 
