@@ -618,6 +618,39 @@ check("exit ip: a stable address says so", "ثابت بوده" in _xip.summary()
 _xip.current, _xip.since, _xip.moves[:] = "", 0.0, []
 check("exit ip: nothing measured yet says nothing", _xip.summary() == "")
 
+# One source returns the artists as a single comma-joined name, another
+# returns them separately. Whole-string comparison saw no overlap, so display
+# joined them a second time - and search_text sent that to YouTube and
+# SoundCloud, which found nothing for a track that exists.
+import modules.spotify as _sp  # noqa: E402
+
+check("artists: a comma-joined restatement is dropped",
+      _sp._merge_names(["Wantons", "Koorosh", "Arta"], ["Wantons, Koorosh, Arta"])
+      == ["Wantons", "Koorosh", "Arta"])
+check("artists: the same, with the joined name first",
+      _sp._merge_names(["Wantons, Koorosh, Arta"], ["Wantons", "Koorosh", "Arta"])
+      == ["Wantons, Koorosh, Arta"])
+check("artists: either order renders the same line",
+      ", ".join(_sp._merge_names(["Wantons", "Koorosh", "Arta"], ["Wantons, Koorosh, Arta"]))
+      == ", ".join(_sp._merge_names(["Wantons, Koorosh, Arta"], ["Wantons", "Koorosh", "Arta"])))
+check("artists: a genuinely new name still joins",
+      _sp._merge_names(["Koorosh"], ["Arta"]) == ["Koorosh", "Arta"])
+check("artists: a comma inside one real name survives",
+      _sp._merge_names(["Earth, Wind & Fire"], ["Koorosh"])
+      == ["Earth, Wind & Fire", "Koorosh"])
+check("artists: a partial restatement is not silently dropped",
+      _sp._merge_names(["Koorosh"], ["Koorosh, Sogand"]) == ["Koorosh", "Koorosh, Sogand"])
+check("artists: case and spacing still collapse",
+      _sp._merge_names(["Koorosh"], ["  koorosh "]) == ["Koorosh"])
+
+# requirements.txt keeps yt-dlp unpinned on purpose - "sites break often" -
+# but pip leaves an installed unpinned package alone, so nothing on the update
+# path ever moved it. YouTube stopped serving formats and the bot had no way
+# to catch up short of a command nobody knew to run.
+_upd = _mgr[_mgr.index("do_update()"):_mgr.index("do_ytdlp()")]
+check("update: yt-dlp is upgraded on every update", "--upgrade yt-dlp" in _upd)
+check("update: the JS runtime yt-dlp needs is checked too", "ensure_deno" in _upd)
+
 check("item: deep nesting terminates",
       _priv._walk_json({"a": {"b": {"c": {"d": {"e": {"f": {"pk": "1"}}}}}}}) == ("", "", ""))
 

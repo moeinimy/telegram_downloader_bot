@@ -958,15 +958,43 @@ def _feat_names(title: str) -> list[str]:
 
 
 def _merge_names(*groups: list[str]) -> list[str]:
-    """Order-preserving union, case- and spacing-insensitive."""
+    """Order-preserving union, case- and spacing-insensitive.
+
+    One source hands back "Wantons, Koorosh, Arta" as a single name; another
+    hands back the same three separately. Comparing whole strings finds no
+    overlap, so both went in and display joined them with commas a second
+    time:
+
+        Wantons, Koorosh, Arta, Wantons, Koorosh, Arta — Hanoozam
+
+    That string is also what search_text sends to YouTube and SoundCloud, so
+    the track was not found and the download was refused for a track that
+    exists.
+
+    A comma-joined name is therefore compared by its parts as well as whole.
+    Names that genuinely contain a comma survive: one is dropped only when
+    every part of it is already present on its own.
+    """
     out: list[str] = []
     seen: set[str] = set()
+    within: set[str] = set()
+
     for group in groups:
         for name in group:
             key = _norm(name)
-            if key and key not in seen:
-                seen.add(key)
-                out.append(name.strip())
+            if not key or key in seen:
+                continue
+
+            pieces = [p.strip() for p in name.split(",") if p.strip()]
+            if len(pieces) > 1:
+                if all(_norm(p) in seen for p in pieces):
+                    continue
+                within.update(_norm(p) for p in pieces)
+            elif key in within:
+                continue
+
+            seen.add(key)
+            out.append(name.strip())
     return out
 
 

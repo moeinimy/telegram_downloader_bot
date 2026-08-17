@@ -362,6 +362,20 @@ do_update() {
     fix_perms
     ensure_venv
 
+    # yt-dlp is deliberately unpinned - requirements.txt says "keep latest;
+    # sites break often" - but nothing on this path ever upgraded it, and pip
+    # leaves an already-installed unpinned package exactly where it is. So
+    # YouTube rotted quietly between manual `botctl ytdlp` runs, and the
+    # symptom does not name its cause:
+    #     ERROR: [youtube] Mc6voRYTu1c: Requested format is not available
+    info "آپدیت yt-dlp (یوتیوب مرتب عوض می‌شه)..."
+    if sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/pip" install -q --upgrade yt-dlp; then
+        ok "yt-dlp: $("$PROJECT_DIR/.venv/bin/python" -m yt_dlp --version 2>/dev/null || echo '?')"
+    else
+        warn "آپدیت yt-dlp نشد - با نسخه فعلی ادامه می‌دم"
+    fi
+    ensure_deno
+
     info "چک سینتکس..."
     if ! syntax_check; then
         err "کد جدید مشکل سینتکس داره - برمی‌گردم به $before"
