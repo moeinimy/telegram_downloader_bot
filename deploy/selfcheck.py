@@ -698,6 +698,38 @@ for _fn, _label in (("do_status()", "status"), ("do_deps()", "deps")):
     check(f"{_label}: reports deno by running it, not by PATH",
           "deno_version" in _body and "command -v deno" not in _body)
 
+# Measured on one download: android_vr served the probe in 4.5s, then refused
+# the media twice with 403 before tv_simply carried it. Metadata and media are
+# not answered by the same client, so a winner is remembered per kind of
+# request - otherwise every download re-pays 15.6s of refusals first.
+import modules.youtube as _yt  # noqa: E402
+
+_yt._preferred.clear()
+check("ladder: with nothing learned, the built-in order stands",
+      _yt._ladder("video") == _yt._CLIENT_LADDER)
+
+_yt._preferred["video"] = "tv_simply"
+check("ladder: a remembered winner leads next time",
+      _yt._ladder("video")[0] == "tv_simply")
+check("ladder: and the rest still follow it as fallbacks",
+      sorted(_yt._ladder("video")) == sorted(_yt._CLIENT_LADDER))
+check("ladder: a different kind is unaffected",
+      _yt._ladder("probe") == _yt._CLIENT_LADDER)
+
+# yt-dlp's default client is spelled "", which is falsy - testing it for
+# truthiness would silently never promote it.
+_yt._preferred["video"] = ""
+check("ladder: the default client can win too", _yt._ladder("video")[0] == "")
+
+_yt._preferred["video"] = "no_such_client"
+check("ladder: a client that no longer exists is ignored",
+      _yt._ladder("video") == _yt._CLIENT_LADDER)
+_yt._preferred.clear()
+
+for _mod, _call in (("modules/youtube.py", 3), ("modules/spotify.py", 5)):
+    check(f"ladder: every ytdlp_run in {_mod} says what kind it is",
+          Path(_mod).read_text(encoding="utf-8").count("kind=") == _call)
+
 check("item: deep nesting terminates",
       _priv._walk_json({"a": {"b": {"c": {"d": {"e": {"f": {"pk": "1"}}}}}}}) == ("", "", ""))
 

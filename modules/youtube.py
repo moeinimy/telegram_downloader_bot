@@ -107,12 +107,38 @@ def _base_opts(client: str = "") -> dict:
     return opts
 
 
-def _ladder() -> tuple[str, ...]:
+# Which client last served each kind of request. Measured, from one download:
+#
+#   android_vr served it in 4.5s                        <- the probe
+#   android_vr refused after 7.8s (HTTP Error 403)      <- the media
+#   default    refused after 7.8s (HTTP Error 403)
+#   tv_simply  served it in 88.8s
+#
+# The same client answers metadata and then refuses the media for the very
+# same video, so there is no single best client - there is a best client per
+# kind of request. Remembering the winner per kind skips the 15.6s of 403s
+# that were being paid before the first byte of every download.
+#
+# Deliberately not persisted: which client YouTube accepts changes without
+# notice, and a stale winner on disk would cost a startup penalty rather than
+# save one.
+_preferred: dict[str, str] = {}
+
+
+def _ladder(kind: str = "") -> tuple[str, ...]:
     # With a cookie jar the default client becomes the strongest option, so
     # promote it to the front; otherwise keep the account-free order.
     if settings.yt_cookies_file:
-        return ("",) + tuple(c for c in _CLIENT_LADDER if c)
-    return _CLIENT_LADDER
+        base = ("",) + tuple(c for c in _CLIENT_LADDER if c)
+    else:
+        base = _CLIENT_LADDER
+
+    # "" is a real client here (yt-dlp's default), so this tests for presence
+    # rather than truthiness.
+    winner = _preferred.get(kind)
+    if winner is not None and winner in base:
+        return (winner,) + tuple(c for c in base if c != winner)
+    return base
 
 
 def _is_retryable(e: Exception) -> bool:
@@ -132,31 +158,38 @@ def _friendly(e: Exception | None) -> RuntimeError:
     return RuntimeError(f"YouTube: {e}")
 
 
-def ytdlp_run(extra: dict, fn: Callable[[YoutubeDL], T]) -> T:
+def ytdlp_run(extra: dict, fn: Callable[[YoutubeDL], T], kind: str = "") -> T:
     """Run `fn` against a YoutubeDL instance, retrying down the client ladder.
 
     Shared by every module that extracts media so the account-free fallbacks
     apply bot-wide, not just to /youtube links.
+
+    `kind` groups requests that behave alike - a metadata probe and a media
+    download are refused by different clients, so they remember different
+    winners.
     """
     last: Exception | None = None
-    for client in _ladder():
+    for client in _ladder(kind):
         opts = _base_opts(client) | extra
         started = time.monotonic()
         try:
             with YoutubeDL(opts) as ydl:
                 result = fn(ydl)
-            # Which client actually carries this account, and what the ones
-            # ahead of it cost. The ladder is ordered by a guess about what
-            # YouTube accepts today; without a number per attempt, reordering
-            # it is guesswork too.
-            log.info("yt-dlp client '%s' served it in %.1fs", client or "default",
-                     time.monotonic() - started)
+            _preferred[kind] = client
+            log.info("yt-dlp client '%s' served %s in %.1fs", client or "default",
+                     kind or "it", time.monotonic() - started)
             return result
         except Exception as e:
             if not _is_retryable(e):
                 raise
-            log.warning("yt-dlp client '%s' refused after %.1fs (%s) — trying next.",
-                        client or "default", time.monotonic() - started, e)
+            # It led the ladder because it worked last time and it has just
+            # stopped, so drop it rather than paying for the same refusal on
+            # every subsequent request.
+            if _preferred.get(kind) == client:
+                _preferred.pop(kind, None)
+            log.warning("yt-dlp client '%s' refused %s after %.1fs (%s) — trying next.",
+                        client or "default", kind or "it",
+                        time.monotonic() - started, e)
             last = e
     raise _friendly(last)
 
@@ -168,6 +201,7 @@ def probe_video(url: str) -> VideoInfo:
     info = ytdlp_run(
         {"skip_download": True},
         lambda ydl: ydl.extract_info(url, download=False),
+        kind="probe",
     )
 
     heights = {
@@ -221,7 +255,7 @@ def download_video(
         result = ydl.extract_info(url, download=True)
         return Path(ydl.prepare_filename(result)).with_suffix(".mp4")
 
-    return ytdlp_run(extra, _run)
+    return ytdlp_run(extra, _run, kind="video")
 
 
 @run_in_thread(heavy=True)
@@ -251,4 +285,4 @@ def download_audio(
         result = ydl.extract_info(url, download=True)
         return Path(ydl.prepare_filename(result)).with_suffix(".mp3")
 
-    return ytdlp_run(extra, _run)
+    return ytdlp_run(extra, _run, kind="audio")

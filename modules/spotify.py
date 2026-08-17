@@ -460,6 +460,7 @@ def _flat_entries(search_url: str) -> list[dict]:
     info = ytdlp_run(
         {"extract_flat": True, "skip_download": True},
         lambda ydl: ydl.extract_info(search_url, download=False),
+        kind="search",
     )
     return info.get("entries") or []
 
@@ -557,6 +558,7 @@ def _probe_source_track_sync(url: str, prefix: str) -> TrackMeta:
     info = ytdlp_run(
         {"skip_download": True},
         lambda ydl: ydl.extract_info(url, download=False),
+        kind="probe",
     )
     meta = TrackMeta(
         id=f"{prefix}_{info['id']}",
@@ -1691,7 +1693,7 @@ def download_track(meta: TrackMeta) -> Path:
     out_path = None
     for i, target in enumerate(targets):
         try:
-            ytdlp_run(extra, lambda ydl: ydl.download([target]))
+            ytdlp_run(extra, lambda ydl: ydl.download([target]), kind="audio")
         except Exception as e:
             last = e
             log.info("candidate %d/%d unusable (%s) - trying the next",
@@ -1723,6 +1725,7 @@ def _audio_formats(target: str) -> list[dict]:
     info = ytdlp_run(
         {"skip_download": True, "quiet": True},
         lambda ydl: ydl.extract_info(target, download=False),
+        kind="probe",
     )
     formats = [
         f for f in ((info or {}).get("formats") or [])
@@ -1794,7 +1797,7 @@ def download_best(meta: TrackMeta) -> tuple[Path, str, bool]:
             "postprocessors": [{"key": "FFmpegMetadata"}],
         }
         try:
-            ytdlp_run(extra, lambda ydl: ydl.download([target]))
+            ytdlp_run(extra, lambda ydl: ydl.download([target]), kind="audio")
         except Exception as e:
             last = e
             continue
