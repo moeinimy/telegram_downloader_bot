@@ -541,6 +541,16 @@ for _name in ("mqtt", "poll", "webhook"):
     check(f"igdirect: rebuilding the source list preserves {_name}",
           _name in _rebuild)
 
+# Shazam needs the proxy and has no session to lose by it; Instagram has a
+# session bound to whatever address issued it, and WARP does not hold an
+# address still. Turning the proxy off for one used to mean turning it off for
+# both, so testing the Instagram side cost music recognition.
+_off_ig = _mgr[_mgr.index("        5)"):_mgr.index("        1) _proxy_warp")]
+check("proxy: Instagram can be taken off the proxy on its own",
+      'set_env IG_DM_PROXY ""' in _off_ig)
+check("proxy: doing so leaves Shazam's proxy alone",
+      "SHAZAM_PROXY" not in _off_ig)
+
 # /srcstatus prints what the health loop last saw, and the first thing it sees
 # is realtime mid-handshake. With one interval between checks, "connecting…"
 # was still on screen five minutes after the channel came up.

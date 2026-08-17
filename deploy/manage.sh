@@ -1015,6 +1015,7 @@ do_proxy() {
     echo "  2) یه سرور دیگه‌ی خودت به‌عنوان پروکسی (بهترین گزینه اگه داری)"
     echo "  3) پروکسی‌ای که خودم دارم رو وارد می‌کنم"
     echo "  4) خاموش کردن پروکسی (برگشت به حالت مستقیم)"
+    echo "  5) خاموش کردن فقط برای اینستاگرام (شازام روی پروکسی می‌مونه)"
     echo "  0) برگرد"
     echo
     read -rp "انتخاب: " how
@@ -1027,6 +1028,33 @@ do_proxy() {
             systemctl restart "$SERVICE_NAME"
             ok "پروکسی خاموش شد - ترافیک مستقیم می‌ره"
             info "برای قطع کامل WARP هم:  warp-cli --accept-tos disconnect"
+            return 0
+            ;;
+        5)
+            # WARP is anycast: its exit address is not promised to stay put,
+            # and a sessionid is bound to the address it was issued to. Shazam
+            # does not care - it has no session - but Instagram does, so these
+            # two stopped being one setting. Going direct trades an address
+            # Instagram distrusts for one that at least never moves.
+            local ig_ip
+            ig_ip=$(curl -s --max-time 10 https://api.ipify.org 2>/dev/null)
+            set_env IG_DM_PROXY ""
+            chmod 600 "$PROJECT_DIR/.env"
+            chown "$BOT_USER:$BOT_USER" "$PROJECT_DIR/.env"
+            systemctl restart "$SERVICE_NAME"
+            ok "اینستاگرام مستقیم شد. شازام روی پروکسی موند."
+            echo
+            warn "کوکی فعلی از IP دیگه‌ای ساخته شده، پس همین الان باطله."
+            warn "کوکی تازه باید از هوای همین سرور گرفته شه: ${ig_ip:-<IP همین سرور>}"
+            echo
+            info "رو کامپیوتر خودت (نه سرور) یه تونل بزن:"
+            echo "    ssh -D 1080 -N root@${ig_ip:-<IP همین سرور>}"
+            echo
+            info "بعد مرورگر رو روی socks5://127.0.0.1:1080 بذار، اینستاگرام"
+            info "لاگین کن، sessionid رو بردار، و اینجا:"
+            echo "    botctl igdirect  →  گزینه ۲"
+            echo
+            info "تست:  botctl igtest2"
             return 0
             ;;
         1) _proxy_warp || return 1; p="socks5h://127.0.0.1:40000" ;;
