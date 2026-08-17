@@ -194,6 +194,22 @@ def _is_dead_credential(text: str) -> bool:
     return any(marker in lowered for marker in _DEAD_MARKERS)
 
 
+# Instagram's generic error page. It is not a named refusal, so it is not in
+# _DEAD_MARKERS and the ladder keeps trying - which is right, because it does
+# sometimes pass. What it usually means here is the address: this is what a
+# datacenter IP gets served, and the exit is now the VPS itself.
+_REFUSED_MARKERS = ("something went wrong", "please try again")
+
+# Retrying past this has never once worked in this feature's history, and a
+# loop nobody is told about is how eight hours went by last time.
+_ALERT_AFTER = 5
+
+
+def _is_refusal(text: str) -> bool:
+    lowered = (text or "").lower()
+    return any(marker in lowered for marker in _REFUSED_MARKERS)
+
+
 def _exit_ip_line() -> str:
     """A cookie is bound to the address it was issued to, so whether that
     address moved belongs in the message that asks for a new one."""
@@ -328,6 +344,29 @@ async def _loop(dispatch: Dispatch) -> None:
             wait = min(300, 10 * (2 ** min(attempt, 5)))
             log.warning("ig mqtt: connection lost (%s) - reconnecting in %ds", e, wait)
             await _close()
+
+            # Backing off forever is still an outage; it is just a quiet one.
+            # Say it once, at the point where the retries have stopped being
+            # optimism, and keep trying after that.
+            if attempt == _ALERT_AFTER:
+                if _is_refusal(last_error):
+                    detail = (
+                        "این جواب همون چیزیه که اینستاگرام به IP دیتاسنتر می‌ده. "
+                        "الان ترافیک مستقیم از خود سرور می‌ره، بدون پروکسی.\n\n"
+                        "یعنی کوکی تازه هم درست نمی‌کنه — تا وقتی آدرس خروجی "
+                        "دیتاسنتریه، اینستاگرام همین رو برمی‌گردونه.\n\n"
+                        "راه‌حل: یه پروکسی residential/mobile با IP ثابت، و "
+                        "کوکی رو از داخل همون بگیر."
+                    )
+                else:
+                    detail = "بات هر ۵ دقیقه دوباره تلاش می‌کنه."
+                await _warn_admin(
+                    f"📡 دایرکت اینستاگرام بعد از {attempt} تلاش وصل نشد.\n\n"
+                    f"{detail}\n\n"
+                    f"{_exit_ip_line()}"
+                    f"جزئیات: {last_error[:140]}"
+                )
+
             await asyncio.sleep(wait)
 
 

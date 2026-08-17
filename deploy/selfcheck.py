@@ -730,6 +730,31 @@ for _mod, _call in (("modules/youtube.py", 3), ("modules/spotify.py", 5)):
     check(f"ladder: every ytdlp_run in {_mod} says what kind it is",
           Path(_mod).read_text(encoding="utf-8").count("kind=") == _call)
 
+# The third spelling of "refused" this feature has met, and the first that is
+# not a named error at all. It is not terminal - it does sometimes pass - so
+# the ladder keeps going, but a loop nobody is told about is how the last
+# outage ran eight hours.
+for _text, _want, _label in (
+    ("We're sorry, but something went wrong. Please try again.", True,
+     "the page the datacenter IP was served"),
+    ("user_has_logged_out", False, "a named dead cookie"),
+    ("Connection reset by peer", False, "a dropped socket"),
+):
+    check(f"realtime: refusal={_want} for {_label}",
+          _rt._is_refusal(_text) is _want, _text[:60])
+
+check("realtime: a generic refusal is not treated as a dead cookie",
+      _rt._is_dead_credential("We're sorry, but something went wrong.") is False)
+check("realtime: the silent-retry window is bounded",
+      1 < _rt._ALERT_AFTER <= 10, f"alerts after {_rt._ALERT_AFTER} attempts")
+
+# botctl logs is `journalctl -f -n 40`, so piping it to grep blocks forever and
+# searches forty lines. Two diagnostics came back empty that way.
+_logs = _mgr[_mgr.index("do_logs() {"):_mgr.index("do_find() {")]
+check("logs: a line count can be asked for without following",
+      "--no-pager -n" in _logs)
+check("logs: searching the history has its own command", "    find)" in _dispatch)
+
 check("item: deep nesting terminates",
       _priv._walk_json({"a": {"b": {"c": {"d": {"e": {"f": {"pk": "1"}}}}}}}) == ("", "", ""))
 

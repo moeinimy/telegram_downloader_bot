@@ -463,9 +463,31 @@ do_status() {
         ok "yt-dlp: $("$PROJECT_DIR/.venv/bin/python" -m yt_dlp --version 2>/dev/null || echo '?')"
 }
 
+# `botctl logs | grep ...` looks like it should work and cannot: -f follows,
+# so the pipe blocks, and -n 40 means the history being searched is forty
+# lines deep. Two separate diagnostics came back empty that way and were read
+# as "the thing never happened" rather than "the log was never searched".
 do_logs() {
-    echo; info "لاگ زنده - برای خروج Ctrl+C بزن"; echo
+    local n="${1:-}"
+    if [[ -n "$n" ]]; then
+        journalctl -u "$SERVICE_NAME" --no-pager -n "$n"
+        return
+    fi
+    echo; info "لاگ زنده - برای خروج Ctrl+C بزن"
+    info "برای گشتن تو تاریخچه:  botctl logs 2000   یا   botctl find <الگو>"; echo
     journalctl -u "$SERVICE_NAME" -f -n 40
+}
+
+do_find() {
+    local pattern="${1:-}"
+    local lines="${2:-5000}"
+    if [[ -z "$pattern" ]]; then
+        err "الگو لازمه. مثال:  botctl find 'yt-dlp client'"
+        return 1
+    fi
+    info "گشتن دنبال «$pattern» تو $lines خط آخر:"
+    journalctl -u "$SERVICE_NAME" --no-pager -n "$lines" \
+        | grep -iE "$pattern" || warn "چیزی پیدا نشد تو $lines خط آخر"
 }
 
 do_spotify() {
@@ -1922,7 +1944,8 @@ case "${1:-}" in
     update)  do_update;  exit $? ;;
     restart) systemctl restart "$SERVICE_NAME"; exit $? ;;
     status)  do_status;  exit 0 ;;
-    logs)    do_logs;    exit 0 ;;
+    logs)    do_logs "${2:-}"; exit 0 ;;
+    find)    do_find "${2:-}" "${3:-}"; exit $? ;;
     "")      ;;
     *)       err "دستور نامعتبر: $1"; echo "استفاده: botctl [install|update|restart|status|logs]"; exit 1 ;;
 esac
