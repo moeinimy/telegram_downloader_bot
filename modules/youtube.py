@@ -78,6 +78,9 @@ class VideoInfo:
     thumbnail: str
     uploader: str
     available_heights: set[int]
+    # Where the uploader's other videos live. Needed to offer them, and not
+    # reconstructible from the name - a display name is not a handle.
+    channel_url: str = ""
     # Approximate bytes per quality label, from the format list. The menu was
     # a set of unlabelled buttons, so picking one was a bet: "best" has no
     # ceiling and produced a 1640MB file from a video nobody expected to be
@@ -250,7 +253,64 @@ def probe_video(url: str) -> VideoInfo:
         uploader=info.get("uploader", ""),
         available_heights=heights,
         size_by_quality=_sizes_by_quality(formats),
+        channel_url=info.get("channel_url") or info.get("uploader_url") or "",
     )
+
+
+@dataclass
+class ChannelVideo:
+    id: str
+    title: str
+    duration: int
+    views: int
+
+
+@run_in_thread
+def popular_from_channel(channel_url: str, limit: int = 8) -> list[ChannelVideo]:
+    """The uploader's most-watched videos, best first.
+
+    YouTube's own "sort by popular" is a UI control backed by a query
+    parameter that has changed spelling more than once and is not part of any
+    documented interface. Rather than depend on it, the videos tab is listed
+    flat - which is cheap, one request, no per-video extraction - and sorted
+    here on the view counts that listing already carries.
+
+    Entries without a view count sort last rather than being dropped: a
+    missing number is not a video nobody watched, and dropping them would
+    quietly shorten the list.
+    """
+    if not channel_url:
+        return []
+
+    url = channel_url.rstrip("/")
+    if not url.endswith("/videos"):
+        url += "/videos"
+
+    info = ytdlp_run(
+        {
+            "extract_flat": "in_playlist",
+            "skip_download": True,
+            # Enough to rank meaningfully without walking an entire channel;
+            # a flat page is cheap but a 5000-video channel is not.
+            "playlistend": 60,
+        },
+        lambda ydl: ydl.extract_info(url, download=False),
+        kind="channel",
+    )
+
+    out: list[ChannelVideo] = []
+    for e in info.get("entries") or []:
+        if not isinstance(e, dict) or not e.get("id"):
+            continue
+        out.append(ChannelVideo(
+            id=e["id"],
+            title=e.get("title") or "video",
+            duration=int(e.get("duration") or 0),
+            views=int(e.get("view_count") or 0),
+        ))
+
+    out.sort(key=lambda v: v.views, reverse=True)
+    return out[:limit]
 
 
 def _size_of(f: dict) -> int:

@@ -34,17 +34,22 @@ log = logging.getLogger(__name__)
 async def handle_url(
     update: Update, context: ContextTypes.DEFAULT_TYPE, route: RouteResult
 ) -> None:
-    msg = update.effective_message
+    await _send_video_menu(update.effective_message, context, route.url)
+
+
+async def _send_video_menu(msg, context, url: str) -> None:
+    """Probe a video and offer it. Shared by a pasted link and by a pick from
+    the channel list, so the two cannot drift apart."""
     status = await msg.reply_text(t(msg.chat_id, "🔎 در حال گرفتن اطلاعات ویدیو…"))
 
     try:
-        info = await yt.probe_video(route.url)
+        info = await yt.probe_video(url)
     except Exception as e:
         await status.edit_text(t(msg.chat_id, "❌ نتونستم اطلاعات ویدیو رو بگیرم: {err}").format(err=e))
         return
 
     # stash for later
-    context.chat_data.setdefault("yt", {})[info.id] = {"url": route.url, "info": info}
+    context.chat_data.setdefault("yt", {})[info.id] = {"url": url, "info": info}
 
     kb_rows: list[list[InlineKeyboardButton]] = []
     row: list[InlineKeyboardButton] = []
@@ -62,6 +67,14 @@ async def handle_url(
         kb_rows.append(row)
     kb_rows.append([InlineKeyboardButton(t(msg.chat_id, "🎵 Audio (MP3)"), callback_data=f"yt:{info.id}:audio")])
     kb_rows.append([InlineKeyboardButton(t(msg.chat_id, "🎧 پیدا کردن آهنگ ویدیو (Shazam)"), callback_data=f"yt:{info.id}:shazam")])
+    if info.channel_url:
+        # Listing a channel is a real request to YouTube, so it happens when
+        # this is pressed rather than on every video that gets probed. The bot
+        # check has only just stopped biting; a free extra request per link is
+        # exactly what put it there.
+        kb_rows.append([InlineKeyboardButton(
+            t(msg.chat_id, "📺 معروف‌ترین ویدیوهای این کانال"),
+            callback_data=f"yt:{info.id}:chan")])
 
     caption = (
         f"*{info.title}*\n"
@@ -94,6 +107,20 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if choice == "shazam":
         from handlers.recognize_handler import recognize_from_url
         await recognize_from_url(query.message, url)
+        return
+
+    if choice == "chan":
+        await _send_channel_menu(query.message, info)
+        return
+
+    if choice.startswith("pick"):
+        # A video chosen from the channel list. It goes through the same probe
+        # and the same quality menu as a pasted link, rather than a second
+        # path that would drift from it.
+        picked = choice.split("=", 1)[1] if "=" in choice else ""
+        if picked:
+            await _send_video_menu(query.message, context,
+                                   f"https://www.youtube.com/watch?v={picked}")
         return
 
     # Fast path: we already uploaded this exact video/quality once.
@@ -202,3 +229,48 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await status.edit_text(t(query.message.chat_id, "❌ آپلود ناموفق: {err}").format(err=e))
     finally:
         path.unlink(missing_ok=True)
+
+
+def _fmt_views(n: int) -> str:
+    """Views at a glance. A raw 1483920 is a number to decode, not to read."""
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.0f}K"
+    return str(n) if n else "—"
+
+
+async def _send_channel_menu(msg, info) -> None:
+    """The uploader's most-watched videos, as buttons that open the normal
+    quality menu."""
+    status = await msg.reply_text(
+        t(msg.chat_id, "📺 دنبال معروف‌ترین ویدیوهای کانال می‌گردم…"))
+
+    try:
+        videos = await yt.popular_from_channel(info.channel_url)
+    except Exception as e:
+        log.info("channel listing failed for %s: %s", info.channel_url, e)
+        await status.edit_text(
+            t(msg.chat_id, "😕 لیست ویدیوهای این کانال رو نتونستم بگیرم."))
+        return
+
+    if not videos:
+        await status.edit_text(t(msg.chat_id, "😕 ویدیوی دیگه‌ای از این کانال پیدا نشد."))
+        return
+
+    rows = []
+    for v in videos:
+        # Telegram truncates a long button label with no ellipsis, so the title
+        # is cut here where the numbers can be kept at the end.
+        title = v.title if len(v.title) <= 32 else v.title[:31] + "…"
+        rows.append([InlineKeyboardButton(
+            f"▶️ {title} · {_fmt_views(v.views)}",
+            callback_data=f"yt:{info.id}:pick={v.id}",
+        )])
+
+    await status.delete()
+    await msg.reply_text(
+        t(msg.chat_id, "📺 معروف‌ترین ویدیوهای *{name}*").format(name=info.uploader),
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(rows),
+    )

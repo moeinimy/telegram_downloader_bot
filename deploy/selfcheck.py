@@ -726,9 +726,20 @@ check("ladder: a client that no longer exists is ignored",
       _yt._ladder("video") == _yt._CLIENT_LADDER)
 _yt._preferred.clear()
 
-for _mod, _call in (("modules/youtube.py", 3), ("modules/spotify.py", 5)):
+# Counted rather than hardcoded: a new call site that forgets its kind lands
+# silently in the default bucket and shares a remembered client with a
+# different sort of request.
+for _mod in ("modules/youtube.py", "modules/spotify.py"):
+    _tree = ast.parse(Path(_mod).read_text(encoding="utf-8"))
+    _calls = [
+        n for n in ast.walk(_tree)
+        if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "ytdlp_run"
+    ]
+    _untagged = [n for n in _calls
+                 if not any(k.arg == "kind" for k in n.keywords)]
     check(f"ladder: every ytdlp_run in {_mod} says what kind it is",
-          Path(_mod).read_text(encoding="utf-8").count("kind=") == _call)
+          _calls and not _untagged,
+          f"{len(_calls)} calls, {len(_untagged)} without a kind")
 
 # The third spelling of "refused" this feature has met, and the first that is
 # not a named error at all. It is not terminal - it does sometimes pass - so
@@ -944,6 +955,40 @@ check("artwork: and it is the first thing under the photo",
       .inline_keyboard[0][0].callback_data == f"cov:{_k}")
 check("artwork: the callback is registered",
       'pattern=r"^cov:"' in Path("main.py").read_text(encoding="utf-8"))
+
+# YouTube's own "sort by popular" is a UI control backed by an undocumented
+# query parameter that has changed spelling more than once. The flat listing
+# already carries view counts, so the ranking is done here instead.
+import handlers.youtube_handler as _yth  # noqa: E402
+
+check("channel: views are readable rather than raw",
+      (_yth._fmt_views(1_483_920), _yth._fmt_views(12_400), _yth._fmt_views(742),
+       _yth._fmt_views(0)) == ("1.5M", "12K", "742", "—"))
+
+# callback_data is capped at 64 bytes, and this one carries two video ids.
+_cb = f"yt:dQw4w9WgXcQ:pick=dQw4w9WgXcQ"
+check("channel: a pick still fits in callback_data", len(_cb) <= 64, f"{len(_cb)} bytes")
+check("channel: a pick is parsed back to the video id",
+      _cb.split(":", 2)[2].split("=", 1)[1] == "dQw4w9WgXcQ")
+
+_ythsrc = Path("handlers/youtube_handler.py").read_text(encoding="utf-8")
+check("channel: a pick reuses the normal quality menu",
+      "_send_video_menu(query.message, context" in _ythsrc)
+check("channel: the pasted-link path uses that same menu",
+      _ythsrc.count("_send_video_menu(") >= 2)
+
+# The bot check has only just stopped biting. An extra channel request on
+# every probed link is the kind of free traffic that caused it.
+check("channel: listing happens on the button, not on every video",
+      "popular_from_channel" not in _ythsrc.split("async def on_callback")[0])
+check("channel: the button is absent when there is no channel url",
+      "if info.channel_url:" in _ythsrc)
+check("channel: the listing is flat rather than per-video extraction",
+      '"extract_flat": "in_playlist"' in _ytsrc)
+check("channel: it is bounded rather than walking the whole channel",
+      '"playlistend"' in _ytsrc)
+check("channel: it has its own client bucket",
+      'kind="channel"' in _ytsrc)
 
 check("item: deep nesting terminates",
       _priv._walk_json({"a": {"b": {"c": {"d": {"e": {"f": {"pk": "1"}}}}}}}) == ("", "", ""))
