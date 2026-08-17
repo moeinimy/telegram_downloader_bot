@@ -827,6 +827,25 @@ check("sizes: a stream with no size reported is skipped, not shown as 0MB",
       "480p" not in _yt._sizes_by_quality(
           [{"vcodec": "avc1", "acodec": "none", "height": 480}]))
 
+# Every quality wrote to one path, and yt-dlp does not re-download a file that
+# is already there. A 1640MB "best" left behind by a stalled upload was handed
+# straight back when 360p was asked for - in 1.3s, for a 37-minute video.
+_vi = _yt.VideoInfo(id="abc123", title="a video", duration=2244, thumbnail="",
+                    uploader="someone", available_heights={360, 1080})
+_paths = {q: _yt._make_outtmpl(_vi, q) for q in ("360p", "720p", "best", "audio")}
+check("outtmpl: each quality gets its own file",
+      len(set(_paths.values())) == len(_paths))
+check("outtmpl: the quality is what distinguishes them",
+      "360p" in _paths["360p"] and "best" in _paths["best"])
+check("outtmpl: audio does not collide with video",
+      _paths["audio"] != _paths["best"])
+check("outtmpl: the id is still in the name", all("abc123" in p for p in _paths.values()))
+
+# A file left by an upload that died mid-flight is not a finished download.
+_ytsrc = Path("modules/youtube.py").read_text(encoding="utf-8")
+check("download: a stale file on disk is overwritten, not inherited",
+      _ytsrc.count('"overwrites": True') == 2)
+
 check("item: deep nesting terminates",
       _priv._walk_json({"a": {"b": {"c": {"d": {"e": {"f": {"pk": "1"}}}}}}}) == ("", "", ""))
 

@@ -301,9 +301,18 @@ def quality_options_for(info: VideoInfo) -> list[str]:
 
 # ---------- download ----------
 
-def _make_outtmpl(info: VideoInfo) -> str:
+def _make_outtmpl(info: VideoInfo, quality: str = "") -> str:
     name = safe_filename(info.title)
-    return str(settings.download_dir / f"{info.id}_{name}.%(ext)s")
+    # The quality belongs in the name. Without it every quality of a video
+    # wrote to one path, and yt-dlp does not re-download a file that is
+    # already there - so after a 1640MB "best" was left on disk by an upload
+    # that never finished, asking for 360p returned that same 1640MB file:
+    #
+    #     yt-dlp client 'android_vr' served video in 1.3s
+    #
+    # for a 37-minute video, which is the tell. Nothing was downloaded at all.
+    tag = f"_{quality}" if quality else ""
+    return str(settings.download_dir / f"{info.id}{tag}_{name}.%(ext)s")
 
 
 @run_in_thread(heavy=True)
@@ -315,8 +324,12 @@ def download_video(
 ) -> Path:
     extra = {
         "format": QUALITY_CHOICES.get(quality, QUALITY_CHOICES["best"]),
-        "outtmpl": _make_outtmpl(info),
+        "outtmpl": _make_outtmpl(info, quality),
         "merge_output_format": "mp4",
+        # A file left behind by an upload that died mid-flight is not a
+        # finished download, and yt-dlp cannot tell the difference. Say so
+        # rather than inheriting whatever is on disk.
+        "overwrites": True,
         "progress_hooks": [progress_hook] if progress_hook else [],
     }
 
@@ -342,7 +355,8 @@ def download_audio(
     """Audio-only download as 320kbps MP3 with embedded thumbnail + metadata."""
     extra = {
         "format": "bestaudio/best",
-        "outtmpl": _make_outtmpl(info),
+        "outtmpl": _make_outtmpl(info, "audio"),
+        "overwrites": True,
         "writethumbnail": True,
         "postprocessors": [
             {
