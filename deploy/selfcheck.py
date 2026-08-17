@@ -647,9 +647,26 @@ check("artists: case and spacing still collapse",
 # but pip leaves an installed unpinned package alone, so nothing on the update
 # path ever moved it. YouTube stopped serving formats and the bot had no way
 # to catch up short of a command nobody knew to run.
-_upd = _mgr[_mgr.index("do_update()"):_mgr.index("do_ytdlp()")]
-check("update: yt-dlp is upgraded on every update", "--upgrade yt-dlp" in _upd)
-check("update: the JS runtime yt-dlp needs is checked too", "ensure_deno" in _upd)
+_upd = _mgr[_mgr.index("do_update()"):_mgr.index("refresh_ytdlp() {")]
+check("update: yt-dlp is refreshed after a pull", _upd.count("refresh_ytdlp") >= 1)
+
+# The refresh sat after the "nothing to pull" early return, so an install that
+# was already on the latest commit skipped it - and YouTube breaking has
+# nothing to do with whether there are new commits to fetch.
+_early = _upd[_upd.index('چیزی برای آپدیت نیست'):]
+check("update: an up-to-date checkout still refreshes yt-dlp",
+      "refresh_ytdlp" in _early[:_early.index("fix_perms")])
+check("update: the refresh upgrades rather than reinstalls",
+      "--upgrade yt-dlp" in _mgr)
+check("update: the JS runtime yt-dlp needs is checked with it",
+      "ensure_deno" in _mgr[_mgr.index("refresh_ytdlp() {"):_mgr.index("do_ytdlp()")])
+
+# do_ytdlp existed but only as menu item 8, so the one command that fixed
+# YouTube could not be typed - and nothing in a log or an error mentions a
+# menu.
+_dispatch = _mgr[_mgr.index('case "${1:-}" in'):]
+for _cmd in ("ytdlp", "update", "proxy", "igtest2"):
+    check(f"botctl: {_cmd} can be run as a command", f"    {_cmd})" in _dispatch)
 
 check("item: deep nesting terminates",
       _priv._walk_json({"a": {"b": {"c": {"d": {"e": {"f": {"pk": "1"}}}}}}}) == ("", "", ""))

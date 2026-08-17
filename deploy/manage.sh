@@ -346,8 +346,13 @@ do_update() {
 
     if [[ "$before" == "$after" ]]; then
         ok "همین الان آخرین نسخه‌ست ($before) - چیزی برای آپدیت نیست"
-        read -rp "بازم ریستارت کنم؟ (y/n) " a
-        [[ "$a" == "y" ]] && { systemctl restart "$SERVICE_NAME"; ok "ریستارت شد"; }
+        # YouTube breaking has nothing to do with whether we have new commits,
+        # so the extractor is refreshed on this path too. Putting it only
+        # after the pull meant "already up to date" also meant "and yt-dlp
+        # stays as stale as it was".
+        refresh_ytdlp
+        systemctl restart "$SERVICE_NAME"
+        ok "ریستارت شد"
         return
     fi
 
@@ -362,19 +367,7 @@ do_update() {
     fix_perms
     ensure_venv
 
-    # yt-dlp is deliberately unpinned - requirements.txt says "keep latest;
-    # sites break often" - but nothing on this path ever upgraded it, and pip
-    # leaves an already-installed unpinned package exactly where it is. So
-    # YouTube rotted quietly between manual `botctl ytdlp` runs, and the
-    # symptom does not name its cause:
-    #     ERROR: [youtube] Mc6voRYTu1c: Requested format is not available
-    info "آپدیت yt-dlp (یوتیوب مرتب عوض می‌شه)..."
-    if sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/pip" install -q --upgrade yt-dlp; then
-        ok "yt-dlp: $("$PROJECT_DIR/.venv/bin/python" -m yt_dlp --version 2>/dev/null || echo '?')"
-    else
-        warn "آپدیت yt-dlp نشد - با نسخه فعلی ادامه می‌دم"
-    fi
-    ensure_deno
+    refresh_ytdlp
 
     info "چک سینتکس..."
     if ! syntax_check; then
@@ -571,11 +564,25 @@ do_env() {
     [[ "$a" == "y" ]] && { systemctl restart "$SERVICE_NAME"; sleep 2; ok "ریستارت شد"; }
 }
 
+# yt-dlp is deliberately unpinned - requirements.txt says "keep latest; sites
+# break often" - but pip leaves an already-installed unpinned package exactly
+# where it is, so nothing moved it unless somebody went looking through the
+# menu. YouTube rots quietly in the meantime, and the symptom does not name
+# its cause:
+#     ERROR: [youtube] Mc6voRYTu1c: Requested format is not available
+refresh_ytdlp() {
+    info "آپدیت yt-dlp (یوتیوب مرتب عوض می‌شه)..."
+    if sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/pip" install -q --upgrade yt-dlp; then
+        ok "yt-dlp: $("$PROJECT_DIR/.venv/bin/python" -m yt_dlp --version 2>/dev/null || echo '?')"
+    else
+        warn "آپدیت yt-dlp نشد - با نسخه فعلی ادامه می‌دم"
+    fi
+    ensure_deno
+}
+
 do_ytdlp() {
     echo; info "آپدیت yt-dlp (وقتی یوتیوب خراب می‌شه اینو بزن)..."
-    sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/pip" install -q --upgrade yt-dlp
-    ok "نسخه جدید: $("$PROJECT_DIR/.venv/bin/python" -m yt_dlp --version)"
-    ensure_deno
+    refresh_ytdlp
     systemctl restart "$SERVICE_NAME"
     ok "ریستارت شد"
 }
@@ -1860,6 +1867,7 @@ case "${1:-}" in
     igreset) do_igreset; exit $? ;;
     proxy)   do_proxy;   exit $? ;;
     engines) do_engines; exit $? ;;
+    ytdlp)   do_ytdlp;   exit $? ;;
     update)  do_update;  exit $? ;;
     restart) systemctl restart "$SERVICE_NAME"; exit $? ;;
     status)  do_status;  exit 0 ;;
