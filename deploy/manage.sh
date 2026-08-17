@@ -649,6 +649,40 @@ refresh_ytdlp() {
 # datacenter address anonymously. yt-dlp's own answer is a cookie jar, and
 # modules/youtube.py already reads one and reorders the ladder when it exists.
 # There was simply no way to put one there.
+# A browser cookie is a WEB credential. realtime speaks to the MOBILE api and
+# has therefore never had one it could use, which is why it has been refused
+# on every account so far while the web poller worked from the same cookie.
+# This creates the credential realtime actually wants - and it outlives a
+# browser session by months rather than hours.
+do_iglogin() {
+    echo; info "=== لاگین موبایل اینستاگرام (سشن ماندگار) ==="; echo
+    warn "با اکانت اصلیت این کارو نکن."
+    echo
+    echo "قبل از این باید اکانت آماده باشه:"
+    echo "  • روی گوشی واقعی و اپ رسمی ساخته شده باشه"
+    echo "  • چند روز عادی ازش استفاده شده باشه (فالو، لایک، یه پست)"
+    echo "  • 2FA خاموش باشه"
+    echo "  • تو اپ گوشی همچنان لاگین بمونه - خارج نشو"
+    echo
+    read -rp "آماده‌ست؟ (y/n) " a
+    [[ "$a" != "y" ]] && return 0
+
+    if ! sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/python" -c "import instagrapi" 2>/dev/null; then
+        info "نصب instagrapi..."
+        sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/pip" install -q --progress-bar off instagrapi \
+            || { err "نصب نشد"; return 1; }
+    fi
+
+    # As the bot user: the session file it writes has to be readable by the
+    # service, and a root-owned one silently is not.
+    sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/python" "$PROJECT_DIR/deploy/iglogin.py" || return 1
+
+    systemctl restart "$SERVICE_NAME"
+    ok "ریستارت شد"
+    echo
+    info "چک کن:  botctl find 'ig mqtt' 500"
+}
+
 do_ytcookies() {
     local jar="$PROJECT_DIR/youtube_cookies.txt"
 
@@ -2066,6 +2100,7 @@ case "${1:-}" in
     engines) do_engines; exit $? ;;
     ytdlp)   do_ytdlp;   exit $? ;;
     ytcookies) do_ytcookies; exit $? ;;
+    iglogin) do_iglogin; exit $? ;;
     update)  do_update;  exit $? ;;
     restart) systemctl restart "$SERVICE_NAME"; exit $? ;;
     status)  do_status;  exit 0 ;;

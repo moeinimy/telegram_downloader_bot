@@ -68,9 +68,18 @@ def available() -> bool:
         return False
 
 
+# The mobile session written by `botctl iglogin`, shared with ig_private.
+SESSION_FILE = settings.download_dir / "ig_private_session.json"
+
+
 def usable() -> bool:
+    # A stored mobile session counts as a credential in its own right. It is
+    # the only one this api actually accepts, so requiring a browser cookie or
+    # a password beside it would refuse to start realtime in exactly the setup
+    # built for it.
     return bool(available() and settings.ig_dm_username
-                and (settings.ig_dm_sessionid or settings.ig_dm_password))
+                and (SESSION_FILE.exists() or settings.ig_dm_sessionid
+                     or settings.ig_dm_password))
 
 
 async def _connect():
@@ -99,7 +108,28 @@ async def _connect():
 
     signed_in = False
     cookie_error = ""
-    if settings.ig_dm_sessionid:
+
+    # A stored MOBILE session first, whenever one exists.
+    #
+    # This is the whole difference between realtime working and not. A browser
+    # sessionid belongs to the web api; handing it to the mobile api is what
+    # produces "We're sorry, but something went wrong" here, over and over,
+    # while the web poller uses the same cookie without trouble. A session
+    # created by a real mobile sign-in is native to this api, and lasts months
+    # rather than hours, so it is tried ahead of the cookie rather than after.
+    #
+    # Written by `botctl iglogin` and shared with modules/ig_private.py, which
+    # has kept it in this exact format all along.
+    if SESSION_FILE.exists():
+        try:
+            client.load_settings(str(SESSION_FILE))
+            await client.get_timeline_feed()  # proves it is really live
+            signed_in = True
+            log.info("ig mqtt: reused the stored mobile session")
+        except Exception as e:
+            log.warning("ig mqtt: stored mobile session rejected (%s)", e)
+
+    if not signed_in and settings.ig_dm_sessionid:
         try:
             await client.login_by_sessionid(settings.ig_dm_sessionid)
             signed_in = True

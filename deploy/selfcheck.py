@@ -1079,6 +1079,42 @@ _rt.given_up = ""
 check("realtime: giving up is not reported as a dead cookie",
       _rt.dead_reason == "" and _rt.given_up == "")
 
+# The credential realtime actually wants. A browser sessionid belongs to the
+# WEB api - the web poller uses it fine and the mobile api answers it with a
+# generic error - so realtime has never had one it could use. A mobile session
+# is native to that api and lasts months rather than hours, which is why it is
+# tried AHEAD of the cookie rather than as a fallback.
+_rtsrc = Path("modules/ig_realtime.py").read_text(encoding="utf-8")
+_connectfn = _rtsrc[_rtsrc.index("async def _connect("):_rtsrc.index("def _on_message(")]
+check("mobile session: realtime prefers it over the browser cookie",
+      _connectfn.index("SESSION_FILE.exists()") < _connectfn.index("settings.ig_dm_sessionid"))
+check("mobile session: it counts as a credential on its own",
+      "SESSION_FILE.exists() or settings.ig_dm_sessionid" in _rtsrc)
+check("mobile session: it is proven live before being trusted",
+      "get_timeline_feed()" in _rtsrc)
+check("mobile session: a rejected one falls through to the cookie",
+      "stored mobile session rejected" in _rtsrc)
+check("mobile session: it is the same file the poller already writes",
+      "ig_private_session.json" in Path("modules/ig_private.py").read_text(encoding="utf-8"))
+import utils.limits as _lim  # noqa: E402
+
+check("mobile session: the file survives the disk sweeper",
+      "ig_private_session.json" in _lim.PROTECTED_NAMES)
+check("mobile session: so does the device fingerprint",
+      "ig_device.json" in _lim.PROTECTED_NAMES)
+
+_login = Path("deploy/iglogin.py").read_text(encoding="utf-8")
+check("iglogin: the device is reused rather than regenerated",
+      "set_settings(json.loads(DEVICE_PATH" in _login)
+check("iglogin: the session is not left world-readable", "chmod(0o600)" in _login)
+check("iglogin: a login that returns is still verified",
+      "get_timeline_feed()" in _login)
+check("iglogin: BadPassword is explained rather than taken at face value",
+      "پسورد غلط نیست" in _login)
+check("iglogin: it can be run as a command", "    iglogin)" in _dispatch)
+check("iglogin: it runs as the bot user, not root",
+      'sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/python" "$PROJECT_DIR/deploy/iglogin.py"' in _mgr)
+
 check("item: deep nesting terminates",
       _priv._walk_json({"a": {"b": {"c": {"d": {"e": {"f": {"pk": "1"}}}}}}}) == ("", "", ""))
 
