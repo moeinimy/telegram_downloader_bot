@@ -47,10 +47,29 @@ async def handle_url(
     if kind == SpotifyKind.TRACK:
         import time as _time
 
+        # Acknowledge before doing anything. Fetching the track needs
+        # Spotify's embed page, and until that returns there is nothing to put
+        # in a photo caption - so the chat stayed empty for as long as that
+        # took, which on a bad fetch is most of a minute. The YouTube handler
+        # has always opened with a line like this; this one did not.
+        ack = await msg.reply_text(t(msg.chat_id, "🔎 در حال گرفتن اطلاعات آهنگ…"))
+
         started = _time.monotonic()
-        meta = await sp.get_track_meta(route.resource_id)
-        log.info("get_track_meta for %s took %.1fs - first reply cannot come "
+        try:
+            meta = await sp.get_track_meta(route.resource_id)
+        except Exception as e:
+            # The message is the exception's own, which arrives already
+            # worded for the user; wrapping it in a translatable template
+            # would just be that same string with a mark in front.
+            await ack.edit_text(f"❌ {e}")
+            return
+        log.info("get_track_meta for %s took %.1fs - nothing can be shown "
                  "before this", route.resource_id, _time.monotonic() - started)
+
+        try:
+            await ack.delete()
+        except Exception:
+            pass
         await _send_and_download_track(msg, meta)
 
     elif kind == SpotifyKind.ALBUM:

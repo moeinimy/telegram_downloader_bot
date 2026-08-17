@@ -967,6 +967,22 @@ for _call in re.finditer(r"edit_caption\((?:[^()]|\([^()]*\))*\)", _sph):
 check("artwork: the keyboard is built in one place, not two",
       _sph.count("def _cover_keyboard") == 1 and _sph.count("_cover_keyboard(") >= 3)
 
+# A pasted track link produced nothing at all until Spotify's embed page came
+# back, which on a bad fetch was most of a minute of empty chat. Every other
+# link type opens with a line first.
+check("speed: a pasted track is acknowledged before any network work",
+      _sph.index("در حال گرفتن اطلاعات آهنگ") < _sph.index("await sp.get_track_meta"))
+
+_scr = Path("modules/spotify_scraper.py").read_text(encoding="utf-8")
+check("speed: the embed fetch reuses the pooled client",
+      "http.client().get(" in _scr and "httpx.Client(timeout=20" not in _scr)
+check("speed: it no longer waits 20s to call an attempt failed",
+      "timeout=12" in _scr)
+check("speed: and does not sleep after the last attempt",
+      "if attempt < 2:" in _scr)
+check("speed: the fetch reports how long it took",
+      "spotify embed %s/%s in %.1fs" in _scr)
+
 # YouTube's own "sort by popular" is a UI control backed by an undocumented
 # query parameter that has changed spelling more than once. The flat listing
 # already carries view counts, so the ranking is done here instead.

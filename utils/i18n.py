@@ -159,6 +159,7 @@ _EN: dict[str, str] = {
     "❌ دانلود ناموفق: {err}": "❌ Download failed: {err}",
     "📤 در حال آپلود…": "📤 Uploading…",
     "🖼 دانلود کاور (کیفیت اصلی)": "🖼 Download cover (full size)",
+    "🔎 در حال گرفتن اطلاعات آهنگ…": "🔎 Fetching track info…",
     "📺 معروف‌ترین ویدیوهای این کانال": "📺 Most popular from this channel",
     "📺 دنبال معروف‌ترین ویدیوهای کانال می‌گردم…": "📺 Finding the channel's top videos…",
     "😕 لیست ویدیوهای این کانال رو نتونستم بگیرم.": "😕 Couldn't list this channel's videos.",
