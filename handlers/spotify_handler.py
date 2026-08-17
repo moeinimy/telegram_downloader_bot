@@ -780,6 +780,35 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await _send_best_quality(query, data.split(":", 2)[2])
         return
 
+    if data.startswith("sp:mv:"):
+        track_id = data.split(":", 2)[2]
+        status = await query.message.reply_text(
+            t(query.message.chat_id, "🎬 دنبال موزیک ویدیو می‌گردم…")
+        )
+        try:
+            meta = await sp.get_track_meta(track_id)
+            url = await sp.find_music_video(meta)
+        except Exception as e:
+            await status.edit_text(f"❌ {e}")
+            return
+        if not url:
+            await status.edit_text(
+                t(query.message.chat_id,
+                  "😕 موزیک ویدیویی برای این آهنگ پیدا نکردم. "
+                  "خیلی از ترک‌ها ویدیو ندارن؛ چیزی که پیدا شد یا لیریک ویدیو بود "
+                  "یا آهنگ دیگه‌ای.")
+            )
+            return
+        await status.delete()
+
+        # Straight into the YouTube quality menu, so a music video is offered
+        # in every size the video itself is - rather than a second, thinner
+        # download path that would drift from the one being maintained.
+        from handlers import youtube_handler
+
+        await youtube_handler._send_video_menu(query.message, context, url)
+        return
+
     if data.startswith("sp:ver:"):
         track_id = data.split(":", 2)[2]
         status = await query.message.reply_text(

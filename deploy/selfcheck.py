@@ -1017,6 +1017,48 @@ check("channel: it is bounded rather than walking the whole channel",
 check("channel: it has its own client bucket",
       'kind="channel"' in _ytsrc)
 
+# A search for "<artist> <title> official video" returns lyric uploads,
+# visualizers and "- Topic" auto-audio in quantity. Handing one of those back
+# as the music video is worse than reporting none: the user already has the
+# audio, so a duplicate of it is the one useless answer.
+_mv_meta = _sp.TrackMeta(id="x", name="Savage Rose", artists=["Koorosh"],
+                         album="", duration_ms=200_000, cover_url="",
+                         spotify_url="")
+
+def _entry(title, channel=""):
+    return {"id": "vid", "title": title, "channel": channel}
+
+for _title, _chan, _want, _label in (
+    ("Koorosh - Savage Rose (Official Music Video)", "Koorosh", True, "the official video"),
+    ("Koorosh - Savage Rose", "KooroshOfficial", True, "an untagged upload by the artist"),
+    ("Koorosh - Savage Rose (Official Lyric Video)", "Koorosh", False, "a lyric video"),
+    ("Koorosh - Savage Rose (Visualizer)", "Koorosh", False, "a visualizer"),
+    ("Koorosh - Savage Rose [slowed + reverb]", "someone", False, "a slowed edit"),
+    ("Koorosh - Savage Rose", "Koorosh - Topic", False, "auto-generated topic audio"),
+    ("Savage Rose - Some Other Band", "Some Other Band", False, "another artist's song"),
+    ("Koorosh - A Completely Different Song", "Koorosh", False, "the wrong track"),
+    ("Koorosh Savage Rose REACTION", "reactor", False, "a reaction video"),
+):
+    _got = _sp._mv_score(_mv_meta, _entry(_title, _chan)) > 0
+    check(f"music video: accepted={_want} for {_label}", _got is _want, _title[:52])
+
+check("music video: the official tag outranks an untagged upload",
+      _sp._mv_score(_mv_meta, _entry("Koorosh - Savage Rose (Official Music Video)", "Koorosh"))
+      > _sp._mv_score(_mv_meta, _entry("Koorosh - Savage Rose", "Koorosh")))
+
+# Runtime is deliberately not scored: a video is routinely a different length
+# from the release, so the rule that protects the audio search would reject
+# the very thing this is looking for.
+check("music video: runtime is not part of the decision",
+      "duration" not in _sp._mv_score.__doc__.lower()
+      or "not part of it" in _sp._mv_score.__doc__)
+
+_sph2 = Path("handlers/spotify_handler.py").read_text(encoding="utf-8")
+check("music video: it opens the normal youtube quality menu",
+      "youtube_handler._send_video_menu" in _sph2)
+check("music video: searching happens on the button, not per track",
+      "find_music_video" not in Path("handlers/lyrics_handler.py").read_text(encoding="utf-8"))
+
 check("item: deep nesting terminates",
       _priv._walk_json({"a": {"b": {"c": {"d": {"e": {"f": {"pk": "1"}}}}}}}) == ("", "", ""))
 

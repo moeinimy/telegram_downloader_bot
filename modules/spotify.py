@@ -1935,3 +1935,78 @@ def _embed_cover_and_tags(path: Path, meta: TrackMeta) -> None:
     except Exception as e:
         # Art is cosmetic — never fail the download over it.
         log.warning("Cover/tag embedding failed for %s: %s", meta.display, e)
+
+
+# ---------------- the music video behind a track ----------------
+
+# What an official video calls itself. A match on one of these is the
+# difference between the video and a static-image upload of the same audio.
+_MV_MARKERS = ("official music video", "official video", "music video",
+               "official mv", "video oficial", "موزیک ویدیو", "موزیک‌ویدیو")
+
+# Uploads that are the song but not the video. Every one of these is something
+# a search for "<artist> <title> official video" returns in quantity, and
+# handing one back as "the music video" is worse than saying there is none -
+# the user already has the audio.
+_NOT_A_VIDEO = ("lyric", "lyrics", "audio only", "official audio", "full album",
+                "visualizer", "visualiser", "slowed", "reverb", "sped up",
+                "8d audio", "nightcore", "karaoke", "instrumental", "cover by",
+                "reaction", "teaser", "trailer", "behind the scenes", "making of")
+
+
+def _mv_score(meta: TrackMeta, entry: dict) -> float:
+    """How much this entry looks like the official video of this track.
+
+    Runtime is deliberately not part of it. A music video is routinely a
+    different length from the release - intros, outros, a cold open - so the
+    runtime rule that protects the audio search would reject exactly the
+    thing being looked for here.
+    """
+    title = entry.get("title") or ""
+    lowered = title.lower()
+
+    if any(bad in lowered for bad in _NOT_A_VIDEO):
+        return 0.0
+
+    artist = meta.artists[0] if meta.artists else ""
+    # Both halves have to be present: a video titled after the song alone is
+    # as likely to be someone else's song of the same name.
+    if _coverage(meta.name, title) < 0.75 or _coverage(artist, f"{title} {entry.get('channel') or ''}") < 0.5:
+        return 0.0
+
+    score = 2.0 * _coverage(f"{artist} {meta.name}", title)
+    if any(marker in lowered for marker in _MV_MARKERS):
+        score += 1.5
+    # An official channel usually carries the artist's name, or is a label
+    # topic channel - "- Topic" is auto-generated audio, never the video.
+    channel = (entry.get("channel") or entry.get("uploader") or "")
+    if channel.endswith("- Topic"):
+        return 0.0
+    if _norm(artist) and _norm(artist) in _norm(channel):
+        score += 0.75
+    return score
+
+
+@run_in_thread
+def find_music_video(meta: TrackMeta) -> str | None:
+    """The YouTube url of this track's music video, or None.
+
+    None is a real answer here and is returned rather than a best guess:
+    plenty of tracks have no video, and offering a lyric upload or a
+    soundalike in its place is worse than saying so, because the user already
+    has the audio this would duplicate.
+    """
+    artist = meta.artists[0] if meta.artists else ""
+    query = f"{artist} {meta.name} official music video".strip()
+
+    entries = _flat_entries(f"ytsearch8:{query}")
+    scored = [(s, e) for e in entries if (s := _mv_score(meta, e)) > 0]
+    if not scored:
+        log.info("no music video found for %s", meta.display)
+        return None
+
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    best_score, best = scored[0]
+    log.info("music video for %s: %r (score %.2f)",
+             meta.display, (best.get("title") or "")[:60], best_score)
+    return f"https://www.youtube.com/watch?v={best['id']}" if best.get("id") else None

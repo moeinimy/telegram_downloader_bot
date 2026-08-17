@@ -77,6 +77,15 @@ def lyrics_button(
                 t(chat_id, "💎 بالاترین کیفیت"), callback_data=f"sp:hq:{track_id}"
             ),
         ])
+        # Looking for the video is a YouTube search, so it happens on press
+        # rather than on every track that gets sent. Whether one exists is
+        # also not knowable without asking, so the button cannot be hidden
+        # for tracks that have none - it answers instead.
+        rows.append([
+            InlineKeyboardButton(
+                t(chat_id, "🎬 موزیک ویدیو"), callback_data=f"sp:mv:{track_id}"
+            ),
+        ])
     return InlineKeyboardMarkup(rows)
 
 

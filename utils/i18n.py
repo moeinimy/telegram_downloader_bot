@@ -160,6 +160,12 @@ _EN: dict[str, str] = {
     "📤 در حال آپلود…": "📤 Uploading…",
     "🖼 دانلود کاور (کیفیت اصلی)": "🖼 Download cover (full size)",
     "🔎 در حال گرفتن اطلاعات آهنگ…": "🔎 Fetching track info…",
+    "🎬 موزیک ویدیو": "🎬 Music video",
+    "🎬 دنبال موزیک ویدیو می‌گردم…": "🎬 Looking for the music video…",
+    "😕 موزیک ویدیویی برای این آهنگ پیدا نکردم. خیلی از ترک‌ها ویدیو ندارن؛ "
+    "چیزی که پیدا شد یا لیریک ویدیو بود یا آهنگ دیگه‌ای.":
+        "😕 No music video found for this track. Many songs don't have one; "
+        "what turned up was either a lyric video or a different song.",
     "📺 معروف‌ترین ویدیوهای این کانال": "📺 Most popular from this channel",
     "📺 دنبال معروف‌ترین ویدیوهای کانال می‌گردم…": "📺 Finding the channel's top videos…",
     "😕 لیست ویدیوهای این کانال رو نتونستم بگیرم.": "😕 Couldn't list this channel's videos.",
