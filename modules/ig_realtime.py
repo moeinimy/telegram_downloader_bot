@@ -383,7 +383,22 @@ async def _loop(dispatch: Dispatch) -> None:
             # Backing off forever is still an outage; it is just a quiet one.
             # Say it once, at the point where the retries have stopped being
             # optimism, and keep trying after that.
-            if attempt == _ALERT_AFTER:
+            # Known, expected, and already answered: a browser cookie being
+            # refused by the mobile api, with no mobile session on disk to try
+            # instead. That is not news - it is the documented split this
+            # feature has known about from the start - and paging about it on
+            # every restart trains the reader to ignore the alerts that do
+            # matter. It is logged, /srcstatus carries it, and the remedy
+            # (botctl iglogin) does not become more available by being sent
+            # twice an hour.
+            expected = _is_refusal(last_error) and not SESSION_FILE.exists()
+
+            if attempt == _ALERT_AFTER and expected:
+                log.warning("ig mqtt: refused with only a browser cookie to "
+                            "offer - expected, not alerting. The web source "
+                            "has the inbox; botctl iglogin fixes this for good.")
+
+            if attempt == _ALERT_AFTER and not expected:
                 if _is_refusal(last_error):
                     # Said "your address is blocked" here once. Then the web
                     # source kept working from that same address with that
@@ -496,6 +511,9 @@ async def health() -> tuple[bool, str]:
     # is using it right now. Only realtime's own path is closed, and saying
     # "dead" here would send someone to replace a credential that is fine.
     if given_up:
+        if not SESSION_FILE.exists():
+            return False, ("کوکی مرورگر رو api موبایل قبول نمی‌شه — web داره "
+                           "اینباکس رو می‌بره. راه‌حل دائمی: botctl iglogin")
         return False, f"realtime refused - web is carrying the inbox: {given_up[:80]}"
 
     if not connected_since:

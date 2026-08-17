@@ -1079,6 +1079,19 @@ _rt.given_up = ""
 check("realtime: giving up is not reported as a dead cookie",
       _rt.dead_reason == "" and _rt.given_up == "")
 
+# The same alert arrived at 6:22 and again at 6:34, one per restart, about a
+# state that had not changed and was already understood. An alert that repeats
+# for a known condition teaches the reader to ignore the ones that do not.
+_rtsrc0 = Path("modules/ig_realtime.py").read_text(encoding="utf-8")
+check("realtime: a cookie refused by the mobile api is not paged about",
+      "expected = _is_refusal(last_error) and not SESSION_FILE.exists()" in _rtsrc0)
+check("realtime: it is still logged rather than swallowed",
+      "expected, not alerting" in _rtsrc0)
+check("realtime: something unexpected still alerts",
+      "if attempt == _ALERT_AFTER and not expected:" in _rtsrc0)
+check("realtime: the status line names the remedy instead",
+      "botctl iglogin" in _rtsrc0)
+
 # The credential realtime actually wants. A browser sessionid belongs to the
 # WEB api - the web poller uses it fine and the mobile api answers it with a
 # generic error - so realtime has never had one it could use. A mobile session
