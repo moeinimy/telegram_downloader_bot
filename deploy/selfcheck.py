@@ -1076,6 +1076,30 @@ check("ig direct: and is still stood down once realtime is up",
 check("realtime: a refusal eventually stops instead of looping all day",
       "given_up = last_error" in Path("modules/ig_realtime.py").read_text(encoding="utf-8"))
 _rt.given_up = ""
+# "drake gods plan" answered with an orchestral cover, an 8-bit emulation and
+# a pianist, and not one result by Drake. Both catalogues had put his track
+# first; _norm split "God's" into "god"+"s", so the query token "gods" was
+# missing from the only real answer and _focus dropped it as partial.
+from modules import spotify as _sp
+check("search: an apostrophe closes a word rather than breaking it",
+      _sp._norm("God's Plan") == "gods plan")
+check("search: the curly apostrophe the catalogues actually print",
+      _sp._norm("God’s Plan") == "gods plan")
+check("search: the track being searched for is a complete answer",
+      _sp._coverage("drake gods plan", "Drake God's Plan Scorpion") >= 0.999)
+check("search: a cover no longer outranks it on coverage alone",
+      _sp._coverage("drake gods plan", "Drake God's Plan Scorpion")
+      >= _sp._coverage("drake gods plan",
+                       "Diamond String Orchestra Gods Plan String Versions of Drake"))
+check("search: _focus keeps the exact match it used to discard",
+      any("Drake" in (t.artists[0] if t.artists else "")
+          for t in _sp._focus("drake gods plan", [
+              _sp.TrackMeta("dz_1", "God's Plan", ["Drake"], "Scorpion",
+                            198000, "", ""),
+              _sp.TrackMeta("dz_2", "Gods Plan", ["Diamond String Orchestra"],
+                            "String Versions of Drake", 429000, "", ""),
+          ])))
+
 check("realtime: giving up is not reported as a dead cookie",
       _rt.dead_reason == "" and _rt.given_up == "")
 

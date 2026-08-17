@@ -643,6 +643,15 @@ def _norm(s: str) -> str:
     """
     s = (s or "").lower().translate(_FOLD)
     s = re.sub(r"[ً-ْٰ]+", "", s)  # harakat: written optionally
+    # An apostrophe closes a word, it does not break it. Falling through to the
+    # separator rule below split "God's" into "god"+"s", so a search for
+    # "drake gods plan" did not contain the token "gods" that Drake's own track
+    # is named after: it scored 0.667 coverage and _focus discarded it as a
+    # partial answer - while the covers, which spell it "Gods" and name Drake
+    # in their album ("Orchestral String Versions of Drake"), scored 1.0 and
+    # were all that came back. Nobody types the apostrophe, and every catalogue
+    # prints it.
+    s = re.sub("['’‘ʼ`´]+", "", s)
     return re.sub(r"[^a-z0-9ء-ۿ]+", " ", s).strip()
 
 
