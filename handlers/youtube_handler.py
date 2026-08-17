@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 from telegram import (
     InlineKeyboardButton,
@@ -148,7 +149,18 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             info.thumbnail, settings.download_dir / "thumbs" / f"{info.id}.jpg"
         )
 
-    await status.edit_text(t(query.message.chat_id, "📤 در حال آپلود…"))
+    # An upload has no progress hook, and media_write_timeout is 600s - so a
+    # slow one looks identical to a hung one for ten minutes, and the only
+    # thing on screen is a message that never changes. Say how big it is, and
+    # time it, so "it does not upload" can be told from "it takes four
+    # minutes".
+    size_mb = path.stat().st_size / (1024 * 1024)
+    await status.edit_text(
+        t(query.message.chat_id, "📤 در حال آپلود… ({size}MB)").format(
+            size=f"{size_mb:.0f}")
+    )
+    log.info("upload starting: %s, %.1fMB", path.name, size_mb)
+    upload_started = time.monotonic()
     try:
         with path.open("rb") as fh:
             if choice == "audio":
@@ -176,9 +188,12 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 if sent and sent.video:
                     file_cache.put(cache_key, sent.video.file_id)
                 stats.record_download(query.message.chat_id, "yt-video", info.title)
+        log.info("upload finished: %.1fMB in %.1fs", size_mb,
+                 time.monotonic() - upload_started)
         await status.delete()
     except Exception as e:
-        log.exception("upload failed")
+        log.exception("upload failed after %.1fs (%.1fMB)",
+                      time.monotonic() - upload_started, size_mb)
         await status.edit_text(t(query.message.chat_id, "❌ آپلود ناموفق: {err}").format(err=e))
     finally:
         path.unlink(missing_ok=True)

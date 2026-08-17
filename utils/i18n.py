@@ -158,6 +158,7 @@ _EN: dict[str, str] = {
     "⬇️ شروع دانلود…": "⬇️ Starting download…",
     "❌ دانلود ناموفق: {err}": "❌ Download failed: {err}",
     "📤 در حال آپلود…": "📤 Uploading…",
+    "📤 در حال آپلود… ({size}MB)": "📤 Uploading… ({size}MB)",
     "❌ آپلود ناموفق: {err}": "❌ Upload failed: {err}",
     "⚠️ فایل {size}MB شد که از حد مجاز تلگرام ({limit}MB) بزرگ‌تره. یه کیفیت پایین‌تر انتخاب کن.":
         "⚠️ The file is {size}MB, over Telegram's {limit}MB limit. Pick a lower quality.",
