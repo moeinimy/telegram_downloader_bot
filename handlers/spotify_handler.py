@@ -478,6 +478,23 @@ def _cover_caption(meta, status: str = "") -> str:
     return caption
 
 
+def _cover_keyboard(meta, chat_id: int):
+    """The buttons under the cover: artwork download, then the platform links.
+
+    Built in one place because the caption is edited after the download
+    finishes, and edit_caption without a reply_markup does not leave the old
+    keyboard alone - it removes it. Rebuilding the same keyboard on every edit
+    is what keeps the buttons there.
+    """
+    from handlers.lyrics_handler import cover_key, platform_keyboard
+
+    return platform_keyboard(
+        ", ".join(meta.artists), meta.name, sp.platform_links(meta),
+        chat_id=chat_id,
+        cover_key=cover_key(meta.cover_url, meta.display),
+    )
+
+
 async def _send_cover(msg, meta, status: str = ""):
     """Cover art as its own message, full resolution, with the platform links
     beneath it. Telegram compresses a photo far less than the 320x320 thumbnail
@@ -485,18 +502,12 @@ async def _send_cover(msg, meta, status: str = ""):
     the caller can update its caption instead of posting a separate status."""
     if not meta.cover_url:
         return None
-    from handlers.lyrics_handler import cover_key, platform_keyboard
-
     try:
         return await msg.reply_photo(
             photo=meta.cover_url,
             caption=_cover_caption(meta, status),
             parse_mode="Markdown",
-            reply_markup=platform_keyboard(
-                ", ".join(meta.artists), meta.name, sp.platform_links(meta),
-                chat_id=msg.chat_id,
-                cover_key=cover_key(meta.cover_url, meta.display),
-            ),
+            reply_markup=_cover_keyboard(meta, msg.chat_id),
         )
     except Exception as e:
         log.info("cover send failed for %s: %s", meta.display, e)
@@ -689,8 +700,13 @@ async def _send_and_download_track(msg, meta, *, quiet: bool = False) -> bool:
 
     if cover_msg is not None:
         try:
+            # The keyboard has to be passed again. Editing a caption without
+            # one does not keep the buttons that were there - it clears them,
+            # so the artwork and platform buttons vanished the moment the
+            # download finished.
             await cover_msg.edit_caption(
-                caption=_cover_caption(meta), parse_mode="Markdown"
+                caption=_cover_caption(meta), parse_mode="Markdown",
+                reply_markup=_cover_keyboard(meta, msg.chat_id),
             )
         except Exception:
             pass

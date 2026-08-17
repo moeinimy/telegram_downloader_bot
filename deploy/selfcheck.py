@@ -3,6 +3,7 @@
 import ast
 import builtins
 import hashlib
+import re
 import hmac
 import json
 import os
@@ -955,6 +956,16 @@ check("artwork: and it is the first thing under the photo",
       .inline_keyboard[0][0].callback_data == f"cov:{_k}")
 check("artwork: the callback is registered",
       'pattern=r"^cov:"' in Path("main.py").read_text(encoding="utf-8"))
+
+# edit_caption does not leave an existing keyboard alone - it clears it. The
+# cover caption is edited when the download finishes, so the artwork and
+# platform buttons disappeared at exactly the moment the track arrived.
+_sph = Path("handlers/spotify_handler.py").read_text(encoding="utf-8")
+for _call in re.finditer(r"edit_caption\((?:[^()]|\([^()]*\))*\)", _sph):
+    check("artwork: editing the caption keeps the buttons",
+          "reply_markup" in _call.group(0), _call.group(0)[:60].replace("\n", " "))
+check("artwork: the keyboard is built in one place, not two",
+      _sph.count("def _cover_keyboard") == 1 and _sph.count("_cover_keyboard(") >= 3)
 
 # YouTube's own "sort by popular" is a UI control backed by an undocumented
 # query parameter that has changed spelling more than once. The flat listing
