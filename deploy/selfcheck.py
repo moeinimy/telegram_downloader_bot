@@ -668,6 +668,25 @@ _dispatch = _mgr[_mgr.index('case "${1:-}" in'):]
 for _cmd in ("ytdlp", "update", "proxy", "igtest2"):
     check(f"botctl: {_cmd} can be run as a command", f"    {_cmd})" in _dispatch)
 
+# yt-dlp was current (2026.07.04) and YouTube still served no formats, because
+# deno could not run - and `command -v deno` says nothing about that. It
+# printed its own evidence and threw it away:
+#     [OK] Deno از قبل هست:
+_deno = _mgr[_mgr.index("ensure_deno() {"):_mgr.index("ensure_user() {")]
+check("deno: presence is decided by running it, not by PATH",
+      "command -v deno" not in _deno.split("if command -v deno")[0])
+check("deno: the check is the version string it prints",
+      "deno_version" in _deno)
+check("deno: a deno that does not run is reinstalled",
+      "دوباره نصبش می‌کنم" in _deno)
+check("deno: a reinstall that still does not run is an error, not a success",
+      _deno.index("ver=$(deno_version)") < _deno.rindex('err "Deno نصب شد'))
+for _fn, _label in (("do_status()", "status"), ("do_deps()", "deps")):
+    _body = _mgr[_mgr.index(_fn):]
+    _body = _body[:_body.index("\n}\n")]
+    check(f"{_label}: reports deno by running it, not by PATH",
+          "deno_version" in _body and "command -v deno" not in _body)
+
 check("item: deep nesting terminates",
       _priv._walk_json({"a": {"b": {"c": {"d": {"e": {"f": {"pk": "1"}}}}}}}) == ("", "", ""))
 

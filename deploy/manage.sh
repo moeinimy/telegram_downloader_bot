@@ -65,18 +65,56 @@ ensure_packages() {
     ok "پکیج‌ها نصب شدن"
 }
 
+# `command -v deno` only says a file is on PATH. A deno that cannot execute -
+# a truncated download, the wrong architecture, a lost execute bit, a glibc it
+# was not built against - passes that check and then prints nothing, which is
+# exactly what this reported:
+#
+#     [OK] Deno از قبل هست:
+#
+# yt-dlp needs deno to solve YouTube's JS challenge. No deno means no
+# signature, which means no playable formats, on every player client at once:
+#
+#     ERROR: [youtube] Mc6voRYTu1c: Requested format is not available
+#
+# So the version string is the test. Producing it is the only proof that the
+# thing runs, and it was already being printed - just never checked.
+deno_version() {
+    deno --version 2>/dev/null | head -1
+}
+
 ensure_deno() {
-    if command -v deno &>/dev/null; then
-        ok "Deno از قبل هست: $(deno --version | head -1)"
-        return
+    local ver
+    ver=$(deno_version)
+    if [[ -n "$ver" ]]; then
+        ok "Deno از قبل هست: $ver"
+        return 0
     fi
+
+    if command -v deno &>/dev/null; then
+        warn "Deno هست ولی اجرا نمی‌شه - دوباره نصبش می‌کنم"
+        warn "خطاش: $(deno --version 2>&1 | head -2 | tr '\n' ' ')"
+    fi
+
     info "نصب Deno (برای yt-dlp لازمه)..."
-    curl -fsSL -o /tmp/deno.zip \
+    if ! curl -fsSL -o /tmp/deno.zip \
         https://github.com/denoland/deno/releases/latest/download/deno-x86_64-unknown-linux-gnu.zip
-    unzip -oq /tmp/deno.zip -d /usr/local/bin
+    then
+        err "دانلود Deno نشد - دسترسی سرور به گیت‌هاب رو چک کن"
+        return 1
+    fi
+    unzip -oq /tmp/deno.zip -d /usr/local/bin || { err "باز کردن فایل Deno نشد"; return 1; }
     chmod +x /usr/local/bin/deno
     rm -f /tmp/deno.zip
-    ok "Deno نصب شد: $(deno --version | head -1)"
+
+    ver=$(deno_version)
+    if [[ -z "$ver" ]]; then
+        err "Deno نصب شد ولی هنوز اجرا نمی‌شه:"
+        deno --version 2>&1 | head -3
+        err "تا این درست نشه، یوتیوب «Requested format is not available» می‌ده"
+        return 1
+    fi
+    ok "Deno نصب شد: $ver"
 }
 
 ensure_user() {
@@ -416,7 +454,11 @@ do_status() {
                        || info "Local Bot API: غیرفعال (سقف آپلود ۵۰ مگ)"
     fi
     echo
-    command -v deno &>/dev/null && ok "Deno: $(deno --version | head -1)" || err "Deno نصب نیست"
+    # Same blind spot as ensure_deno had: a deno on PATH that does not run
+    # reported as present, and yt-dlp cannot touch YouTube without it.
+    _dv=$(deno_version)
+    [[ -n "$_dv" ]] && ok "Deno: $_dv" \
+                    || err "Deno نیست یا اجرا نمی‌شه - یوتیوب بدون این کار نمی‌کنه (botctl ytdlp)"
     [[ -x "$PROJECT_DIR/.venv/bin/python" ]] && \
         ok "yt-dlp: $("$PROJECT_DIR/.venv/bin/python" -m yt_dlp --version 2>/dev/null || echo '?')"
 }
@@ -1371,6 +1413,15 @@ do_deps() {
     info "نسخه‌ها:"
     "$pip" list 2>/dev/null | grep -iE '^(shazamio|shazamio-core|pydantic|pydantic-core|aiohttp|instagrapi|faster-whisper|ctranslate2|yt-dlp|python-telegram-bot|httpx)\b' \
         || warn "pip list جواب نداد"
+
+    # Not a pip package, so pip list cannot show it - and yt-dlp being current
+    # means nothing for YouTube if this is missing. An up-to-date yt-dlp and a
+    # deno that would not run produced "Requested format is not available" on
+    # every client, with nothing in the versions above to suggest why.
+    local dv
+    dv=$(deno_version)
+    [[ -n "$dv" ]] && ok "deno  $dv" \
+                   || err "deno نیست یا اجرا نمی‌شه - یوتیوب بدون این جواب نمی‌ده (botctl ytdlp)"
     echo
 
     # The reason this exists: instagrapi and faster-whisper were installed
