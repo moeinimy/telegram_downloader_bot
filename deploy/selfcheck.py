@@ -874,6 +874,56 @@ check("ua: a missing one is surfaced rather than left silent",
       "IG_DM_USER_AGENT" in Path("config.py").read_text(encoding="utf-8")
       and "User-Agent مرورگر ست نشده" in Path("handlers/admin.py").read_text(encoding="utf-8"))
 
+# Every cover in this bot arrives pre-shrunk for use as a Telegram photo -
+# iTunes rewritten to 600x600, Deezer's cover_xl at 1000. Asked for as a file
+# there is no such ceiling, and the same CDNs serve much larger versions of
+# the identical image if the url says so.
+import utils.artwork as _art  # noqa: E402
+
+_apple = "https://is1-ssl.mzstatic.com/image/thumb/Music/v4/ab/cd/ef/x.jpg/600x600bb.jpg"
+_c = _art.candidates(_apple)
+check("artwork: apple is asked for a bigger render first",
+      _c[0].endswith("3000x3000bb.jpg"), _c[0][-24:])
+check("artwork: it steps down instead of giving up",
+      len(_c) > 2 and any("1400x1400bb" in u for u in _c))
+
+_deezer = "https://e-cdns-images.dzcdn.net/images/cover/abc123/1000x1000-000000-80-0-0.jpg"
+_c = _art.candidates(_deezer)
+check("artwork: deezer's size and jpeg quality both go up",
+      "1800x1800" in _c[0] and "-100-" in _c[0], _c[0][-34:])
+
+_yt = "https://i.ytimg.com/vi/abc123/hqdefault.jpg"
+_c = _art.candidates(_yt)
+check("artwork: youtube climbs its fixed ladder",
+      _c[0].endswith("maxresdefault.jpg"), _c[0][-20:])
+
+# The original is the one url already known to work. Dropping it would make a
+# bigger-but-missing render worse than doing nothing.
+for _label, _url in (("apple", _apple), ("deezer", _deezer), ("youtube", _yt),
+                     ("an unknown host", "https://example.com/cover.jpg")):
+    check(f"artwork: the original is still tried last for {_label}",
+          _art.candidates(_url)[-1] == _url)
+
+check("artwork: nothing in means nothing out", _art.candidates("") == [])
+check("artwork: no duplicates when a size is already the largest",
+      len(_art.candidates(_apple.replace("600x600bb", "3000x3000bb")))
+      == len(set(_art.candidates(_apple.replace("600x600bb", "3000x3000bb")))))
+
+import handlers.lyrics_handler as _lyr  # noqa: E402
+
+check("artwork: a cover with no url gets no button", _lyr.cover_key("", "x") == "")
+_k = _lyr.cover_key(_apple, "Some Artist — Some Song")
+check("artwork: the key is short enough for callback_data",
+      len(f"cov:{_k}") <= 64, f"{len(f'cov:{_k}')} bytes")
+check("artwork: the key resolves back to the url", _lyr._covers.get(_k)[0] == _apple)
+check("artwork: the button only appears when there is a cover",
+      _lyr.platform_keyboard("a", "b").inline_keyboard[0][0].callback_data is None)
+check("artwork: and it is the first thing under the photo",
+      _lyr.platform_keyboard("a", "b", cover_key=_k)
+      .inline_keyboard[0][0].callback_data == f"cov:{_k}")
+check("artwork: the callback is registered",
+      'pattern=r"^cov:"' in Path("main.py").read_text(encoding="utf-8"))
+
 check("item: deep nesting terminates",
       _priv._walk_json({"a": {"b": {"c": {"d": {"e": {"f": {"pk": "1"}}}}}}}) == ("", "", ""))
 

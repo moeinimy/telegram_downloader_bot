@@ -480,7 +480,7 @@ async def _send_cover(msg, meta, status: str = ""):
     the caller can update its caption instead of posting a separate status."""
     if not meta.cover_url:
         return None
-    from handlers.lyrics_handler import platform_keyboard
+    from handlers.lyrics_handler import cover_key, platform_keyboard
 
     try:
         return await msg.reply_photo(
@@ -490,6 +490,7 @@ async def _send_cover(msg, meta, status: str = ""):
             reply_markup=platform_keyboard(
                 ", ".join(meta.artists), meta.name, sp.platform_links(meta),
                 chat_id=msg.chat_id,
+                cover_key=cover_key(meta.cover_url, meta.display),
             ),
         )
     except Exception as e:

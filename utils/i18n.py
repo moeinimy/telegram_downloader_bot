@@ -158,6 +158,10 @@ _EN: dict[str, str] = {
     "⬇️ شروع دانلود…": "⬇️ Starting download…",
     "❌ دانلود ناموفق: {err}": "❌ Download failed: {err}",
     "📤 در حال آپلود…": "📤 Uploading…",
+    "🖼 دانلود کاور (کیفیت اصلی)": "🖼 Download cover (full size)",
+    "🖼 دنبال بهترین نسخه‌ی کاور می‌گردم…": "🖼 Looking for the largest cover…",
+    "😕 کاور رو نتونستم بگیرم.": "😕 Couldn't fetch the cover.",
+    "😕 کاور رو نتونستم بفرستم.": "😕 Couldn't send the cover.",
     "📤 در حال آپلود… ({size}MB)": "📤 Uploading… ({size}MB)",
     "❌ آپلود ناموفق: {err}": "❌ Upload failed: {err}",
     "⚠️ فایل {size}MB شد که از حد مجاز تلگرام ({limit}MB) بزرگ‌تره. یه کیفیت پایین‌تر انتخاب کن.":
