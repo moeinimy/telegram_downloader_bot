@@ -30,6 +30,11 @@ log = logging.getLogger(__name__)
 # Apple's CDN builds the size into the filename and will render on demand.
 # 3000 is comfortably past what any release actually contains, and it answers
 # with the largest it has rather than an error.
+#
+# 3000 is the top on purpose. Apple renders whatever size is asked for,
+# including sizes larger than the master it holds - so asking for 5000 does
+# not return more detail, it returns an upscale of the 3000 that costs more to
+# send. Bigger file, same picture.
 _APPLE_SIZES = ("3000x3000bb", "1400x1400bb", "600x600bb")
 _APPLE_RE = re.compile(r"/\d+x\d+(bb)?\.(jpg|png|webp)", re.I)
 
@@ -72,19 +77,52 @@ def candidates(url: str) -> list[str]:
     return [u for u in out if not (u in seen or seen.add(u))]
 
 
-def best(url: str) -> tuple[str, bytes] | None:
+def upgrade_source(display: str) -> str:
+    """A better-sourced url for the same artwork, or "".
+
+    Rewriting the size only works when the source has a size to rewrite.
+    Spotify caps its images at 640 and a YouTube thumbnail is a video frame -
+    neither gets better by asking. But the same release is usually in Apple's
+    catalogue, where the master is 3000x3000, so the way to a larger cover is
+    a different source rather than a different url.
+    """
+    try:
+        from modules.spotify import _itunes_search
+
+        for hit in _itunes_search(display, 3) or []:
+            if hit.cover_url:
+                return hit.cover_url
+    except Exception as e:
+        log.info("artwork: no catalogue match for %r (%s)", display[:40], e)
+    return ""
+
+
+def is_upgradable(url: str) -> bool:
+    """Whether the url carries a size that can simply be rewritten."""
+    return bool(_APPLE_RE.search(url) or _DEEZER_RE.search(url))
+
+
+def best(*urls: str) -> tuple[str, bytes] | None:
     """Fetch the largest version that actually answers.
 
-    Returns (url, bytes), or None when even the original cannot be fetched.
-    A candidate is accepted only if it is an image and is not smaller than
-    what a plain request for the original would have produced - some CDNs
-    answer an oversized request with a placeholder rather than a 404.
+    Sources are tried in the order given, each expanded into its own size
+    ladder. Returns (url, bytes), or None when nothing answers.
+
+    A candidate is accepted only if it is an image and is not implausibly
+    small - some CDNs answer an oversized request with a placeholder rather
+    than a 404.
     """
     from utils import http
 
     smallest_useful = 8 * 1024
 
-    for candidate in candidates(url):
+    ordered: list[str] = []
+    for url in urls:
+        for candidate in candidates(url):
+            if candidate not in ordered:
+                ordered.append(candidate)
+
+    for candidate in ordered:
         try:
             r = http.client().get(candidate, timeout=20)
         except Exception as e:

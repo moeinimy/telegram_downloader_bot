@@ -45,7 +45,12 @@ async def handle_url(
     kind = SpotifyKind(route.kind)
 
     if kind == SpotifyKind.TRACK:
+        import time as _time
+
+        started = _time.monotonic()
         meta = await sp.get_track_meta(route.resource_id)
+        log.info("get_track_meta for %s took %.1fs - first reply cannot come "
+                 "before this", route.resource_id, _time.monotonic() - started)
         await _send_and_download_track(msg, meta)
 
     elif kind == SpotifyKind.ALBUM:
@@ -638,15 +643,27 @@ async def _send_and_download_track(msg, meta, *, quiet: bool = False) -> bool:
     # A separate status message plus its edits and deletion cost three extra
     # round trips per track, which is most of the wait on a cached song.
     import asyncio
+    import time as _time
 
+    # The cover used to wait for fill_details, which is several lookups against
+    # iTunes and Deezer - so a pasted link sat with no reply at all for half a
+    # minute, and the bot looked dead rather than busy.
+    #
+    # The embed page has already supplied the name, artists, album and a cover,
+    # which is everything this message needs. It goes out now and is corrected
+    # afterwards; the caption is re-edited at the end of this function anyway,
+    # so being early costs nothing and being late cost thirty seconds.
+    cover_msg = await _send_cover(msg, meta, status=t(msg.chat_id, "⬇️ در حال دانلود…"))
+
+    started = _time.monotonic()
     await sp.fill_details(meta)
+    log.info("fill_details for %s took %.1fs", meta.display, _time.monotonic() - started)
 
     # Start fetching immediately and post the cover while it runs. Awaiting the
     # cover first made a Telegram photo round trip block the download from even
     # beginning, for no reason - the two are independent.
     fetch = asyncio.create_task(sp.download_track(meta))
     thumb = _thumb_task(meta)  # also runs during the download
-    cover_msg = await _send_cover(msg, meta, status=t(msg.chat_id, "⬇️ در حال دانلود…"))
 
     status = None
     if cover_msg is None and not quiet:

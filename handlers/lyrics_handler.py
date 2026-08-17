@@ -186,8 +186,21 @@ async def on_cover(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     from utils import artwork
     from utils.helpers import safe_filename
 
+    def _fetch() -> tuple[str, bytes] | None:
+        # Rewriting the size only helps when the url has one. A Spotify image
+        # is capped at 640 and a YouTube thumbnail is a video frame, so for
+        # those the larger cover lives at a different source, not a different
+        # url - and the same release is almost always in Apple's catalogue at
+        # 3000x3000. The original stays in the list either way.
+        sources = [url]
+        if not artwork.is_upgradable(url):
+            better = artwork.upgrade_source(name)
+            if better:
+                sources.insert(0, better)
+        return artwork.best(*sources)
+
     try:
-        found = await asyncio.to_thread(artwork.best, url)
+        found = await asyncio.to_thread(_fetch)
     except Exception as e:
         log.info("cover fetch failed for %s: %s", name, e)
         found = None

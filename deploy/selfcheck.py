@@ -905,6 +905,27 @@ for _label, _url in (("apple", _apple), ("deezer", _deezer), ("youtube", _yt),
           _art.candidates(_url)[-1] == _url)
 
 check("artwork: nothing in means nothing out", _art.candidates("") == [])
+
+# 3000 is the top deliberately. Apple renders any size asked for, including
+# larger than the master it holds, so 5000 returns an upscale - a bigger file
+# carrying the same picture.
+check("artwork: apple is not asked past its master size",
+      not any("5000" in u or "4000" in u for u in _art.candidates(_apple)))
+
+# Rewriting a size only works when there is a size. Spotify caps at 640 and a
+# YouTube thumbnail is a video frame; for those the bigger cover is at another
+# source, not another url.
+check("artwork: an apple url needs no other source", _art.is_upgradable(_apple) is True)
+check("artwork: a deezer url needs no other source", _art.is_upgradable(_deezer) is True)
+check("artwork: a spotify image cannot be rewritten bigger",
+      _art.is_upgradable("https://i.scdn.co/image/ab67616d0000b273abc") is False)
+check("artwork: a youtube thumbnail is not a cover to rewrite",
+      _art.is_upgradable(_yt) is False)
+
+check("artwork: several sources are tried in the order given",
+      _art.best.__doc__ is not None and
+      _art.candidates(_deezer)[0] in
+      [c for u in (_deezer, _apple) for c in _art.candidates(u)])
 check("artwork: no duplicates when a size is already the largest",
       len(_art.candidates(_apple.replace("600x600bb", "3000x3000bb")))
       == len(set(_art.candidates(_apple.replace("600x600bb", "3000x3000bb")))))
