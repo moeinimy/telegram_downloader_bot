@@ -801,6 +801,32 @@ check("ytcookies: the jar is not left world-readable", "chmod 600" in _ytc)
 check("ytcookies: it warns that this is account access",
       "اکانت اصلیت" in _ytc)
 
+# A 1640MB file arrived from a menu of unlabelled buttons, and only announced
+# itself when the upload stalled. "best" has no ceiling in QUALITY_CHOICES, so
+# it is the one that most needs a number beside it.
+_fmts = [
+    {"vcodec": "avc1", "acodec": "none", "height": 360, "filesize": 40 * 1048576},
+    {"vcodec": "avc1", "acodec": "none", "height": 720, "filesize": 200 * 1048576},
+    {"vcodec": "avc1", "acodec": "none", "height": 2160, "filesize_approx": 1600 * 1048576},
+    {"vcodec": "none", "acodec": "opus", "filesize": 8 * 1048576},
+]
+_sizes = _yt._sizes_by_quality(_fmts)
+check("sizes: a capped quality uses the biggest stream that fits",
+      _sizes["360p"] == 48 * 1048576, f"{_sizes.get('360p', 0) / 1048576:.0f}MB")
+check("sizes: 720p picks the 720 stream, not the 2160 one",
+      _sizes["720p"] == 208 * 1048576, f"{_sizes.get('720p', 0) / 1048576:.0f}MB")
+check("sizes: best is the uncapped one and says so",
+      _sizes["best"] == 1608 * 1048576, f"{_sizes.get('best', 0) / 1048576:.0f}MB")
+check("sizes: filesize_approx counts when filesize is absent",
+      _sizes["best"] > _sizes["720p"])
+check("sizes: 1080p falls back to the largest stream under the cap",
+      _sizes["1080p"] == _sizes["720p"])
+check("sizes: no formats means no numbers rather than zeroes",
+      _yt._sizes_by_quality([]) == {})
+check("sizes: a stream with no size reported is skipped, not shown as 0MB",
+      "480p" not in _yt._sizes_by_quality(
+          [{"vcodec": "avc1", "acodec": "none", "height": 480}]))
+
 check("item: deep nesting terminates",
       _priv._walk_json({"a": {"b": {"c": {"d": {"e": {"f": {"pk": "1"}}}}}}}) == ("", "", ""))
 

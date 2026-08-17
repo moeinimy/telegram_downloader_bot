@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, TypeVar
 
@@ -78,6 +78,11 @@ class VideoInfo:
     thumbnail: str
     uploader: str
     available_heights: set[int]
+    # Approximate bytes per quality label, from the format list. The menu was
+    # a set of unlabelled buttons, so picking one was a bet: "best" has no
+    # ceiling and produced a 1640MB file from a video nobody expected to be
+    # that size, and there was no way to see that coming before the upload.
+    size_by_quality: dict[str, int] = field(default_factory=dict)
 
 
 # ---------- yt-dlp plumbing ----------
@@ -231,9 +236,10 @@ def probe_video(url: str) -> VideoInfo:
         kind="probe",
     )
 
+    formats = info.get("formats") or []
     heights = {
         f.get("height")
-        for f in (info.get("formats") or [])
+        for f in formats
         if f.get("vcodec") != "none" and f.get("height")
     }
     return VideoInfo(
@@ -243,7 +249,43 @@ def probe_video(url: str) -> VideoInfo:
         thumbnail=info.get("thumbnail", ""),
         uploader=info.get("uploader", ""),
         available_heights=heights,
+        size_by_quality=_sizes_by_quality(formats),
     )
+
+
+def _size_of(f: dict) -> int:
+    return int(f.get("filesize") or f.get("filesize_approx") or 0)
+
+
+def _sizes_by_quality(formats: list[dict]) -> dict[str, int]:
+    """Roughly what each button will cost, mirroring how QUALITY_CHOICES picks.
+
+    Approximate on purpose: yt-dlp reports filesize_approx for most streams and
+    an estimate that is in the right order of magnitude is the whole point. The
+    alternative on offer was no number at all.
+    """
+    video = [f for f in formats if f.get("vcodec") != "none" and f.get("height")]
+    audio = [f for f in formats if f.get("vcodec") == "none" and f.get("acodec") != "none"]
+    if not video:
+        return {}
+
+    best_audio = max((_size_of(f) for f in audio), default=0)
+
+    sizes: dict[str, int] = {}
+    for label in ("360p", "480p", "720p", "1080p"):
+        cap = int(label.rstrip("p"))
+        fitting = [f for f in video if (f.get("height") or 0) <= cap]
+        if fitting:
+            pick = max(fitting, key=lambda f: (f.get("height") or 0, _size_of(f)))
+            if _size_of(pick):
+                sizes[label] = _size_of(pick) + best_audio
+
+    # "best" has no ceiling in QUALITY_CHOICES, which is exactly why it needs a
+    # number next to it more than any of the others do.
+    top = max(video, key=lambda f: (f.get("height") or 0, _size_of(f)))
+    if _size_of(top):
+        sizes["best"] = _size_of(top) + best_audio
+    return sizes
 
 
 def quality_options_for(info: VideoInfo) -> list[str]:
@@ -280,6 +322,12 @@ def download_video(
 
     def _run(ydl: YoutubeDL) -> Path:
         result = ydl.extract_info(url, download=True)
+        # What the selector actually resolved to. A quality that quietly
+        # resolves to something enormous is indistinguishable from a slow
+        # upload once the file exists on disk.
+        log.info("yt format for %s: id=%s height=%s ext=%s",
+                 quality, result.get("format_id"), result.get("height"),
+                 result.get("ext"))
         return Path(ydl.prepare_filename(result)).with_suffix(".mp4")
 
     return ytdlp_run(extra, _run, kind="video")

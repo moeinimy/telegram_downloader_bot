@@ -49,7 +49,12 @@ async def handle_url(
     kb_rows: list[list[InlineKeyboardButton]] = []
     row: list[InlineKeyboardButton] = []
     for q in yt.quality_options_for(info):
-        row.append(InlineKeyboardButton(f"🎬 {q}", callback_data=f"yt:{info.id}:{q}"))
+        # The size belongs on the button. Without it "best" is a bet, and the
+        # bet was lost quietly: a 1640MB file that only announced itself once
+        # it was already downloaded and the upload had stalled.
+        approx = info.size_by_quality.get(q, 0)
+        label = f"🎬 {q}" if not approx else f"🎬 {q} · {approx / 1048576:.0f}MB"
+        row.append(InlineKeyboardButton(label, callback_data=f"yt:{info.id}:{q}"))
         if len(row) == 3:
             kb_rows.append(row)
             row = []
