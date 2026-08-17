@@ -171,6 +171,11 @@ _IDLE_MARKERS = ("timed out", "timeout", "temporarily unavailable",
 dead_reason: str = ""
 dead_since: float = 0.0
 
+# Set when realtime stops trying because Instagram keeps refusing it. Not the
+# same as a dead cookie: the cookie is fine, the web source is using it. This
+# is only realtime's own path being closed.
+given_up: str = ""
+
 _alert = None
 
 
@@ -372,6 +377,26 @@ async def _loop(dispatch: Dispatch) -> None:
                     f"جزئیات: {last_error[:140]}"
                 )
 
+            # A refusal is not a connection that might come back, and retrying
+            # it is not free. Every attempt is a failed mobile-api sign-in on
+            # the same account the web poller depends on - roughly 288 of them
+            # a day, forever, on an account whose problem is being noticed.
+            # The web source has been delivering intermittently while this ran,
+            # which is at least consistent with it being throttled for them.
+            #
+            # So: stop. A browser cookie on the mobile api is not something
+            # that starts working on the twentieth try, and a restart is the
+            # right way to retry after a genuinely new credential.
+            if attempt >= _ALERT_AFTER and _is_refusal(last_error):
+                global given_up
+                given_up = last_error
+                log.error("ig mqtt: refused %d times - giving up rather than "
+                          "signing in at the account all day. The web source "
+                          "carries the inbox; restart to try realtime again.",
+                          attempt)
+                await _close()
+                return
+
             await asyncio.sleep(wait)
 
 
@@ -436,6 +461,12 @@ async def health() -> tuple[bool, str]:
     if dead_reason:
         held = (time.time() - dead_since) / 60
         return False, f"sessionid is dead ({held:.0f}m) - paste a fresh one: {dead_reason[:90]}"
+
+    # Distinct from a dead cookie on purpose: the cookie works, the web source
+    # is using it right now. Only realtime's own path is closed, and saying
+    # "dead" here would send someone to replace a credential that is fine.
+    if given_up:
+        return False, f"realtime refused - web is carrying the inbox: {given_up[:80]}"
 
     if not connected_since:
         # Connecting means signing in and completing an MQTT handshake, which

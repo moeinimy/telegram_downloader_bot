@@ -343,7 +343,19 @@ async def start(on_message: Dispatch) -> None:
             _states["mqtt"].detail = str(e)[:120]
             log.warning("ig direct: realtime source failed to start (%s)", e)
 
-    if "web" in _sources and "webhook" not in _sources and not _states["mqtt"].running:
+    # The web reader starts NOW, even with realtime starting beside it.
+    #
+    # It used to wait for realtime to be declared unhealthy, which cannot
+    # happen before the connect grace period expires - so every restart left
+    # 75 seconds with nothing reading the inbox at all, and a DM sent in that
+    # window was never delivered: the poller marks everything older than its
+    # start as already seen. On a day of frequent restarts that is exactly
+    # what "sometimes it arrives, sometimes it doesn't" looks like.
+    #
+    # The health loop stands it down as soon as realtime is genuinely up, so
+    # the cost is at most one minute of polling per restart, against messages
+    # that were being dropped outright.
+    if "web" in _sources and "webhook" not in _sources:
         try:
             await _sources["web"].start(_dispatch)
             _states["web"].running = True

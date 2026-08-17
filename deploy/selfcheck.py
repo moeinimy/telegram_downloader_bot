@@ -1059,6 +1059,26 @@ check("music video: it opens the normal youtube quality menu",
 check("music video: searching happens on the button, not per track",
       "find_music_video" not in Path("handlers/lyrics_handler.py").read_text(encoding="utf-8"))
 
+# Realtime is "connecting…" for its first 60s, which counts as healthy, so the
+# web poller was not started until the health loop declared realtime dead.
+# Every restart therefore had a window with nothing reading the inbox - and
+# the poller marks everything older than its start as already seen, so a DM
+# sent in that window was not late, it was gone.
+_igdsrc = Path("modules/ig_direct.py").read_text(encoding="utf-8")
+_startfn = _igdsrc[_igdsrc.index("async def start("):_igdsrc.index("async def stop(")]
+check("ig direct: the web reader starts without waiting for realtime to fail",
+      'not _states["mqtt"].running' not in _startfn)
+check("ig direct: and is still stood down once realtime is up",
+      'stopping the web poller failed' in _igdsrc)
+
+# Retrying a refusal is not free: each attempt is a failed mobile-api sign-in
+# on the account the web poller depends on.
+check("realtime: a refusal eventually stops instead of looping all day",
+      "given_up = last_error" in Path("modules/ig_realtime.py").read_text(encoding="utf-8"))
+_rt.given_up = ""
+check("realtime: giving up is not reported as a dead cookie",
+      _rt.dead_reason == "" and _rt.given_up == "")
+
 check("item: deep nesting terminates",
       _priv._walk_json({"a": {"b": {"c": {"d": {"e": {"f": {"pk": "1"}}}}}}}) == ("", "", ""))
 
