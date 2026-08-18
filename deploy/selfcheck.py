@@ -1076,6 +1076,54 @@ check("ig direct: and is still stood down once realtime is up",
 check("realtime: a refusal eventually stops instead of looping all day",
       "given_up = last_error" in Path("modules/ig_realtime.py").read_text(encoding="utf-8"))
 _rt.given_up = ""
+# The bulk-download stop button did nothing visible. A callback may be
+# answered exactly once, and the blanket answer() at the top of on_callback
+# spent that reply, so the toast saying "stopping" raised "response already
+# sent" into a bare except - while the periodic status edit put the button
+# straight back every five tracks. The flag was set the whole time; nothing
+# on screen ever said so.
+import asyncio as _aio
+from utils import i18n as _i18n
+from handlers import spotify_handler as _sph
+
+
+class _Q:
+    def __init__(self):
+        self.data = "sp:stop"
+        self.message = type("M", (), {"chat_id": 4242})()
+        self.answers = []
+        self.cleared = False
+
+    async def answer(self, text=None, **kw):
+        if self.answers:
+            raise RuntimeError("response already sent")
+        self.answers.append(text)
+
+    async def edit_message_reply_markup(self, reply_markup=None):
+        self.cleared = reply_markup is None
+
+
+_q = _Q()
+_sph._cancelled.discard(4242)
+_aio.run(_sph.on_callback(type("U", (), {"callback_query": _q})(), None))
+
+check("stop button: the press is acknowledged with the message it carries",
+      _q.answers and _q.answers[0])
+check("stop button: it is answered once, not twice",
+      len(_q.answers) == 1)
+check("stop button: the button is taken away so the press is visible",
+      _q.cleared)
+check("stop button: the batch is actually flagged to stop",
+      4242 in _sph._cancelled)
+check("stop button: the status edit does not re-attach it",
+      "reply_markup=None if halting else stop_kb" in
+      Path("handlers/spotify_handler.py").read_text(encoding="utf-8"))
+check("stop button: both new strings are translated",
+      all(k in _i18n._EN for k in (
+          "⏹ متوقف شد — ترک‌های در حال دانلود تموم می‌شن.",
+          "⏹ در حال توقف…")))
+_sph._cancelled.discard(4242)
+
 # A Spotify link resolved to "Drake - Finesse", five candidate uploads were
 # located and scored, and every one then failed to download. The user was told
 # the audio could not be FOUND and that the video may have been deleted -

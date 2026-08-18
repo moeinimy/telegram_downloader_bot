@@ -133,8 +133,9 @@ _EN: dict[str, str] = {
     "⏪ ۱۰ صفحه": "⏪ 10 pages",
     "۱۰ صفحه ⏩": "10 pages ⏩",
     "⏹ توقف": "⏹ Stop",
-    "متوقف شد — ترک‌های در حال دانلود تموم می‌شن.":
-        "Stopping — downloads already in flight will finish.",
+    "⏹ متوقف شد — ترک‌های در حال دانلود تموم می‌شن.":
+        "⏹ Stopping — downloads already in flight will finish.",
+    "⏹ در حال توقف…": "⏹ Stopping…",
     "چیزی تو این محدوده نیست.": "Nothing in that range.",
     "⬇️ شروع دانلود {n} ترک…": "⬇️ Starting {n} tracks…",
     "⚠️ رد شد: {name} — {err}": "⚠️ Skipped: {name} — {err}",

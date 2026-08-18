@@ -463,11 +463,20 @@ async def _download_range(msg, container, offset: int, count: int) -> None:
 
             # Editing on every track would burn the rate limit on long playlists.
             if i % 5 == 0 or i == len(tracks):
+                # Once ⏹ has been pressed the button must not come back. This
+                # edit re-attached it every five tracks, so it reappeared on
+                # the message seconds after being removed - the press looked
+                # ignored twice over.
+                halting = chat_id in _cancelled
+                head = (
+                    t(chat_id, "⏹ در حال توقف…") if halting
+                    else f"⬇️ {i}/{len(tracks)}"
+                )
                 try:
                     await status.edit_text(
-                        f"⬇️ {i}/{len(tracks)} — ✅ {done}"
+                        f"{head} — ✅ {done}"
                         + (f" · ❌ {failed}" if failed else ""),
-                        reply_markup=stop_kb,
+                        reply_markup=None if halting else stop_kb,
                     )
                 except Exception:
                     pass
@@ -741,18 +750,35 @@ async def _send_and_download_track(msg, meta, *, quiet: bool = False) -> bool:
 
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
-    await query.answer()
     data = query.data
 
-    if data == "sp:noop":
-        return
-
+    # Answered here, ahead of the blanket acknowledgement below. A callback
+    # can be answered exactly once: the bare answer() spent that single reply,
+    # so the toast that actually said "stopping" raised "response already
+    # sent" straight into a bare except. Pressing ⏹ produced no visible change
+    # of any kind while tracks already in flight kept arriving, which from the
+    # other side of the screen is exactly what a dead button looks like.
     if data == "sp:stop":
         _cancelled.add(query.message.chat_id)
         try:
-            await query.answer(t(query.message.chat_id, "متوقف شد — ترک‌های در حال دانلود تموم می‌شن."))
+            await query.answer(
+                t(query.message.chat_id,
+                  "⏹ متوقف شد — ترک‌های در حال دانلود تموم می‌شن.")
+            )
         except Exception:
             pass
+        # Taking the button away is the other half of the answer. A toast can
+        # be missed or dismissed; the button vanishing cannot, and it says the
+        # press landed even while the last few tracks are still finishing.
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        return
+
+    await query.answer()
+
+    if data == "sp:noop":
         return
 
     if data.startswith("sp:sim:"):
