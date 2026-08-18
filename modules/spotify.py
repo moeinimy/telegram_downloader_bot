@@ -1533,6 +1533,67 @@ def _where_else(meta: TrackMeta) -> list[str]:
         return []
 
 
+# Every one of these means "this address was turned away", not "this track
+# does not exist". They are kept apart from a genuine deletion because the
+# remedy is completely different, and because telling somebody a song is gone
+# when the server is simply being refused is the most misleading thing the bot
+# can say.
+_REFUSED_MARKERS = (
+    "sign in to confirm", "confirm you're not a bot", "not a bot",
+    "use --cookies", "http error 403", "please sign in",
+    "failed to extract any player response",
+)
+# A deno that will not run cannot solve YouTube's JS challenge, so every
+# format disappears and yt-dlp reports the absence rather than the cause.
+_RUNTIME_MARKERS = ("requested format is not available", "unable to extract")
+
+
+def _download_failed(
+    meta: TrackMeta, targets: list[str], reasons: list[str], last: Exception | None
+) -> RuntimeError:
+    """Say which of the three different failures this actually was.
+
+    A Spotify link resolved to "Drake - Finesse", five candidate uploads were
+    located and scored, and every single one of them then failed to download.
+    The user was told the audio could not be FOUND - which was false, it had
+    been found and identified - and that the video may have been deleted,
+    which cannot be true of five different videos at the same moment.
+
+    Five candidates failing together is a statement about this server, not
+    about the track, and it is the same mistake this bot has made before:
+    reporting a refusal aimed at us as a fact about the thing we asked for.
+    """
+    if not targets:
+        return RuntimeError(
+            f"آهنگ «{meta.display}» رو تو یوتیوب و ساندکلاد پیدا نکردم."
+        )
+
+    blob = " ".join(reasons)
+    if any(m in blob for m in _REFUSED_MARKERS):
+        log.error("all %d candidates for %r were refused - youtube is turning "
+                  "this server away, not missing the track", len(targets), meta.display)
+        return RuntimeError(
+            f"«{meta.display}» پیدا شد ولی یوتیوب دانلودش رو به این سرور نداد "
+            f"(هر {len(targets)} گزینه رد شد). آهنگ حذف نشده — مشکل آدرس سروره. "
+            f"راه‌حل: botctl ytcookies یا botctl proxy"
+        )
+
+    if any(m in blob for m in _RUNTIME_MARKERS):
+        log.error("all %d candidates for %r reported no usable format - deno "
+                  "or yt-dlp is the suspect, not the track",
+                  len(targets), meta.display)
+        return RuntimeError(
+            f"«{meta.display}» پیدا شد ولی هیچ‌کدوم از {len(targets)} گزینه فرمت قابل "
+            f"دانلود نداشت. معمولا یعنی deno یا yt-dlp لنگه. "
+            f"راه‌حل: botctl ytdlp"
+        )
+
+    return RuntimeError(
+        f"دانلود «{meta.display}» از هر {len(targets)} گزینه شکست خورد"
+        + (f" — {str(last)[:120]}" if last else "")
+    )
+
+
 def _locate_audio(meta: TrackMeta) -> list[str]:
     """
     Find the uploads that actually *are* this track, best first.
@@ -1723,12 +1784,14 @@ def download_track(meta: TrackMeta) -> Path:
     # that fails. So the ranked list is walked until something downloads,
     # instead of one refusal sinking a track we positively identified.
     last: Exception | None = None
+    reasons: list[str] = []
     out_path = None
     for i, target in enumerate(targets):
         try:
             ytdlp_run(extra, lambda ydl: ydl.download([target]), kind="audio")
         except Exception as e:
             last = e
+            reasons.append(str(e).lower())
             log.info("candidate %d/%d unusable (%s) - trying the next",
                      i + 1, len(targets), str(e)[:120])
             continue
@@ -1739,10 +1802,7 @@ def download_track(meta: TrackMeta) -> Path:
                  i + 1, len(targets))
 
     if out_path is None:
-        raise RuntimeError(
-            f"فایل صوتی برای «{meta.display}» پیدا نشد"
-            + (f" — {str(last)[:120]}" if last else "")
-        )
+        raise _download_failed(meta, targets, reasons, last)
 
     _embed_cover_and_tags(out_path, meta)
     return out_path

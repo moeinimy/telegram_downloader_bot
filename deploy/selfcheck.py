@@ -1076,6 +1076,34 @@ check("ig direct: and is still stood down once realtime is up",
 check("realtime: a refusal eventually stops instead of looping all day",
       "given_up = last_error" in Path("modules/ig_realtime.py").read_text(encoding="utf-8"))
 _rt.given_up = ""
+# A Spotify link resolved to "Drake - Finesse", five candidate uploads were
+# located and scored, and every one then failed to download. The user was told
+# the audio could not be FOUND and that the video may have been deleted -
+# false on both counts, and impossible for five videos at one moment. A
+# refusal aimed at this server is not a fact about the track.
+from modules import spotify as _spd
+_five = ["u1", "u2", "u3", "u4", "u5"]
+_fmeta = _spd.TrackMeta("sp_1", "Finesse", ["Drake"], "Scorpion", 182080, "", "")
+
+check("spotify: a bot check is not reported as a missing file",
+      "پیدا شد" in str(_spd._download_failed(
+          _fmeta, _five, ["sign in to confirm you're not a bot"] * 5, None)))
+check("spotify: a bot check says the track was not deleted",
+      "حذف نشده" in str(_spd._download_failed(
+          _fmeta, _five, ["sign in to confirm you're not a bot"] * 5, None)))
+check("spotify: a 403 on every candidate blames the address, not the track",
+      "botctl ytcookies" in str(_spd._download_failed(
+          _fmeta, _five, ["http error 403: forbidden"] * 5, None)))
+check("spotify: no usable format points at the runtime instead",
+      "botctl ytdlp" in str(_spd._download_failed(
+          _fmeta, _five, ["requested format is not available"] * 5, None)))
+check("spotify: nothing located is still reported as nothing located",
+      "پیدا نکردم" in str(
+          _spd._download_failed(_fmeta, [], [], None)))
+check("spotify: an ordinary failure keeps the underlying reason",
+      "gone for good" in str(_spd._download_failed(
+          _fmeta, _five, ["video unavailable"] * 5, RuntimeError("gone for good"))))
+
 # "drake gods plan" answered with an orchestral cover, an 8-bit emulation and
 # a pianist, and not one result by Drake. Both catalogues had put his track
 # first; _norm split "God's" into "god"+"s", so the query token "gods" was
