@@ -1266,6 +1266,22 @@ check("iglogin: a bare assertion is backed by what Instagram actually replied",
 # it at all - not by email, not by SMS. Treating every checkpoint as the code
 # kind meant waiting for a message that was never going to arrive, which is
 # exactly how it looked from the other side.
+# Which checkpoint Instagram serves depends on which app build asks. instagrapi
+# introduces itself as a current build, and a current build gets the codeless
+# Bloks redirect - approving which did not clear it here. An older build
+# predates that flow and is answered with the code challenge instead.
+check("iglogin: an older app build can be presented",
+      "_LEGACY_APP_VERSION" in _iglogin_src and "set_device(" in _iglogin_src)
+check("iglogin: the version and its code are kept together",
+      "_LEGACY_VERSION_CODE" in _iglogin_src)
+check("iglogin: legacy persists, so the retry is the same build",
+      "if legacy or not DEVICE_PATH.exists():" in _iglogin_src)
+check("iglogin: a surviving Bloks checkpoint points at that route",
+      "_suggest_legacy()" in _iglogin_src
+      and "botctl iglogin legacy" in _iglogin_src)
+check("iglogin: and does not suggest it to a run already using it",
+      'if "legacy" not in sys.argv[1:]:' in _iglogin_src)
+
 check("iglogin: the Bloks checkpoint is recognised by its step name",
       'step == "STEP_NAME"' in _iglogin_src)
 check("iglogin: and by its action, in case the step is not named",
@@ -1292,7 +1308,7 @@ check("iglogin: a resolved challenge is followed by a second login",
       _iglogin_src.count("client.login(username, password)") >= 2)
 
 check("iglogin: the device is saved before the login, so a retry repeats it",
-      _iglogin_src.index("if not DEVICE_PATH.exists():")
+      _iglogin_src.index("or not DEVICE_PATH.exists():")
       < _iglogin_src.index("client.login(username, password)"))
 check("iglogin: the owner is recorded at the same moment",
       "OWNER_PATH.write_text(username" in _iglogin_src)

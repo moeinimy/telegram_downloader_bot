@@ -61,6 +61,20 @@ def _code_handler(username: str, choice=None) -> str:
 
 _BLOKS_REDIRECT = "com.bloks.www.ig.challenge.redirect.async"
 
+# Which checkpoint Instagram serves depends on which app build is asking.
+#
+# instagrapi introduces itself as a current build (428.x at the time of
+# writing), and a current build gets the Bloks redirect checkpoint: no code,
+# approve-in-the-app only, and approving it did not clear it here. Older
+# builds predate that flow and are answered with the classic
+# select_verify_method challenge instead - the one that emails six digits.
+#
+# This is a lever, not a guarantee. It changes what Instagram offers, which is
+# the only remaining thing under our control once the credentials, the device
+# and the account are all known good. `botctl iglogin legacy` opts into it.
+_LEGACY_APP_VERSION = "203.0.0.29.118"
+_LEGACY_VERSION_CODE = "314665256"
+
 
 def _approve_in_app(client) -> bool:
     """The Bloks redirect checkpoint: approved on the phone, acknowledged here.
@@ -92,6 +106,23 @@ def _approve_in_app(client) -> bool:
     except Exception as e:
         _say("[X]", f"اعلام تایید جواب نداد: {type(e).__name__}: {e}")
         return False
+
+
+def _suggest_legacy() -> None:
+    """Said after a Bloks checkpoint survives being approved.
+
+    Which checkpoint Instagram serves depends on which app build asks for it,
+    and that is the last thing still under our control here - the account, the
+    credentials and the device are all known good by this point.
+    """
+    _say("[!]", "")
+    _say("[!]", "این چک‌پوینت با تایید هم باز نشد. Bloks جریان نسخه‌های جدیده،")
+    _say("[!]", "و ما خودمون رو نسخه‌ی جدید معرفی می‌کنیم. نسخه‌ی قدیمی‌تر")
+    _say("[!]", "معمولا چلنج کددار می‌گیره - همون که کد به ایمیلت می‌فرسته:")
+    _say("[!]", "")
+    _say("[!]", "    botctl iglogin legacy")
+    _say("[!]", "")
+    _say("[!]", "تضمینی نیست، ولی تنها چیزیه که هنوز دست ماست.")
 
 
 def _resolve_challenge(client, username: str) -> bool:
@@ -261,9 +292,20 @@ def main() -> int:
     # own reason to challenge, so the retries could not have cleared the
     # challenge they were retrying.
     #
+    # Introduce ourselves as an older build, when asked to. Applied on top of
+    # the settled device so the uuids survive - only the app version and the
+    # user agent it builds change - and persisted, because a retry that
+    # presents a different build is a different phone again.
+    legacy = "legacy" in sys.argv[1:]
+    if legacy:
+        client.set_device({"app_version": _LEGACY_APP_VERSION,
+                           "version_code": _LEGACY_VERSION_CODE})
+        _say("[*]", f"با نسخه‌ی قدیمی اپ معرفی می‌شم: {_LEGACY_APP_VERSION}")
+        _say("[*]", "این نسخه معمولا چلنج کددار می‌گیره به‌جای Bloks")
+
     # Written once here and reused from now on, whether or not this attempt
     # gets through.
-    if not DEVICE_PATH.exists():
+    if legacy or not DEVICE_PATH.exists():
         DEVICE_PATH.parent.mkdir(parents=True, exist_ok=True)
         DEVICE_PATH.write_text(json.dumps(client.get_settings()), encoding="utf-8")
         DEVICE_PATH.chmod(0o600)
@@ -318,6 +360,8 @@ def main() -> int:
             _say("[!]", "")
             _say("[!]", "و اگه این اکانت قبلا چک‌پوینت خورده، این همون چک‌پوینت")
             _say("[!]", "بازه - نه یه تایید تازه. اون اکانت با تلاش دوباره برنمی‌گرده.")
+            if "legacy" not in sys.argv[1:]:
+                _suggest_legacy()
         elif "badpassword" in lowered or "bad password" in lowered:
             _say("[!]", "این همیشه یعنی پسورد غلط نیست - اینستاگرام لاگین از این")
             _say("[!]", "آدرس رو هم با همین جواب رد می‌کنه. اگه پسورد مطمئنا درسته،")
