@@ -313,6 +313,14 @@ def main() -> int:
         OWNER_PATH.chmod(0o600)
         _say("[*]", f"device تازه ساخته و ذخیره شد - همین برای @{username} می‌مونه")
 
+    # Always say which build is being presented, not only when `legacy` asked
+    # for one. The saved device carries app_version, so one `legacy` run makes
+    # every later run legacy too - silently, and looking identical to a normal
+    # one. Printing it is the difference between a sticky setting and an
+    # invisible one.
+    _say("[*]", f"معرفی می‌شم به عنوان اپ نسخه‌ی "
+                f"{client.device_settings.get('app_version', '?')}")
+
     proxy = proxies.normalize(settings.ig_dm_proxy)
     if proxy:
         client.set_proxy(proxy)

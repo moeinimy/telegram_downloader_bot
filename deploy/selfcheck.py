@@ -1270,6 +1270,12 @@ check("iglogin: a bare assertion is backed by what Instagram actually replied",
 # introduces itself as a current build, and a current build gets the codeless
 # Bloks redirect - approving which did not clear it here. An older build
 # predates that flow and is answered with the code challenge instead.
+# One `legacy` run writes app_version into the saved device, so every later
+# run presents the old build too - silently, and looking exactly like a normal
+# one. A sticky setting that is never printed is an invisible one.
+check("iglogin: the build being presented is always reported",
+      "client.device_settings.get('app_version'" in _iglogin_src)
+
 check("iglogin: an older app build can be presented",
       "_LEGACY_APP_VERSION" in _iglogin_src and "set_device(" in _iglogin_src)
 check("iglogin: the version and its code are kept together",
