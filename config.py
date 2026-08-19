@@ -295,9 +295,20 @@ settings = Settings(
     ig_dm_poll_seconds=_float("IG_DM_POLL_SECONDS", 8),
     ig_dm_fast_seconds=_float("IG_DM_FAST_SECONDS", 3),
     ig_dm_fast_window=_int("IG_DM_FAST_WINDOW", 120),
-    ig_dm_max_interval=_float("IG_DM_MAX_INTERVAL", 30),
-    ig_dm_quiet_hours=_get("IG_DM_QUIET_HOURS"),
-    ig_dm_quiet_interval=_float("IG_DM_QUIET_INTERVAL", 300),
+    # This ceiling caps the backoff ladder in modules/ig_web.py, and at 30 it
+    # was cancelling the rung that matters most. After an hour of silence the
+    # ladder asks for 64s and the ceiling forced it back to 30 - so an account
+    # nobody messaged all day still made 5,760 requests, which is the figure
+    # that got an account actioned in the first place. It only ever delays the
+    # FIRST message after an hour of quiet; everything after it is caught by
+    # the fast window regardless.
+    ig_dm_max_interval=_float("IG_DM_MAX_INTERVAL", 120),
+    # Left unset, this read as "no quiet hours" and the session kept exactly
+    # the same rhythm at 4am as at 8pm - which ig_web itself calls one of the
+    # plainest signals that nobody is holding the phone. Off is still
+    # available by setting it empty; it just is not the default any more.
+    ig_dm_quiet_hours=_get("IG_DM_QUIET_HOURS", "2-8"),
+    ig_dm_quiet_interval=_float("IG_DM_QUIET_INTERVAL", 600),
     bot_api_base_url=_get("BOT_API_BASE_URL"),
     download_dir=Path(_get("DOWNLOAD_DIR", "./downloads")).resolve(),
     max_upload_mb=int(_get("MAX_UPLOAD_MB", "50") or 50),

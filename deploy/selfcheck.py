@@ -1076,6 +1076,39 @@ check("ig direct: and is still stood down once realtime is up",
 check("realtime: a refusal eventually stops instead of looping all day",
       "given_up = last_error" in Path("modules/ig_realtime.py").read_text(encoding="utf-8"))
 _rt.given_up = ""
+# The poll defaults were audited against this bot's own ban history, where a
+# flat 15s poll was ~5,700 requests/day and the account was actioned. Two of
+# them were pure loss - they cost requests without buying latency.
+#
+# IG_DM_MAX_INTERVAL caps the backoff ladder in ig_web._next_delay. At 30 it
+# cancelled the deep-idle rung outright: after an hour of silence the ladder
+# asks 64s and the ceiling forced 30, so an account nobody messaged all day
+# still made 5,760 requests - the ban figure, reached while idle.
+import time as _time
+from config import settings as _cs
+from modules import ig_web as _igw
+
+check("poll: the ceiling no longer cancels the deep-idle rung",
+      min(_cs.ig_dm_poll_seconds * 8,
+          max(_cs.ig_dm_fast_seconds, _cs.ig_dm_max_interval))
+      == _cs.ig_dm_poll_seconds * 8)
+check("poll: an idle day stays under the figure that got an account actioned",
+      86400 / min(_cs.ig_dm_poll_seconds * 8,
+                  max(_cs.ig_dm_fast_seconds, _cs.ig_dm_max_interval)) * 2 < 5000)
+check("poll: quiet hours are on by default, not left unset",
+      "-" in _cs.ig_dm_quiet_hours)
+check("poll: the quiet window actually reads as quiet",
+      _igw._in_quiet_hours(_time.struct_time(
+          (2026, 1, 1, 4, 0, 0, 0, 1, 0))))
+check("poll: the middle of the day does not",
+      not _igw._in_quiet_hours(_time.struct_time(
+          (2026, 1, 1, 14, 0, 0, 0, 1, 0))))
+check("poll: overnight is slower than the daytime ceiling",
+      _cs.ig_dm_quiet_interval > _cs.ig_dm_max_interval)
+check("poll: jitter is still applied to every interval",
+      "random.uniform(0.75, 1.25)" in
+      Path("modules/ig_web.py").read_text(encoding="utf-8"))
+
 # Moving to a fresh Instagram account, which is the entire point of
 # botctl iglogin, walked straight into two traps. iglogin reused ig_device.json
 # whenever it existed - so the new account would sign in from the fingerprint
