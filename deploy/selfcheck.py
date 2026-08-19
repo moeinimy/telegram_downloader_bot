@@ -1076,6 +1076,28 @@ check("ig direct: and is still stood down once realtime is up",
 check("realtime: a refusal eventually stops instead of looping all day",
       "given_up = last_error" in Path("modules/ig_realtime.py").read_text(encoding="utf-8"))
 _rt.given_up = ""
+# botctl iglogin died before it reached Instagram at all:
+#
+#     PermissionError: [Errno 13] Permission denied: '/root/downloads'
+#
+# config.py calls load_dotenv() and resolves DOWNLOAD_DIR with
+# Path("./downloads").resolve(), and both read the WORKING DIRECTORY. The
+# service sets WorkingDirectory so the bot itself was never affected, but
+# botctl is typed from wherever the admin is standing - /root - so .env was
+# never found and downloads pointed inside root's home.
+_mg = Path("deploy/manage.sh").read_text(encoding="utf-8")
+check("botctl: python is invoked through the helper that sets the directory",
+      "run_py() {" in _mg)
+check("botctl: the helper cds into the project before exec",
+      'cd "$1" && shift && exec "$@"' in _mg)
+check("botctl: no invocation bypasses it",
+      'sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/python"' not in _mg)
+check("botctl: iglogin in particular goes through it",
+      "run_py \"$PROJECT_DIR/deploy/iglogin.py\"" in _mg)
+check("service: the unit still pins its own working directory",
+      "WorkingDirectory=/opt/telegram_downloader_bot" in
+      Path("deploy/tg-downloader-bot.service").read_text(encoding="utf-8"))
+
 # Realtime was gated on has_ig_web - the presence of IG_DM_SESSIONID - which
 # is the one credential the mobile api refuses, and the reason this feature has
 # never connected. Worse for the account switch about to happen: clearing that
@@ -1370,7 +1392,8 @@ check("iglogin: BadPassword is explained rather than taken at face value",
       "پسورد غلط نیست" in _login)
 check("iglogin: it can be run as a command", "    iglogin)" in _dispatch)
 check("iglogin: it runs as the bot user, not root",
-      'sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/python" "$PROJECT_DIR/deploy/iglogin.py"' in _mgr)
+      'sudo -u "$BOT_USER"' in _mgr and "run_py() {" in _mgr
+      and 'run_py "$PROJECT_DIR/deploy/iglogin.py"' in _mgr)
 
 check("item: deep nesting terminates",
       _priv._walk_json({"a": {"b": {"c": {"d": {"e": {"f": {"pk": "1"}}}}}}}) == ("", "", ""))

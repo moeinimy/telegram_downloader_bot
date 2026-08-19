@@ -11,6 +11,23 @@ PROJECT_DIR="/opt/telegram_downloader_bot"
 SERVICE_NAME="tg-downloader-bot"
 BOT_USER="botuser"
 
+# Every python entrypoint here calls load_dotenv() and resolves DOWNLOAD_DIR
+# with Path("./downloads").resolve() - both of which read the WORKING
+# DIRECTORY, not the script's location. Run from /root, as any admin does,
+# that meant .env was never found and downloads resolved to /root/downloads,
+# which botuser cannot even stat:
+#
+#     PermissionError: [Errno 13] Permission denied: '/root/downloads'
+#
+# So the directory is part of the invocation rather than an assumption about
+# where whoever typed botctl happened to be standing. sh -c rather than
+# `env -C` because that flag is not in every coreutils this may meet.
+run_py() {
+    sudo -u "$BOT_USER" sh -c 'cd "$1" && shift && exec "$@"' \
+        _ "$PROJECT_DIR" "$PROJECT_DIR/.venv/bin/python" "$@"
+}
+
+
 # Set by do_reset so do_install can put the user's files back after a wipe.
 RESTORE_DIR=""
 
@@ -667,7 +684,7 @@ do_iglogin() {
     read -rp "آماده‌ست؟ (y/n) " a
     [[ "$a" != "y" ]] && return 0
 
-    if ! sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/python" -c "import instagrapi" 2>/dev/null; then
+    if ! run_py -c "import instagrapi" 2>/dev/null; then
         info "نصب instagrapi..."
         sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/pip" install -q --progress-bar off instagrapi \
             || { err "نصب نشد"; return 1; }
@@ -675,7 +692,7 @@ do_iglogin() {
 
     # As the bot user: the session file it writes has to be readable by the
     # service, and a root-owned one silently is not.
-    sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/python" "$PROJECT_DIR/deploy/iglogin.py" || return 1
+    run_py "$PROJECT_DIR/deploy/iglogin.py" || return 1
 
     systemctl restart "$SERVICE_NAME"
     ok "ریستارت شد"
@@ -723,7 +740,7 @@ do_ytcookies() {
     ok "کوکی ذخیره شد ($(grep -c . "$jar") خط)"
 
     echo; info "تست با یه ویدیو..."
-    if sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/python" -m yt_dlp \
+    if run_py -m yt_dlp \
         --cookies "$jar" --skip-download --print '%(title)s' \
         'https://www.youtube.com/watch?v=jNQXAC9IVRw' 2>&1 | tail -3
     then
@@ -1431,7 +1448,7 @@ _proxy_warp() {
     ok "نصب شد - شزم، اینستاگرام و API وب هر سه مستقیم socks5 می‌زنن"
 
     # Prove the venv itself can reach out through the proxy, not just curl.
-    if sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/python" - <<'PY'
+    if run_py - <<'PY'
 import sys
 try:
     import requests
@@ -1539,7 +1556,7 @@ do_igwatch() {
     # "Nothing arrives" has six possible causes that look identical from the
     # outside. This shows every stage, so whichever one drops the message is
     # the one you see.
-    sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/python"         "$PROJECT_DIR/deploy/igwatch.py" "${1:-120}"
+    run_py         "$PROJECT_DIR/deploy/igwatch.py" "${1:-120}"
 }
 
 do_igtest() {
@@ -1547,7 +1564,7 @@ do_igtest() {
     # The bot's log only shows the end of the story. This runs the same
     # sequence step by step so a refused address, a stale session, a rejected
     # device and a real account problem stop looking identical.
-    sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/python" "$PROJECT_DIR/deploy/igtest.py"
+    run_py "$PROJECT_DIR/deploy/igtest.py"
 }
 
 do_shazamtest() {
@@ -1559,10 +1576,10 @@ do_shazamtest() {
     # argument, which Path("") reads as "." - so the menu entry reported
     # "[X] . not found" instead of picking a file itself.
     if [[ -n "${1:-}" ]]; then
-        sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/python" \
+        run_py \
             "$PROJECT_DIR/deploy/shazamtest.py" "$1"
     else
-        sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/python" \
+        run_py \
             "$PROJECT_DIR/deploy/shazamtest.py"
     fi
 }
