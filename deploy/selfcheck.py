@@ -1241,6 +1241,21 @@ check("iglogin: the same account keeps its device",
 # settings, device identifiers". The device was written only on SUCCESS, so
 # every retry after a challenge presented a device Instagram had never seen -
 # a different phone each time, which is its own reason to challenge.
+# No code was ever emailed because instagrapi's challenge_resolve() raises on
+# sight of a native_flow checkpoint - before any handler runs. Only that entry
+# point opts out; challenge_resolve_simple() underneath it implements the whole
+# code flow, so the guard is stepped around rather than the flow reimplemented.
+check("iglogin: a checkpoint tries the code path before giving up",
+      "_resolve_with_code" in _iglogin_src)
+check("iglogin: it calls the resolver instagrapi declines to reach",
+      "challenge_resolve_simple" in _iglogin_src)
+check("iglogin: the account owner is prompted for the code",
+      "challenge_code_handler = _code_handler" in _iglogin_src)
+check("iglogin: an empty code aborts instead of re-prompting 24 times",
+      "raise KeyboardInterrupt" in _iglogin_src)
+check("iglogin: a resolved challenge is followed by a second login",
+      _iglogin_src.count("client.login(username, password)") >= 2)
+
 check("iglogin: the device is saved before the login, so a retry repeats it",
       _iglogin_src.index("if not DEVICE_PATH.exists():")
       < _iglogin_src.index("client.login(username, password)"))

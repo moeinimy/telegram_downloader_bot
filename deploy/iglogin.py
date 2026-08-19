@@ -44,6 +44,56 @@ def _say(icon: str, text: str) -> None:
     print(f"{icon} {text}", flush=True)
 
 
+def _code_handler(username: str, choice=None) -> str:
+    """Ask for the six digits Instagram just sent.
+
+    instagrapi ships a default handler that prompts in English and loops
+    silently up to 24 times; this one names where the code went and lets an
+    empty line stop, so a wrong guess is not answered by 23 more prompts.
+    """
+    where = "ایمیل" if str(getattr(choice, "value", choice)) in ("1", "EMAIL") else "پیامک"
+    _say("[!]", f"اینستاگرام یه کد ۶ رقمی به {where} فرستاد.")
+    code = input("کد (خالی = انصراف): ").strip()
+    if not code:
+        raise KeyboardInterrupt("cancelled by user")
+    return code
+
+
+def _resolve_with_code(client, username: str) -> bool:
+    """Drive the code challenge that instagrapi declines to attempt.
+
+    Reading its source rather than guessing: challenge_resolve() raises on
+    sight of a native_flow checkpoint - before any handler runs, which is why
+    no code was ever sent and the account owner was never asked for one. Only
+    the entry point opts out. challenge_resolve_simple() underneath it does
+    implement the whole flow: pick email, wait for the code, post it back.
+
+    So the guard is stepped around rather than the flow reimplemented. If
+    Instagram genuinely will not take a code for this checkpoint, that shows
+    up as an error from the real endpoint instead of from a library that never
+    asked.
+    """
+    data = getattr(client, "last_json", None) or {}
+    api_path = (data.get("challenge") or {}).get("api_path") or ""
+    if not api_path:
+        _say("[!]", "اینستاگرام آدرس چلنج نداد - مسیر کد در دسترس نیست.")
+        return False
+    try:
+        url = client._normalize_challenge_api_path(api_path)
+    except Exception:
+        url = api_path
+    _say("[*]", "دارم مسیر کد رو باز می‌کنم…")
+    try:
+        client.challenge_resolve_simple(url)
+        return True
+    except KeyboardInterrupt:
+        _say("[!]", "لغو شد.")
+        return False
+    except Exception as e:
+        _say("[X]", f"مسیر کد جواب نداد: {type(e).__name__}: {e}")
+        return False
+
+
 def main() -> int:
     try:
         from instagrapi import Client
@@ -151,11 +201,28 @@ def main() -> int:
     else:
         _say("[*]", "بدون پروکسی - مستقیم از آدرس همین سرور")
 
+    client.challenge_code_handler = _code_handler
+
     _say("[*]", "در حال لاگین…")
+    text = ""
     try:
         client.login(username, password)
     except Exception as e:
         text = f"{type(e).__name__}: {e}"
+
+    # The checkpoint that never asked for a code. Try the code path once, then
+    # sign in again - resolving a challenge does not itself log you in.
+    if text and ("challenge" in text.lower() or "checkpoint" in text.lower()):
+        _say("[!]", "چک‌پوینت خورد. قبل از تسلیم شدن، مسیر کد رو امتحان می‌کنم.")
+        if _resolve_with_code(client, username):
+            _say("[OK]", "چلنج قبول شد - دوباره لاگین می‌کنم…")
+            text = ""
+            try:
+                client.login(username, password)
+            except Exception as e2:
+                text = f"{type(e2).__name__}: {e2}"
+
+    if text:
         _say("[X]", text)
         lowered = text.lower()
         if "twofactor" in lowered or "two_factor" in lowered:
