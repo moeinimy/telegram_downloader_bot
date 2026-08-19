@@ -1270,6 +1270,33 @@ check("iglogin: a bare assertion is backed by what Instagram actually replied",
 # introduces itself as a current build, and a current build gets the codeless
 # Bloks redirect - approving which did not clear it here. An older build
 # predates that flow and is answered with the code challenge instead.
+# The mobile door is shut from this address, both ways: a current build gets a
+# codeless Bloks checkpoint, an older one gets BadPassword before any challenge.
+# The WEB api is a different door - the one the owner already uses in a
+# browser, whose checkpoint is the ordinary six-digit one, and whose cookie is
+# exactly what modules/ig_web.py wants.
+_webl = Path("deploy/igweblogin.py").read_text(encoding="utf-8")
+check("web login: it posts to the web login endpoint, not the mobile one",
+      "/api/v1/web/accounts/login/ajax/" in _webl and "i.instagram.com" not in _webl)
+check("web login: it sends the app id instagram.com sends",
+      "936619743392459" in _webl)
+check("web login: the password form is the one the browser posts",
+      "#PWD_INSTAGRAM_BROWSER:0:" in _webl)
+check("web login: a checkpoint asks where the code should go",
+      '"choice"' in _webl and "security_code" in _webl)
+check("web login: two-factor is handled separately from a checkpoint",
+      "two_factor_identifier" in _webl)
+check("web login: the session is proved against the inbox before being kept",
+      _webl.index("direct_v2/inbox") < _webl.index("out_path.write_text"))
+check("web login: it hands back the browser it logged in as",
+      "IG_DM_USER_AGENT=" in _webl)
+check("web login: credentials go to a file, not the terminal scrollback",
+      "out_path.chmod(0o600)" in _webl)
+check("botctl: igweblogin can be run as a command",
+      "    igweblogin) do_igweblogin" in _mg)
+check("botctl: it clears the jar holding the retired session",
+      "ig_web_cookies.json" in _mg)
+
 # One `legacy` run writes app_version into the saved device, so every later
 # run presents the old build too - silently, and looking exactly like a normal
 # one. A sticky setting that is never printed is an invisible one.

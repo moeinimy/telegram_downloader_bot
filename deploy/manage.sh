@@ -671,6 +671,55 @@ refresh_ytdlp() {
 # on every account so far while the web poller worked from the same cookie.
 # This creates the credential realtime actually wants - and it outlives a
 # browser session by months rather than hours.
+do_igweblogin() {
+    echo; info "=== لاگین دسکتاپ اینستاگرام (یوزر/پس) ==="; echo
+    echo "این با api وب لاگین می‌کنه - همون دری که تو مرورگر باز می‌کنی."
+    echo "چک‌پوینتش کددار هست، پس اگه تایید خواست کد به ایمیلت میاد."
+    echo
+    warn "با اکانت اصلیت این کارو نکن."
+    echo
+    read -rp "ادامه بدم؟ (y/n) " a
+    [[ "$a" != "y" ]] && return 0
+
+    # The script writes the cookies here rather than printing them: they are
+    # credentials, and a terminal scrollback is not where those belong.
+    local jar
+    jar=$(mktemp)
+    chmod 600 "$jar"
+    chown "$BOT_USER" "$jar"
+
+    if ! run_py "$PROJECT_DIR/deploy/igweblogin.py" "$jar"; then
+        rm -f "$jar"
+        err "لاگین نشد"
+        return 1
+    fi
+
+    if [[ ! -s "$jar" ]]; then
+        rm -f "$jar"
+        err "چیزی برای ذخیره برنگشت"
+        return 1
+    fi
+
+    local key value
+    while IFS='=' read -r key value; do
+        [[ -z "$key" ]] && continue
+        set_env "$key" "$value"
+    done < "$jar"
+    rm -f "$jar"
+    ok "کوکی‌ها تو .env ذخیره شدن"
+
+    # The saved jar holds whatever Instagram rotated the OLD session to. Left
+    # in place it overrides the one just minted.
+    rm -f "$PROJECT_DIR/downloads/ig_web_cookies.json"
+    ok "کوکی‌جار قبلی پاک شد"
+
+    systemctl restart "$SERVICE_NAME"
+    ok "ریستارت شد"
+    echo
+    info "چک کن:  botctl find 'ig web' 200"
+}
+
+
 do_iglogin() {
     echo; info "=== لاگین موبایل اینستاگرام (سشن ماندگار) ==="; echo
     warn "با اکانت اصلیت این کارو نکن."
@@ -2118,6 +2167,7 @@ case "${1:-}" in
     ytdlp)   do_ytdlp;   exit $? ;;
     ytcookies) do_ytcookies; exit $? ;;
     iglogin) do_iglogin "${2:-}"; exit $? ;;
+    igweblogin) do_igweblogin; exit $? ;;
     update)  do_update;  exit $? ;;
     restart) systemctl restart "$SERVICE_NAME"; exit $? ;;
     status)  do_status;  exit 0 ;;
