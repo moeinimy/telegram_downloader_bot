@@ -1234,6 +1234,17 @@ check("iglogin: a different account does not inherit the old device",
       and "DEVICE_PATH.unlink" in _iglogin_src)
 check("iglogin: the same account keeps its device",
       "elif DEVICE_PATH.exists():" in _iglogin_src)
+# The owner file only exists after a successful login, so on the first run
+# after a switch - the run that matters - "no owner" was read as "same
+# account" and the retired fingerprint was reused in silence.
+check("iglogin: an unrecorded owner is asked about, not assumed",
+      "if DEVICE_PATH.exists() and not owner:" in _iglogin_src)
+check("iglogin: declining that question drops the device",
+      'device تازه ساخته می‌شه")' in _iglogin_src)
+check("iglogin: a challenge from a datacenter address says the retry will repeat it",
+      "if not proxy:" in _iglogin_src and "botctl proxy" in _iglogin_src)
+check("iglogin: an already-checkpointed account is named as a separate case",
+      "چک‌پوینت" in _iglogin_src and "بازه - نه یه تایید تازه" in _iglogin_src)
 check("iglogin: the username from .env is shown, not used silently",
       "IG_DM_USERNAME تو .env" in _iglogin_src)
 check("iglogin: a stale .env is called out after a successful switch",

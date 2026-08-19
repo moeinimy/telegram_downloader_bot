@@ -86,6 +86,23 @@ def main() -> int:
     # account the fingerprint of the ones that were already checkpointed on it
     # links the new one to them and burns it on arrival.
     owner = OWNER_PATH.read_text(encoding="utf-8").strip() if OWNER_PATH.exists() else ""
+
+    # An unrecorded owner is not evidence that the device is ours. The owner
+    # file only starts existing after the first successful login through this
+    # script, so on the very run that matters most - the first one after
+    # switching accounts - "no owner" was being read as "same account" and the
+    # retired account's fingerprint was reused in silence. Unknown is asked
+    # about, not assumed.
+    if DEVICE_PATH.exists() and not owner:
+        _say("[!]", "یه device ذخیره‌شده هست ولی معلوم نیست مال کدوم اکانته.")
+        _say("[!]", "اگه مال اکانت قبلیه، استفاده ازش این دو تا رو به هم وصل می‌کنه.")
+        keep = input(f"این device مال @{username} خودشه؟ (y/n) ").strip().lower()
+        if keep != "y":
+            _say("[*]", "device تازه ساخته می‌شه")
+            DEVICE_PATH.unlink(missing_ok=True)
+        else:
+            owner = username
+
     if DEVICE_PATH.exists() and owner and owner.lower() != username.lower():
         _say("[!]", f"device ذخیره‌شده مال @{owner} بود، نه @{username}.")
         _say("[!]", "برای اکانت جدید device تازه ساخته می‌شه - اشتراک گذاشتنش")
@@ -117,6 +134,17 @@ def main() -> int:
         elif "challenge" in lowered or "checkpoint" in lowered:
             _say("[!]", "اینستاگرام تایید خواسته. تو اپ گوشی همون اکانت رو باز کن،")
             _say("[!]", "تاییدیه رو کامل کن، چند دقیقه صبر کن و دوباره اینو بزن.")
+            # The two things that decide whether the retry can ever work, and
+            # neither is obvious from Instagram's own wording.
+            if not proxy:
+                _say("[!]", "")
+                _say("[!]", "ولی این لاگین از آدرس خود سرور رفت، که دیتاسنتره.")
+                _say("[!]", "یه چلنج که از اینجا خورده، از اینجا هم دوباره می‌خوره -")
+                _say("[!]", "تایید کردن تو گوشی آدرس رو عوض نمی‌کنه. اگه بار دوم هم")
+                _say("[!]", "همینو داد، جوابش پروکسی residential ـه: botctl proxy")
+            _say("[!]", "")
+            _say("[!]", "و اگه این اکانت قبلا چک‌پوینت خورده، این همون چک‌پوینت")
+            _say("[!]", "بازه - نه یه تایید تازه. اون اکانت با تلاش دوباره برنمی‌گرده.")
         elif "badpassword" in lowered or "bad password" in lowered:
             _say("[!]", "این همیشه یعنی پسورد غلط نیست - اینستاگرام لاگین از این")
             _say("[!]", "آدرس رو هم با همین جواب رد می‌کنه. اگه پسورد مطمئنا درسته،")
