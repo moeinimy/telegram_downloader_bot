@@ -233,7 +233,18 @@ def _is_dead_credential(text: str) -> bool:
 # _DEAD_MARKERS and the ladder keeps trying - which is right, because it does
 # sometimes pass. What it usually means here is the address: this is what a
 # datacenter IP gets served, and the exit is now the VPS itself.
-_REFUSED_MARKERS = ("something went wrong", "please try again")
+# Every way the mobile api says "not with that credential, not from here".
+#
+# The first two are the generic page a browser cookie gets. The challenge ones
+# were missing, and they matter as soon as IG_DM_PASSWORD is set: a checkpoint
+# is not cleared by anything a restart does, so alerting about it once per
+# restart is the same noise the refusal case was already spared. It is still
+# reported in /srcstatus, and botctl iglogin is where it gets acted on.
+_REFUSED_MARKERS = (
+    "something went wrong", "please try again",
+    "challengerequired", "challenge_required", "checkpoint",
+    "manual verification required",
+)
 
 # Retrying past this has never once worked in this feature's history, and a
 # loop nobody is told about is how eight hours went by last time.

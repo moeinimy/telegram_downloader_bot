@@ -1373,6 +1373,15 @@ check("realtime: giving up is not reported as a dead cookie",
 # state that had not changed and was already understood. An alert that repeats
 # for a known condition teaches the reader to ignore the ones that do not.
 _rtsrc0 = Path("modules/ig_realtime.py").read_text(encoding="utf-8")
+# A checkpoint is not cleared by anything a restart does, so paging about it
+# once per restart is the same noise the plain refusal was already spared.
+check("realtime: a checkpoint counts as a known refusal",
+      _rt._is_refusal("ChallengeRequired: Manual verification required via "
+                      "Instagram native challenge flow"))
+check("realtime: a checkpoint by its short name too",
+      _rt._is_refusal("checkpoint_required"))
+check("realtime: a genuine fault is still not one",
+      not _rt._is_refusal("Connection reset by peer"))
 check("realtime: a cookie refused by the mobile api is not paged about",
       "expected = _is_refusal(last_error) and not SESSION_FILE.exists()" in _rtsrc0)
 check("realtime: it is still logged rather than swallowed",
