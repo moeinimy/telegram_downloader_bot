@@ -1076,6 +1076,28 @@ check("ig direct: and is still stood down once realtime is up",
 check("realtime: a refusal eventually stops instead of looping all day",
       "given_up = last_error" in Path("modules/ig_realtime.py").read_text(encoding="utf-8"))
 _rt.given_up = ""
+# Moving to a fresh Instagram account, which is the entire point of
+# botctl iglogin, walked straight into two traps. iglogin reused ig_device.json
+# whenever it existed - so the new account would sign in from the fingerprint
+# of the accounts already checkpointed on it, which is precisely the link
+# Instagram draws between accounts. And IG_DM_USERNAME was read silently, so
+# the run could sign into the account being replaced without ever naming it.
+_iglogin_src = Path("deploy/iglogin.py").read_text(encoding="utf-8")
+check("iglogin: the device records which account it was built for",
+      "OWNER_PATH" in _iglogin_src and "ig_device_owner.txt" in _iglogin_src)
+check("iglogin: a different account does not inherit the old device",
+      "owner.lower() != username.lower()" in _iglogin_src
+      and "DEVICE_PATH.unlink" in _iglogin_src)
+check("iglogin: the same account keeps its device",
+      "elif DEVICE_PATH.exists():" in _iglogin_src)
+check("iglogin: the username from .env is shown, not used silently",
+      "IG_DM_USERNAME تو .env" in _iglogin_src)
+check("iglogin: a stale .env is called out after a successful switch",
+      "settings.ig_dm_username.lower() != username.lower()" in _iglogin_src)
+from utils import limits as _lim0
+check("sweeper: the device owner is state, not cache",
+      "ig_device_owner.txt" in _lim0.PROTECTED_NAMES)
+
 # The bulk-download stop button did nothing visible. A callback may be
 # answered exactly once, and the blanket answer() at the top of on_callback
 # spent that reply, so the toast saying "stopping" raised "response already

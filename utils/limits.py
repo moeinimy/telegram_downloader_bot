@@ -154,6 +154,10 @@ PROTECTED_NAMES = frozenset({
     # Losing this one changes the device Instagram sees, which is what made
     # the direct endpoints start refusing us.
     "ig_device.json",
+    # Which account that device was built for. Losing it makes the next
+    # login reuse one account's phone for another, which is exactly the
+    # association Instagram draws between them.
+    "ig_device_owner.txt",
     # And this one holds the ROTATED session cookie. The value in .env is only
     # the seed; deleting the jar sends the bot back to a cookie Instagram has
     # already replaced.

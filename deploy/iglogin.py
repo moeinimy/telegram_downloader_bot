@@ -35,6 +35,9 @@ from utils import proxies  # noqa: E402
 
 SESSION_PATH = settings.download_dir / "ig_private_session.json"
 DEVICE_PATH = settings.download_dir / "ig_device.json"
+# Which account that device belongs to. Without it a device is reused
+# blindly, including across an account switch.
+OWNER_PATH = settings.download_dir / "ig_device_owner.txt"
 
 
 def _say(icon: str, text: str) -> None:
@@ -48,7 +51,17 @@ def main() -> int:
         _say("[X]", "instagrapi نصب نیست. اول: botctl igdirect → گزینه ۲")
         return 1
 
-    username = settings.ig_dm_username or input("یوزرنیم: ").strip()
+    # IG_DM_USERNAME is shown rather than used silently. This command exists
+    # mainly to move to a NEW account, and .env still holds the old one at
+    # that moment - signing into the account being replaced, without ever
+    # printing its name, is the one outcome that looks like success.
+    username = settings.ig_dm_username
+    if username:
+        _say("[*]", f"IG_DM_USERNAME تو .env: @{username}")
+        typed = input("Enter برای همین، یا یوزرنیم جدید رو بنویس: ").strip()
+        username = typed or username
+    else:
+        username = input("یوزرنیم: ").strip()
     if not username:
         _say("[X]", "یوزرنیم لازمه")
         return 1
@@ -61,11 +74,24 @@ def main() -> int:
     client = Client()
     client.delay_range = [1, 3]
 
-    # The device has to be the same one every time. A session is tied to the
-    # device that created it, and generating a new fingerprint on each login
-    # is the same mistake as sending a mismatched User-Agent with a cookie -
-    # it reads as the account moving to a new phone.
-    if DEVICE_PATH.exists():
+    # One account, one phone - in both directions.
+    #
+    # The device must not change between logins of the SAME account: a session
+    # is tied to the device that made it, and a new fingerprint each time
+    # reads as the account moving to a new phone, which is what made the
+    # direct endpoints start refusing us once before.
+    #
+    # And it must not be shared with a DIFFERENT account. Instagram associates
+    # accounts through the device they sign in from, so handing a fresh
+    # account the fingerprint of the ones that were already checkpointed on it
+    # links the new one to them and burns it on arrival.
+    owner = OWNER_PATH.read_text(encoding="utf-8").strip() if OWNER_PATH.exists() else ""
+    if DEVICE_PATH.exists() and owner and owner.lower() != username.lower():
+        _say("[!]", f"device ذخیره‌شده مال @{owner} بود، نه @{username}.")
+        _say("[!]", "برای اکانت جدید device تازه ساخته می‌شه - اشتراک گذاشتنش")
+        _say("[!]", "همون چیزیه که دو اکانت رو به هم وصل می‌کنه.")
+        DEVICE_PATH.unlink(missing_ok=True)
+    elif DEVICE_PATH.exists():
         try:
             client.set_settings(json.loads(DEVICE_PATH.read_text(encoding="utf-8")))
             _say("[*]", "device قبلی استفاده شد")
@@ -109,10 +135,26 @@ def main() -> int:
     SESSION_PATH.chmod(0o600)
     DEVICE_PATH.write_text(json.dumps(client.get_settings()), encoding="utf-8")
     DEVICE_PATH.chmod(0o600)
+    OWNER_PATH.write_text(username, encoding="utf-8")
+    OWNER_PATH.chmod(0o600)
 
     _say("[OK]", f"وارد شد به عنوان @{username}")
     _say("[OK]", f"سشن ذخیره شد: {SESSION_PATH}")
     print()
+
+    # The saved session is only the FIRST route modules/ig_private.py tries.
+    # If it is ever rejected, route 2 is IG_DM_SESSIONID and route 3 is
+    # IG_DM_USERNAME/PASSWORD - both still describing the old account. That
+    # would sign the old account in on the new account's device, which is the
+    # association this whole command is arranged to avoid.
+    if settings.ig_dm_username and settings.ig_dm_username.lower() != username.lower():
+        _say("[!]", f".env هنوز روی @{settings.ig_dm_username} ست شده.")
+        _say("[!]", "تا عوضش نکنی، هر بار سشن رد بشه برمی‌گرده به اکانت قبلی")
+        _say("[!]", "و اون رو روی device این اکانت لاگین می‌کنه. عوض کن:")
+        print(f"    IG_DM_USERNAME={username}")
+        print( "    IG_DM_PASSWORD=<پسورد همین اکانت>")
+        print( "    IG_DM_SESSIONID=        <- خالی، مال اکانت قبلیه")
+        print()
     _say("[*]", "این سشن مال api موبایله، پس realtime هم می‌تونه ازش استفاده کنه.")
     _say("[*]", "بعد از ریستارت تو لاگ دنبال این بگرد:")
     print("    ig mqtt: reused the stored mobile session")
