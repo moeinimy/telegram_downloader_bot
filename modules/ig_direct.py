@@ -273,7 +273,7 @@ def _build_sources() -> dict[str, Source]:
             _states["webhook"].detail = f"unavailable: {e}"
             log.error("ig direct: webhook source unavailable (%s)", e)
 
-    if "mqtt" in settings.ig_direct_sources and settings.has_ig_web:
+    if "mqtt" in settings.ig_direct_sources and settings.has_ig_realtime:
         try:
             from modules import ig_realtime
 

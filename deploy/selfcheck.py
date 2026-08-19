@@ -1076,6 +1076,52 @@ check("ig direct: and is still stood down once realtime is up",
 check("realtime: a refusal eventually stops instead of looping all day",
       "given_up = last_error" in Path("modules/ig_realtime.py").read_text(encoding="utf-8"))
 _rt.given_up = ""
+# Realtime was gated on has_ig_web - the presence of IG_DM_SESSIONID - which
+# is the one credential the mobile api refuses, and the reason this feature has
+# never connected. Worse for the account switch about to happen: clearing that
+# cookie, which is the correct thing to do when the old account is retired,
+# switched realtime OFF rather than on.
+import dataclasses as _dc
+from config import settings as _cfg
+
+_sess = _cfg.download_dir / "ig_private_session.json"
+_had_sess = _sess.exists()
+if _had_sess:
+    _sess.rename(_sess.with_suffix(".selfcheck-bak"))
+
+
+def _probe(**kw):
+    return _dc.replace(_cfg, **kw)
+
+
+check("realtime gate: a password alone switches realtime on",
+      _probe(ig_dm_sessionid="", ig_dm_password="p",
+             ig_dm_username="u").has_ig_realtime)
+check("realtime gate: the browser cookie still counts as a last route",
+      _probe(ig_dm_sessionid="abc", ig_dm_password="",
+             ig_dm_username="u").has_ig_realtime)
+check("realtime gate: nothing at all still means off",
+      not _probe(ig_dm_sessionid="", ig_dm_password="",
+                 ig_dm_username="u").has_ig_realtime)
+
+_sess.parent.mkdir(parents=True, exist_ok=True)
+_sess.write_text("{}", encoding="utf-8")
+check("realtime gate: a stored mobile session is enough on its own",
+      _probe(ig_dm_sessionid="", ig_dm_password="",
+             ig_dm_username="").has_ig_realtime)
+check("realtime gate: clearing the retired cookie keeps direct enabled",
+      _probe(ig_dm_sessionid="", ig_dm_password="",
+             ig_dm_username="").ig_direct_enabled)
+_sess.unlink()
+if _had_sess:
+    _sess.with_suffix(".selfcheck-bak").rename(_sess)
+
+check("realtime gate: the web source still wants its own cookie",
+      not _probe(ig_dm_sessionid="").has_ig_web)
+check("realtime gate: ig_direct builds mqtt from that gate, not the web one",
+      "settings.has_ig_realtime" in
+      Path("modules/ig_direct.py").read_text(encoding="utf-8"))
+
 # Every ceiling and quiet window governs an IDLE account. None of them touch a
 # busy day: each arriving message re-arms the fast window, the loop never
 # leaves 3s, and a day of that measured ~16,000 requests - three times what

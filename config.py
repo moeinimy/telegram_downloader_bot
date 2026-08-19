@@ -185,11 +185,32 @@ class Settings:
         return bool(self.ig_dm_sessionid)
 
     @property
+    def has_ig_realtime(self) -> bool:
+        """What the MQTT channel needs, which is not the browser cookie.
+
+        Realtime was gated on has_ig_web - the presence of IG_DM_SESSIONID -
+        and that is the one credential it cannot use: the cookie belongs to
+        the web api and the mobile api refuses it, which is the whole reason
+        this feature has never connected. Meanwhile the credential it CAN use,
+        a stored mobile session, did not switch it on at all.
+
+        So a session file counts, a password that can create one counts, and
+        the cookie still counts because ig_realtime does try it last. The
+        practical effect: clearing IG_DM_SESSIONID when moving to a new
+        account no longer takes realtime down with it.
+        """
+        if (self.download_dir / "ig_private_session.json").exists():
+            return True
+        if self.ig_dm_username and self.ig_dm_password:
+            return True
+        return bool(self.ig_dm_sessionid)
+
+    @property
     def ig_direct_enabled(self) -> bool:
         """True when at least one configured source is also switched on."""
         return bool(
             ("webhook" in self.ig_direct_sources and self.has_ig_webhook)
-            or ("mqtt" in self.ig_direct_sources and self.has_ig_web)
+            or ("mqtt" in self.ig_direct_sources and self.has_ig_realtime)
             or ("web" in self.ig_direct_sources and self.has_ig_web)
             or ("poll" in self.ig_direct_sources and self.has_ig_private)
         )
