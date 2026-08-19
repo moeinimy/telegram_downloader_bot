@@ -263,9 +263,24 @@ async def _fetch_and_send(dm: ig_direct.DirectMessage, chat_id: int, shortcode: 
         return
 
     try:
-        status = await bot.send_message(
-            chat_id, t(chat_id, "📥 از دایرکت اینستاگرام گرفتمش — دارم دانلود می‌کنم…")
-        )
+        # Say so when the inbox is deliberately being read more slowly. The
+        # delay is real and the user would otherwise read it as the bot being
+        # broken - which is how a protection that works looks, from outside,
+        # if nobody explains it.
+        notice = t(chat_id, "📥 از دایرکت اینستاگرام گرفتمش — دارم دانلود می‌کنم…")
+        try:
+            from modules import ig_web
+
+            if ig_web.congested():
+                notice += t(
+                    chat_id,
+                    "\n\n⏳ ترافیک زیاده، برای اینکه اکانت اینستاگرام بلاک نشه"
+                    " فعلا کندتر چک می‌کنم — تحویل چند ده ثانیه دیرتره.",
+                )
+        except Exception:
+            pass
+
+        status = await bot.send_message(chat_id, notice)
     except Exception as e:
         # Blocked, or the chat is gone. The pairing can never be useful again.
         log.warning("ig direct: chat %s unreachable (%s) - dropping the pairing", chat_id, e)

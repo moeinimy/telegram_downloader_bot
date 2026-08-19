@@ -600,7 +600,41 @@ def _in_quiet_hours(now: time.struct_time | None = None) -> bool:
     return start <= hour < end if start < end else (hour >= start or hour < end)
 
 
-def _next_delay(idle: float, fast: float, window: float, quiet_for: float) -> float:
+# The band boundary in _RATE_BANDS above, reused rather than reinvented: it is
+# already anchored on this bot's own history rather than on a guess.
+_FAST_CEILING = 3500
+
+# Only so the transition is logged once instead of every sweep.
+_was_congested = False
+
+
+def congested() -> bool:
+    """True once today's projected request count reaches the risky band.
+
+    Fast mode is what a busy day is actually made of. Every ceiling and quiet
+    window in here governs an idle account; none of them touch a day where
+    messages keep arriving, because each one re-arms the fast window and the
+    loop simply never leaves 3s. Measured over a day of that: ~16,000
+    requests, three times what got an account actioned.
+
+    So the budget is the thing that gives, not the account. Fast mode runs
+    freely until the day's projection reaches the band this bot has already
+    calibrated as risky, and then stops being available - which drops the loop
+    back to the ordinary idle ladder and pulls the projection down with it. It
+    is self-correcting: the busier the day, the sooner delivery slows, and the
+    account never rides into the band that got the last three checkpointed.
+
+    Users are told, rather than left wondering why a share took longer -
+    handlers/ig_direct_handler.py says so on the download message.
+    """
+    try:
+        return rate()["projected"] >= _FAST_CEILING
+    except Exception:
+        return False
+
+
+def _next_delay(idle: float, fast: float, window: float, quiet_for: float,
+                busy: bool = False) -> float:
     """How long to wait before the next sweep.
 
     A flat 15s poll is ~5,700 requests a day from what Instagram believes is
@@ -623,7 +657,10 @@ def _next_delay(idle: float, fast: float, window: float, quiet_for: float) -> fl
     """
     import random
 
-    if quiet_for < window:
+    # `busy` is the day's own request budget having run out. The rung is
+    # simply not offered; everything below it still applies, so an active
+    # conversation degrades to the idle interval rather than stopping.
+    if quiet_for < window and not busy:
         base = fast
     elif quiet_for < 600:
         base = idle
@@ -648,6 +685,7 @@ def _next_delay(idle: float, fast: float, window: float, quiet_for: float) -> fl
 
 async def _loop(dispatch: Dispatch) -> None:
     global _seen_after, _last_error, checkpointed, checkpoint_since
+    global _was_congested
 
     if not _seen_after:
         _seen_after = time.time()
@@ -791,7 +829,17 @@ async def _loop(dispatch: Dispatch) -> None:
 
         # Paced from the start of the sweep, so the request time is inside the
         # interval rather than added to it.
-        delay = _next_delay(idle, fast, window, time.time() - (last_activity or 0))
+        busy = congested()
+        if busy and not _was_congested:
+            log.warning("ig web: request budget reached (%s/day projected) - "
+                        "fast mode is off until it falls back",
+                        rate()["projected"])
+        elif _was_congested and not busy:
+            log.info("ig web: back under the request budget - fast mode is on again")
+        _was_congested = busy
+
+        delay = _next_delay(idle, fast, window,
+                            time.time() - (last_activity or 0), busy=busy)
         await asyncio.sleep(max(0.0, delay - (time.monotonic() - started)))
 
 

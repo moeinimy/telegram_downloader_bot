@@ -1076,6 +1076,49 @@ check("ig direct: and is still stood down once realtime is up",
 check("realtime: a refusal eventually stops instead of looping all day",
       "given_up = last_error" in Path("modules/ig_realtime.py").read_text(encoding="utf-8"))
 _rt.given_up = ""
+# Every ceiling and quiet window governs an IDLE account. None of them touch a
+# busy day: each arriving message re-arms the fast window, the loop never
+# leaves 3s, and a day of that measured ~16,000 requests - three times what
+# got an account actioned. So the day has a budget now, and it is delivery
+# that gives way rather than the account.
+import time as _tt
+from modules import ig_web as _iw
+from utils import i18n as _i18n0
+
+_saved_rate = dict(_iw._rate)
+_h = int(_tt.time()) // 3600
+
+_iw._rate.clear()
+for _i in range(24):
+    _iw._rate[str(_h - _i)] = 200          # ~4,800/day
+check("budget: a day heading into the risky band is called congested",
+      _iw.congested())
+check("budget: fast mode is withdrawn once the budget is gone",
+      _iw._next_delay(8, 3, 120, 10, busy=True) > 3 * 1.25 + 0.01)
+check("budget: it degrades to the idle rung, it does not stop polling",
+      _iw._next_delay(8, 3, 120, 10, busy=True) <= 8 * 1.25 + 0.01)
+check("budget: the quiet rungs are left alone",
+      _iw._next_delay(8, 3, 120, 1800, busy=True) > 8 * 1.25)
+
+_iw._rate.clear()
+for _i in range(24):
+    _iw._rate[str(_h - _i)] = 60           # ~1,440/day
+check("budget: a quiet day is not throttled",
+      not _iw.congested())
+check("budget: fast mode is still available then",
+      _iw._next_delay(8, 3, 120, 10, busy=_iw.congested()) <= 3 * 1.25 + 0.01)
+
+check("budget: the ceiling reuses the band already calibrated on real history",
+      _iw._FAST_CEILING == _iw._RATE_BANDS[1][0])
+check("budget: the user is told why delivery slowed",
+      "ig_web.congested()" in
+      Path("handlers/ig_direct_handler.py").read_text(encoding="utf-8"))
+check("budget: that notice is translated",
+      any("Traffic is high" in v for v in _i18n0._EN.values()))
+
+_iw._rate.clear()
+_iw._rate.update(_saved_rate)
+
 # The poll defaults were audited against this bot's own ban history, where a
 # flat 15s poll was ~5,700 requests/day and the account was actioned. Two of
 # them were pure loss - they cost requests without buying latency.
