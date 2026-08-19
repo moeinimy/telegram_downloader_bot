@@ -85,6 +85,15 @@ def main() -> int:
     # accounts through the device they sign in from, so handing a fresh
     # account the fingerprint of the ones that were already checkpointed on it
     # links the new one to them and burns it on arrival.
+    # `botctl iglogin reset` - the way out when the saved device is known to be
+    # wrong and no question is going to establish that. Deliberately explicit:
+    # throwing the device away is normally the mistake, not the fix.
+    if "reset" in sys.argv[1:]:
+        if DEVICE_PATH.exists() or OWNER_PATH.exists():
+            _say("[*]", "device قبلی پاک شد - یکی تازه ساخته می‌شه")
+        DEVICE_PATH.unlink(missing_ok=True)
+        OWNER_PATH.unlink(missing_ok=True)
+
     owner = OWNER_PATH.read_text(encoding="utf-8").strip() if OWNER_PATH.exists() else ""
 
     # An unrecorded owner is not evidence that the device is ours. The owner
@@ -114,6 +123,26 @@ def main() -> int:
             _say("[*]", "device قبلی استفاده شد")
         except Exception as e:
             _say("[!]", f"device قبلی خونده نشد ({e}) - یکی تازه ساخته می‌شه")
+
+    # Saved BEFORE the login, not after it.
+    #
+    # Instagram's own challenge text asks for exactly this: "Retry with the
+    # same saved client settings, device identifiers, and proxy/IP." The
+    # device was only written on success, so every failed attempt was followed
+    # by a retry from a device Instagram had never seen - a different phone
+    # each time, at the same address, against the same account. That is its
+    # own reason to challenge, so the retries could not have cleared the
+    # challenge they were retrying.
+    #
+    # Written once here and reused from now on, whether or not this attempt
+    # gets through.
+    if not DEVICE_PATH.exists():
+        DEVICE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        DEVICE_PATH.write_text(json.dumps(client.get_settings()), encoding="utf-8")
+        DEVICE_PATH.chmod(0o600)
+        OWNER_PATH.write_text(username, encoding="utf-8")
+        OWNER_PATH.chmod(0o600)
+        _say("[*]", f"device تازه ساخته و ذخیره شد - همین برای @{username} می‌مونه")
 
     proxy = proxies.normalize(settings.ig_dm_proxy)
     if proxy:

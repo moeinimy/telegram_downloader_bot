@@ -692,7 +692,7 @@ do_iglogin() {
 
     # As the bot user: the session file it writes has to be readable by the
     # service, and a root-owned one silently is not.
-    run_py "$PROJECT_DIR/deploy/iglogin.py" || return 1
+    run_py "$PROJECT_DIR/deploy/iglogin.py" ${1:+"$1"} || return 1
 
     systemctl restart "$SERVICE_NAME"
     ok "ریستارت شد"
@@ -2117,7 +2117,7 @@ case "${1:-}" in
     engines) do_engines; exit $? ;;
     ytdlp)   do_ytdlp;   exit $? ;;
     ytcookies) do_ytcookies; exit $? ;;
-    iglogin) do_iglogin; exit $? ;;
+    iglogin) do_iglogin "${2:-}"; exit $? ;;
     update)  do_update;  exit $? ;;
     restart) systemctl restart "$SERVICE_NAME"; exit $? ;;
     status)  do_status;  exit 0 ;;

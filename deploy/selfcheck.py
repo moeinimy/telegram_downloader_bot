@@ -1237,6 +1237,19 @@ check("iglogin: the same account keeps its device",
 # The owner file only exists after a successful login, so on the first run
 # after a switch - the run that matters - "no owner" was read as "same
 # account" and the retired fingerprint was reused in silence.
+# Instagram's own challenge text asks to "retry with the same saved client
+# settings, device identifiers". The device was written only on SUCCESS, so
+# every retry after a challenge presented a device Instagram had never seen -
+# a different phone each time, which is its own reason to challenge.
+check("iglogin: the device is saved before the login, so a retry repeats it",
+      _iglogin_src.index("if not DEVICE_PATH.exists():")
+      < _iglogin_src.index("client.login(username, password)"))
+check("iglogin: the owner is recorded at the same moment",
+      "OWNER_PATH.write_text(username" in _iglogin_src)
+check("iglogin: there is an explicit way to start a new device",
+      '"reset" in sys.argv[1:]' in _iglogin_src)
+check("botctl: iglogin passes its argument through",
+      'do_iglogin "${2:-}"' in _mg)
 check("iglogin: an unrecorded owner is asked about, not assumed",
       "if DEVICE_PATH.exists() and not owner:" in _iglogin_src)
 check("iglogin: declining that question drops the device",
