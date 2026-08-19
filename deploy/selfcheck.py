@@ -1375,6 +1375,19 @@ check("realtime: giving up is not reported as a dead cookie",
 _rtsrc0 = Path("modules/ig_realtime.py").read_text(encoding="utf-8")
 # A checkpoint is not cleared by anything a restart does, so paging about it
 # once per restart is the same noise the plain refusal was already spared.
+# .env.example listed webhook,web,poll and never mentioned mqtt at all, so
+# every .env copied from it had the realtime channel switched off - whatever
+# credentials it was given elsewhere.
+_envex = Path(".env.example").read_text(encoding="utf-8")
+check("sources: the example enables the realtime channel",
+      "IG_DIRECT_SOURCES=webhook,mqtt,web,poll" in _envex)
+check("sources: the example agrees with the code default",
+      "webhook,mqtt,web,poll" in Path("config.py").read_text(encoding="utf-8"))
+check("sources: mqtt is documented alongside the others",
+      "#   mqtt " in _envex)
+check("sources: the doc says poll needs a mobile session, not a cookie",
+      "403 forever" in _envex)
+
 check("realtime: a checkpoint counts as a known refusal",
       _rt._is_refusal("ChallengeRequired: Manual verification required via "
                       "Instagram native challenge flow"))
