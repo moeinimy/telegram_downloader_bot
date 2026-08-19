@@ -1294,6 +1294,9 @@ check("web login: no code is requested from the user unless one was ordered",
       _webl.index("if not choice:") < _webl.index("کد (خالی"))
 check("web login: an unreadable checkpoint says why no code is coming",
       "درخواستی هم نرفت" in _webl)
+check("web login: a page-based checkpoint points at the route that works",
+      "botctl igdirect" in _webl)
+
 check("web login: the step and contact points are printed",
       "مرحله:" in _webl)
 check("web login: two-factor is handled separately from a checkpoint",
