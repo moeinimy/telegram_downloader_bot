@@ -1245,6 +1245,23 @@ check("iglogin: the same account keeps its device",
 # sight of a native_flow checkpoint - before any handler runs. Only that entry
 # point opts out; challenge_resolve_simple() underneath it implements the whole
 # code flow, so the guard is stepped around rather than the flow reimplemented.
+# The first attempt at this called challenge_resolve_simple() straight away.
+# That function reads step_name off last_json and fetches nothing itself, so
+# last_json still held the LOGIN response, step_name was "", and the empty
+# branch ran into a bare `assert action == "close"`. The user saw
+# "AssertionError:" with no message - our own missing request, printed as
+# though Instagram had refused a code it was never asked for.
+check("iglogin: the challenge is opened before its step is read",
+      _iglogin_src.index("client._send_private_request(")
+      < _iglogin_src.index("client.challenge_resolve_simple("))
+check("iglogin: the opening request carries the context instagrapi sends",
+      all(k in _iglogin_src for k in ("challenge_context", "nonce_code",
+                                      "android_device_id")))
+check("iglogin: the step Instagram asked for is printed",
+      "این مرحله رو خواست" in _iglogin_src)
+check("iglogin: a bare assertion is backed by what Instagram actually replied",
+      "جواب اینستاگرام" in _iglogin_src)
+
 check("iglogin: a checkpoint tries the code path before giving up",
       "_resolve_with_code" in _iglogin_src)
 check("iglogin: it calls the resolver instagrapi declines to reach",

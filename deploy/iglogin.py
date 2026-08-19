@@ -82,15 +82,45 @@ def _resolve_with_code(client, username: str) -> bool:
         url = client._normalize_challenge_api_path(api_path)
     except Exception:
         url = api_path
+
     _say("[*]", "دارم مسیر کد رو باز می‌کنم…")
     try:
+        # Open the challenge first. challenge_resolve_simple() reads step_name
+        # off last_json - it does not fetch anything itself - and skipping this
+        # left last_json holding the LOGIN response, which has no step_name at
+        # all. That took the `step_name == ""` branch straight into a bare
+        # `assert action == "close"`, which is the empty AssertionError this
+        # printed: our own missing request, reported as if Instagram had
+        # refused. The parameters are the ones challenge_resolve() sends.
+        params: dict = {}
+        try:
+            user_id, nonce_code = url.split("/")[2:4]
+            context = (data.get("challenge") or {}).get("challenge_context") or json.dumps(
+                {"step_name": "", "nonce_code": nonce_code,
+                 "user_id": int(user_id), "is_stateless": False}
+            )
+            params = {"guid": client.uuid,
+                      "device_id": client.android_device_id,
+                      "challenge_context": context}
+        except ValueError:
+            pass
+        client._send_private_request(url.lstrip("/"), params=params)
+
+        step = (getattr(client, "last_json", None) or {}).get("step_name", "")
+        _say("[*]", f"اینستاگرام این مرحله رو خواست: {step or '(خالی)'}")
         client.challenge_resolve_simple(url)
         return True
     except KeyboardInterrupt:
         _say("[!]", "لغو شد.")
         return False
     except Exception as e:
-        _say("[X]", f"مسیر کد جواب نداد: {type(e).__name__}: {e}")
+        detail = f"{type(e).__name__}: {e}".strip().rstrip(":")
+        _say("[X]", f"مسیر کد جواب نداد: {detail}")
+        # A bare assertion says nothing on its own; what Instagram actually
+        # replied is the only thing worth reading here.
+        last = getattr(client, "last_json", None)
+        if last:
+            _say("[!]", f"جواب اینستاگرام: {json.dumps(last, ensure_ascii=False)[:400]}")
         return False
 
 
