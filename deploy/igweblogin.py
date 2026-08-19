@@ -117,11 +117,21 @@ def _resolve_checkpoint(client, path: str, csrf: str) -> bool:
     code to give.
     """
     url = path if path.startswith("http") else BASE + path
-    _say("[!]", "اینستاگرام تایید خواسته - مسیر وب، که کد داره.")
+    _say("[!]", "اینستاگرام تایید خواسته - مسیر وب.")
 
-    resp = client.get(url, headers=_headers(csrf, referer=url))
-    body = _json(resp)
-    csrf = client.cookies.get("csrftoken") or csrf
+    # Ask for the JSON view explicitly. Plain GET on this path answers with the
+    # challenge PAGE - html - which parsed to nothing, so step_name came back
+    # empty, the choice was never posted, and a code was then asked for that
+    # nobody had requested. That is why no email ever arrived.
+    body: dict = {}
+    for params in ({"__a": "1", "__d": "dis"}, None):
+        resp = client.get(url, headers=_headers(csrf, referer=url), params=params)
+        csrf = client.cookies.get("csrftoken") or csrf
+        body = _json(resp)
+        if body:
+            break
+        _say("[!]", f"این شکل جواب json نداد ({resp.status_code}, "
+                    f"{resp.headers.get('content-type', '?')[:40]})")
 
     # Which contact points this account can be reached at. The field names
     # differ between responses, so both spellings are looked for.
@@ -129,21 +139,39 @@ def _resolve_checkpoint(client, path: str, csrf: str) -> bool:
     data = body.get("step_data") or {}
     if not data and isinstance(body.get("challenge"), dict):
         data = body["challenge"].get("step_data") or {}
+    _say("[*]", f"مرحله: {step or '(خالی)'}  مقصدها: {sorted(data) or '(هیچی)'}")
 
-    if "email" in data or step in ("select_verify_method", "select_contact_point_recovery"):
-        choice = "1" if "email" in data else "0"
-        where = "ایمیل" if choice == "1" else "پیامک"
-        _say("[*]", f"می‌خوام کد رو به {where} بفرسته…")
-        resp = client.post(url, headers=_headers(csrf, referer=url),
-                           data={"choice": choice})
-        body = _json(resp)
-        csrf = client.cookies.get("csrftoken") or csrf
-        if resp.status_code >= 400:
-            _say("[X]", f"درخواست کد رد شد ({resp.status_code}): "
-                        f"{json.dumps(body, ensure_ascii=False)[:300]}")
-            return False
+    choice = "1" if "email" in data else ("0" if "phone_number" in data else "")
+    if not choice and step in ("select_verify_method",
+                               "select_contact_point_recovery"):
+        choice = "1"
 
-    _say("[!]", "کد ۶ رقمی رو از ایمیل/پیامک بردار.")
+    if not choice:
+        # Never prompt for a code that was never requested. The prompt is what
+        # made this look like Instagram had gone quiet, when in fact it had
+        # never been asked to send anything.
+        _say("[X]", "نتونستم بفهمم کد رو کجا بفرسته، پس درخواستی هم نرفت.")
+        _say("[!]", "برای همین هیچ کدی نمیاد - این انتظار بی‌مورده.")
+        if body:
+            _say("[!]", f"جواب اینستاگرام: "
+                        f"{json.dumps(body, ensure_ascii=False)[:400]}")
+        else:
+            _say("[!]", "اینستاگرام json نداد - این چک‌پوینت صفحه‌ایه، نه api.")
+        return False
+
+    where = "ایمیل" if choice == "1" else "پیامک"
+    _say("[*]", f"می‌خوام کد رو به {where} بفرسته…")
+    resp = client.post(url, headers=_headers(csrf, referer=url),
+                       data={"choice": choice})
+    body = _json(resp)
+    csrf = client.cookies.get("csrftoken") or csrf
+    if resp.status_code >= 400:
+        _say("[X]", f"درخواست کد رد شد ({resp.status_code}): "
+                    f"{json.dumps(body, ensure_ascii=False)[:300]}")
+        return False
+
+    _say("[OK]", f"کد خواسته شد - باید به {where} برسه.")
+    _say("[!]", "کد ۶ رقمی رو بردار.")
     code = input("کد (خالی = انصراف): ").strip()
     if not code:
         _say("[!]", "لغو شد.")

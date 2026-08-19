@@ -1284,6 +1284,18 @@ check("web login: the password form is the one the browser posts",
       "#PWD_INSTAGRAM_BROWSER:0:" in _webl)
 check("web login: a checkpoint asks where the code should go",
       '"choice"' in _webl and "security_code" in _webl)
+# The first version went straight from "checkpoint" to asking for the code
+# without ever posting a choice, because the plain GET answered with the
+# challenge PAGE and parsed to nothing. So no code was requested, none
+# arrived, and the prompt made that look like Instagram had gone quiet.
+check("web login: the json view is asked for explicitly",
+      '"__a": "1"' in _webl)
+check("web login: no code is requested from the user unless one was ordered",
+      _webl.index("if not choice:") < _webl.index("کد (خالی"))
+check("web login: an unreadable checkpoint says why no code is coming",
+      "درخواستی هم نرفت" in _webl)
+check("web login: the step and contact points are printed",
+      "مرحله:" in _webl)
 check("web login: two-factor is handled separately from a checkpoint",
       "two_factor_identifier" in _webl)
 check("web login: the session is proved against the inbox before being kept",
