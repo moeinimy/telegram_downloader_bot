@@ -59,19 +59,60 @@ def _code_handler(username: str, choice=None) -> str:
     return code
 
 
-def _resolve_with_code(client, username: str) -> bool:
-    """Drive the code challenge that instagrapi declines to attempt.
+_BLOKS_REDIRECT = "com.bloks.www.ig.challenge.redirect.async"
 
-    Reading its source rather than guessing: challenge_resolve() raises on
-    sight of a native_flow checkpoint - before any handler runs, which is why
-    no code was ever sent and the account owner was never asked for one. Only
-    the entry point opts out. challenge_resolve_simple() underneath it does
-    implement the whole flow: pick email, wait for the code, post it back.
 
-    So the guard is stepped around rather than the flow reimplemented. If
-    Instagram genuinely will not take a code for this checkpoint, that shows
-    up as an error from the real endpoint instead of from a library that never
-    asked.
+def _approve_in_app(client) -> bool:
+    """The Bloks redirect checkpoint: approved on the phone, acknowledged here.
+
+    No code is sent for this one - not to email, not by SMS - so the wait for
+    one was a wait for something that does not exist. What Instagram wants is
+    the login approved in the official app, and then the SAME client instance,
+    still holding the same challenge_context, to acknowledge that approval.
+    Which is why this asks and waits rather than sending anything: a new run
+    would arrive with a different context and the acknowledgement would have
+    nothing to point at.
+    """
+    _say("[!]", "")
+    _say("[!]", "این چک‌پوینت کد نداره - نه ایمیل، نه پیامک. هیچ کدی نمیاد.")
+    _say("[!]", "اینستاگرام می‌خواد خودِ لاگین رو تو اپ تایید کنی.")
+    _say("[!]", "")
+    _say("[!]", "همین حالا، تو اپ گوشی با @ همین اکانت:")
+    _say("[!]", "  • اگه نوتیف «Was this you?» اومده، بزن Yes / It was me")
+    _say("[!]", "  • وگرنه: Settings ← Accounts Center ← Password and security")
+    _say("[!]", "           ← Login activity ← درخواست تازه رو تایید کن")
+    _say("[!]", "")
+    _say("[!]", "این پنجره رو نبند - باید همین اجرا تاییدت رو ثبت کنه.")
+    input("تایید کردی؟ Enter بزن… ")
+
+    _say("[*]", "دارم تاییدت رو به اینستاگرام اعلام می‌کنم…")
+    try:
+        client.challenge_bloks_redirect_dismiss()
+        return True
+    except Exception as e:
+        _say("[X]", f"اعلام تایید جواب نداد: {type(e).__name__}: {e}")
+        return False
+
+
+def _resolve_challenge(client, username: str) -> bool:
+    """Work out which checkpoint this is, then answer it the way it expects.
+
+    There are two, and they have nothing in common.
+
+    A code challenge sends six digits to email or SMS and wants them posted
+    back. instagrapi implements it in challenge_resolve_simple(), and only
+    refuses to REACH it: challenge_resolve() raises on sight of a native_flow
+    checkpoint before any handler runs. Stepping around that guard is what
+    gets a code sent at all.
+
+    A Bloks redirect checkpoint - step_name "STEP_NAME" - has no code and
+    never will. Instagram wants the login approved in the official app, and
+    then the same client instance, still holding the same challenge_context,
+    to acknowledge it. Waiting for an email here is waiting for something that
+    is not coming, which is exactly what it looked like from outside.
+
+    So the step is read first and the branch chosen from it, rather than
+    assuming every checkpoint is the one with a code in it.
     """
     data = getattr(client, "last_json", None) or {}
     api_path = (data.get("challenge") or {}).get("api_path") or ""
@@ -106,8 +147,14 @@ def _resolve_with_code(client, username: str) -> bool:
             pass
         client._send_private_request(url.lstrip("/"), params=params)
 
-        step = (getattr(client, "last_json", None) or {}).get("step_name", "")
+        last = getattr(client, "last_json", None) or {}
+        step = last.get("step_name", "")
         _say("[*]", f"اینستاگرام این مرحله رو خواست: {step or '(خالی)'}")
+
+        # The checkpoint with no code in it.
+        if step == "STEP_NAME" or last.get("bloks_action") == _BLOKS_REDIRECT:
+            return _approve_in_app(client)
+
         client.challenge_resolve_simple(url)
         return True
     except KeyboardInterrupt:
@@ -244,7 +291,7 @@ def main() -> int:
     # sign in again - resolving a challenge does not itself log you in.
     if text and ("challenge" in text.lower() or "checkpoint" in text.lower()):
         _say("[!]", "چک‌پوینت خورد. قبل از تسلیم شدن، مسیر کد رو امتحان می‌کنم.")
-        if _resolve_with_code(client, username):
+        if _resolve_challenge(client, username):
             _say("[OK]", "چلنج قبول شد - دوباره لاگین می‌کنم…")
             text = ""
             try:

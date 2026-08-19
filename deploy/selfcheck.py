@@ -1262,8 +1262,26 @@ check("iglogin: the step Instagram asked for is printed",
 check("iglogin: a bare assertion is backed by what Instagram actually replied",
       "جواب اینستاگرام" in _iglogin_src)
 
+# step_name "STEP_NAME" is a Bloks redirect checkpoint, and it has no code in
+# it at all - not by email, not by SMS. Treating every checkpoint as the code
+# kind meant waiting for a message that was never going to arrive, which is
+# exactly how it looked from the other side.
+check("iglogin: the Bloks checkpoint is recognised by its step name",
+      'step == "STEP_NAME"' in _iglogin_src)
+check("iglogin: and by its action, in case the step is not named",
+      "_BLOKS_REDIRECT" in _iglogin_src
+      and "com.bloks.www.ig.challenge.redirect.async" in _iglogin_src)
+check("iglogin: it is answered by approval, not by a code",
+      "challenge_bloks_redirect_dismiss" in _iglogin_src)
+check("iglogin: the user is told plainly that no code is coming",
+      "کد نداره" in _iglogin_src)
+check("iglogin: approval is acknowledged on the same run",
+      "این پنجره رو نبند" in _iglogin_src)
+check("iglogin: the code path is still there for the checkpoint that uses it",
+      "challenge_resolve_simple" in _iglogin_src)
+
 check("iglogin: a checkpoint tries the code path before giving up",
-      "_resolve_with_code" in _iglogin_src)
+      "_resolve_challenge" in _iglogin_src)
 check("iglogin: it calls the resolver instagrapi declines to reach",
       "challenge_resolve_simple" in _iglogin_src)
 check("iglogin: the account owner is prompted for the code",
