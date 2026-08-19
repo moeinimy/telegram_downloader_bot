@@ -358,6 +358,42 @@ def _get(url: str, params: dict) -> dict:
         raise RuntimeError(f"not json ({len(response.content)} bytes) - probably a login page")
 
 
+# How often the message-requests folder is worth a request of its own.
+#
+# Every sweep was reading TWO endpoints - the inbox and the pending folder -
+# so the measured request rate was exactly double what the poll interval
+# suggests, and every calculation about safe intervals was out by a factor of
+# two. On a busy day that is ~4,500 requests where ~2,250 was intended.
+#
+# The pending folder only ever holds something for an account we have never
+# had a thread with, which in practice means one thing: somebody redeeming a
+# pairing token. Anyone already paired arrives in the ordinary inbox. So it is
+# read on the sweep when a token is actually outstanding, and rarely
+# otherwise - a token nobody issued cannot arrive.
+_PENDING_IDLE_SECONDS = 300.0
+_pending_last = 0.0
+
+
+def _pending_due() -> bool:
+    global _pending_last
+
+    try:
+        from modules import ig_pairing
+
+        waiting = ig_pairing.pending_count() > 0
+    except Exception:
+        waiting = True  # never trade a pairing for a saving
+
+    if waiting:
+        _pending_last = time.monotonic()
+        return True
+
+    if time.monotonic() - _pending_last >= _PENDING_IDLE_SECONDS:
+        _pending_last = time.monotonic()
+        return True
+    return False
+
+
 def _pending_threads() -> list:
     """Message requests, or [] when this account's web api has no route to them."""
     global _pending_route
@@ -401,7 +437,7 @@ def _collect(limit: int, since: float, with_pending: bool = True) -> list[Direct
     })
     threads = list(((data.get("inbox") or {}).get("threads")) or [])
 
-    if with_pending:
+    if with_pending and _pending_due():
         threads += _pending_threads()
 
     me = settings.ig_dm_ds_user_id or str((data.get("viewer") or {}).get("pk") or "")

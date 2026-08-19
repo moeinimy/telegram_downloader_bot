@@ -1144,6 +1144,29 @@ check("realtime gate: ig_direct builds mqtt from that gate, not the web one",
       "settings.has_ig_realtime" in
       Path("modules/ig_direct.py").read_text(encoding="utf-8"))
 
+# Every sweep read TWO endpoints - the inbox and the message-requests folder -
+# so the real request rate was double what the poll interval implies, and every
+# safe-interval calculation was out by a factor of two. On a busy day that is
+# ~4,500 where ~2,250 was intended, which crosses from متعادل into پرریسک.
+#
+# The pending folder only holds anything for an account we have never had a
+# thread with, which in practice means somebody redeeming a pairing token.
+_iws = Path("modules/ig_web.py").read_text(encoding="utf-8")
+check("pending: the folder is not read on every single sweep",
+      "if with_pending and _pending_due():" in _iws)
+check("pending: an outstanding pairing token is read immediately",
+      "ig_pairing.pending_count() > 0" in _iws)
+check("pending: a saving is never traded for a lost pairing",
+      "waiting = True" in _iws)
+
+from modules import ig_web as _iw2
+_iw2._pending_last = 0.0
+import time as _t2
+_now = _t2.monotonic()
+_iw2._pending_last = _now                       # just checked
+check("pending: it is not re-read seconds later when nothing is waiting",
+      _iw2._PENDING_IDLE_SECONDS >= 60)
+
 # Every ceiling and quiet window governs an IDLE account. None of them touch a
 # busy day: each arriving message re-arms the fast window, the loop never
 # leaves 3s, and a day of that measured ~16,000 requests - three times what
