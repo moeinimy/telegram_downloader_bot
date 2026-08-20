@@ -275,7 +275,11 @@ async def _do_pick(query, chat_id: int, shortcode: str, parts) -> None:
     async with limits.download_slot(chat_id):
         path = await ig.fetch_quality(shortcode, url, label)
     with path.open("rb") as handle:
-        await query.message.reply_video(video=handle, caption=f"{label} · {info.permalink}")
+        from handlers.instagram_handler import video_kwargs
+
+        await query.message.reply_video(
+            video=handle, caption=f"{label} · {info.permalink}",
+            **video_kwargs(path))
     await status.delete()
 
 

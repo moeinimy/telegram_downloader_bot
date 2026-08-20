@@ -1242,6 +1242,38 @@ _yt._preferred_at["probe"] = _now3
 # The ladder was five rungs with the slowest client third, so a refusal on the
 # first two landed on the 88.8s one almost immediately. Timed every rung
 # against a real track before reordering.
+# A reel arrived unstreamable with its length shown as 00:00 - it had to be
+# fully downloaded before it would play - while a YouTube video of the same
+# size arrived fine. The YouTube path had been taught to TELL Telegram the
+# dimensions and duration; the Instagram path was still letting it guess.
+_igh = Path("handlers/instagram_handler.py").read_text(encoding="utf-8")
+_igm = Path("handlers/ig_post_menu.py").read_text(encoding="utf-8")
+check("instagram video: streaming is switched on",
+      "supports_streaming" in _igh)
+check("instagram video: the duration and box are measured, not guessed",
+      "probe_dimensions" in _igh)
+check("instagram video: the single-video path uses it",
+      "**video_kwargs(path)" in _igh)
+check("instagram video: album items use it too",
+      "InputMediaVideo(media=handle, caption=text," in _igh)
+check("instagram video: the quality menu uses it",
+      "video_kwargs(path)" in _igm)
+check("instagram video: one helper, so the paths cannot drift apart again",
+      _igh.count("def video_kwargs") == 1)
+from handlers.instagram_handler import video_kwargs as _vk
+check("instagram video: a missing ffprobe still enables streaming",
+      _vk(Path("nope.mp4"))["supports_streaming"] is True)
+check("instagram video: and never sends a made-up duration",
+      _vk(Path("nope.mp4"))["duration"] is None)
+
+# FFmpegExtractAudio copies when the source is aac and the target m4a, and
+# re-encodes otherwise. Sorting on bitrate alone picked opus 146kbps over aac
+# 129kbps and then transcoded it to aac 320k - a second lossy generation and a
+# bigger file than the source.
+check("audio: aac is preferred so the file is copied, not transcoded",
+      '"format_sort": ["aext:m4a", "abr"]' in
+      Path("modules/spotify.py").read_text(encoding="utf-8"))
+
 # The quality menu offered 360p, 480p, 720p, 1080p and best as five buttons
 # reading 516MB each. When a client serves one video stream every label picks
 # it, so that was one file wearing five names - and four of the five were a

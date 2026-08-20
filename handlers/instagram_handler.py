@@ -182,6 +182,28 @@ def _prepare_photo(path: Path) -> tuple[Path, str]:
         return path, "document"
 
 
+def video_kwargs(path) -> dict:
+    """What Telegram needs to be TOLD about a video, rather than guess.
+
+    Given no dimensions and no duration, Telegram picks a default box, shows
+    the length as 00:00, and will not stream the file - it has to be fully
+    downloaded before it plays. The YouTube path was taught this; the
+    Instagram path was not, which is why a reel arrived unstreamable with no
+    timeline while a YouTube video of the same size arrived fine.
+
+    Shared rather than copied, because that divergence is the bug.
+    """
+    from modules.youtube import probe_dimensions
+
+    width, height, seconds = probe_dimensions(path)
+    return {
+        "supports_streaming": True,
+        "duration": seconds or None,
+        "width": width or None,
+        "height": height or None,
+    }
+
+
 def _classify(files: list[Path]) -> list[tuple[Path, str]]:
     out = []
     for f in files:
@@ -208,7 +230,9 @@ async def deliver(bot, chat_id: int, files: list[Path], caption: str | None = No
         path, kind = items[0]
         with path.open("rb") as handle:
             if kind == "video":
-                await bot.send_video(chat_id=chat_id, video=handle, caption=caption)
+                await bot.send_video(chat_id=chat_id, video=handle,
+                                     caption=caption,
+                                     **video_kwargs(path))
             elif kind == "photo":
                 await bot.send_photo(chat_id=chat_id, photo=handle, caption=caption)
             else:
@@ -230,7 +254,11 @@ async def deliver(bot, chat_id: int, files: list[Path], caption: str | None = No
                 # Telegram shows only the first item's caption for a group.
                 text = caption if (i == 0 and index == 0) else None
                 if kind == "video":
-                    media.append(InputMediaVideo(media=handle, caption=text))
+                    # An album item needs telling too, or the same reel
+                    # that streams on its own arrives in a group with no
+                    # timeline and no preview.
+                    media.append(InputMediaVideo(media=handle, caption=text,
+                                                 **video_kwargs(path)))
                 else:
                     media.append(InputMediaPhoto(media=handle, caption=text))
             if media:

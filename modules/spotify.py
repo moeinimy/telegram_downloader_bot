@@ -1797,7 +1797,20 @@ def download_track(meta: TrackMeta) -> Path:
         # at 320k. Forcing mp3 for everything used to burn seconds of CPU per
         # track and added a second lossy pass on an already-compressed source.
         "format": "bestaudio/best",
-        "format_sort": ["abr"],
+        # AAC first, THEN bitrate - and that order is not a preference, it is
+        # the difference between copying the audio and re-encoding it.
+        #
+        # FFmpegExtractAudio copies losslessly when the source is already aac
+        # and the target is m4a, and re-encodes otherwise. Sorting on bitrate
+        # alone picked YouTube's opus 251 at 146kbps over its aac 140 at
+        # 129kbps, and then transcoded opus -> aac at 320k: a second lossy
+        # generation, a bigger file than the source, and seconds of CPU per
+        # track. The 129kbps aac copied bit-for-bit is the better file, and it
+        # arrives sooner.
+        #
+        # On SoundCloud the same rule lands on hls_aac_160k - so this is not a
+        # trade of quality for speed there at all, it is 160kbps copied.
+        "format_sort": ["aext:m4a", "abr"],
         "outtmpl": str(base) + ".%(ext)s",
         # Same throttle, same answer - see modules/youtube.py. A track is
         # smaller than a video, so the win is smaller, but it is the same win.
