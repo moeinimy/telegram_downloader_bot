@@ -289,6 +289,48 @@ def _proxy_url() -> str | None:
     return proxies.normalize(settings.ig_dm_proxy)
 
 
+def _new_transport(proxy: str | None):
+    """A session that looks like the browser it claims to be.
+
+    Every HTTPS client has a TLS handshake fingerprint - the order of its
+    ciphers, its extensions, the versions it offers. That fingerprint is
+    different for every library and Instagram reads it.
+
+    So sending Chrome's User-Agent over httpx says "I am Chrome" in the header
+    while the handshake says otherwise, and the two disagreeing is a signal on
+    its own. curl_cffi reproduces Chrome's actual handshake, which makes both
+    halves tell the same story. It does not make the address residential and
+    it is not a way past a checkpoint; it removes one contradiction that a
+    long-lived session does not need to be carrying.
+
+    Optional on purpose. Not installed, or refusing to build a session for any
+    reason, and this falls through to httpx exactly as before - the Instagram
+    path is working and a transport swap must not be able to take it down.
+    """
+    try:
+        from curl_cffi import requests as cffi
+
+        session = cffi.Session(
+            impersonate="chrome",
+            timeout=25,
+            proxies={"http": proxy, "https": proxy} if proxy else None,
+        )
+        log.info("ig web: using curl_cffi, TLS fingerprint impersonating chrome")
+        return session
+    except ImportError:
+        pass
+    except Exception as e:
+        log.warning("ig web: curl_cffi unusable (%s) - falling back to httpx", e)
+
+    import httpx
+
+    # httpx names it `proxy` from 0.26 and `proxies` before that.
+    try:
+        return httpx.Client(timeout=25, follow_redirects=True, proxy=proxy)
+    except TypeError:
+        return httpx.Client(timeout=25, follow_redirects=True, proxies=proxy)
+
+
 def _client():
     """The one shared session. Built once, kept for the life of the process."""
     global _session
@@ -297,16 +339,10 @@ def _client():
         if _session is not None:
             return _session
 
-        import httpx
-
-        proxy = _proxy_url()
-        # httpx names it `proxy` from 0.26 and `proxies` before that.
-        try:
-            _session = httpx.Client(timeout=25, follow_redirects=True, proxy=proxy)
-        except TypeError:
-            _session = httpx.Client(timeout=25, follow_redirects=True, proxies=proxy)
+        _session = _new_transport(_proxy_url())
 
         for name, value in _load_cookies().items():
+            # curl_cffi and httpx both take (name, value, domain=...) here.
             _session.cookies.set(name, value, domain=".instagram.com")
         return _session
 

@@ -1242,6 +1242,24 @@ _yt._preferred_at["probe"] = _now3
 # The ladder was five rungs with the slowest client third, so a refusal on the
 # first two landed on the 88.8s one almost immediately. Timed every rung
 # against a real track before reordering.
+# Every HTTPS client has a TLS handshake fingerprint, and Instagram reads it.
+# Sending Chrome's User-Agent over httpx says "I am Chrome" in the header while
+# the handshake says otherwise; curl_cffi makes both halves agree.
+_igw = Path("modules/ig_web.py").read_text(encoding="utf-8")
+check("tls: chrome's handshake is impersonated when curl_cffi is there",
+      'impersonate="chrome"' in _igw)
+check("tls: a missing curl_cffi falls back rather than failing",
+      "except ImportError:" in _igw and "import httpx" in _igw)
+check("tls: any other curl_cffi fault also falls back",
+      "curl_cffi unusable" in _igw)
+check("tls: the proxy is passed in the spelling curl_cffi wants",
+      '"http": proxy, "https": proxy' in _igw)
+check("tls: cookies are still loaded into whichever transport won",
+      _igw.index("_new_transport(_proxy_url())")
+      < _igw.index('_session.cookies.set(name, value, domain=".instagram.com")'))
+check("install: curl_cffi cannot take the install down with it",
+      "curl_cffi" in Path("deploy/manage.sh").read_text(encoding="utf-8"))
+
 # Inline mode. Every other way into this bot needs somebody to already know
 # it exists; an inline result is used in front of an audience, with the bot's
 # name under the message.

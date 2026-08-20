@@ -164,6 +164,16 @@ ensure_venv() {
         err "نصب پکیج‌های پایتون شکست خورد - خطای بالا رو بفرست"
         return 1
     fi
+    # Optional, and installed separately so a failure cannot take the whole
+    # install with it. curl_cffi reproduces Chrome's TLS handshake, which is
+    # what modules/ig_web.py uses to stop the header and the handshake telling
+    # different stories. Absent, that module falls back to httpx unchanged.
+    if sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/pip" install -q             --progress-bar off curl_cffi 2>/dev/null; then
+        ok "curl_cffi نصب شد - اثر انگشت TLS شبیه کروم می‌شه"
+    else
+        warn "curl_cffi نصب نشد - بدونش هم کار می‌کنه"
+    fi
+
     ok "پکیج‌های پایتون آماده‌ن"
 }
 
