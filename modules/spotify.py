@@ -1842,6 +1842,14 @@ def download_track(meta: TrackMeta) -> Path:
             # this costs no extra request. A thin one is kept only if every
             # other candidate is thinner.
             kbps = _bitrate_kbps(out_path, meta)
+            share = _too_short(out_path, meta)
+            if share < _SHORT_RATIO and i + 1 < len(targets):
+                log.info("candidate %d/%d is only %.0f%% of the runtime - a "
+                         "preview or a truncated file, trying the next",
+                         i + 1, len(targets), share * 100)
+                out_path.unlink(missing_ok=True)
+                out_path = None
+                continue
             if kbps and kbps < _THIN_KBPS and i + 1 < len(targets):
                 log.info("candidate %d/%d came back at %.0fkbps - too thin, "
                          "trying the next", i + 1, len(targets), kbps)
@@ -1881,6 +1889,49 @@ def download_track(meta: TrackMeta) -> Path:
 # 48kbps rungs YouTube keeps for slow connections land here; every real music
 # upload is 128 and up.
 _THIN_KBPS = 96.0
+
+# Below this fraction of the expected runtime the file is a different thing
+# from the track - a preview, or a download that stopped early. Generous on
+# purpose: catalogue runtimes disagree with uploads by a few seconds all the
+# time, and a radio edit is a real answer to a search.
+_SHORT_RATIO = 0.7
+
+
+def _too_short(path, meta) -> float:
+    """How much of the track actually arrived, 0..1, or 1.0 when unknowable.
+
+    SoundCloud serves a THIRTY SECOND preview for label-restricted tracks and
+    describes it exactly like the real thing - `hls_mp3_0_1_preview`, 128kbps,
+    with the full runtime still in the metadata. Searching for "Drake God's
+    Plan" returns one as the first result. It downloads cleanly, it is not
+    thin - 128kbps is a perfectly ordinary bitrate - and the bot would hand it
+    over as the song.
+
+    Bitrate cannot catch this and neither can the search: the only thing that
+    tells a preview from a track is the length of the file that arrived.
+    """
+    want = (meta.duration_ms or 0) / 1000.0
+    if want < 30:
+        return 1.0                     # nothing to compare against
+    got = _media_seconds(path)
+    if not got:
+        return 1.0                     # no ffprobe: do not reject on a guess
+    return got / want
+
+
+def _media_seconds(path) -> float:
+    """Length of a media file in seconds, 0.0 when it cannot be read."""
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=nw=1:nk=1", str(path)],
+            capture_output=True, text=True, timeout=30,
+        ).stdout.strip()
+        return float(out or 0)
+    except Exception:
+        return 0.0
 
 
 def _bitrate_kbps(path, meta) -> float:

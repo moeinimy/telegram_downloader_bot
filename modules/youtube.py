@@ -398,7 +398,7 @@ def probe_video(url: str) -> VideoInfo:
         thumbnail=info.get("thumbnail", ""),
         uploader=info.get("uploader", ""),
         available_heights=heights,
-        size_by_quality=_sizes_by_quality(formats),
+        size_by_quality=_sizes_by_quality(formats, info.get("duration") or 0),
         channel_url=info.get("channel_url") or info.get("uploader_url") or "",
     )
 
@@ -459,11 +459,22 @@ def popular_from_channel(channel_url: str, limit: int = 8) -> list[ChannelVideo]
     return out[:limit]
 
 
-def _size_of(f: dict) -> int:
-    return int(f.get("filesize") or f.get("filesize_approx") or 0)
+def _size_of(f: dict, seconds: float = 0) -> int:
+    """Bytes this format will cost, estimated from the bitrate when it has to.
+
+    Some clients report neither filesize nor filesize_approx - HLS variants
+    especially - and returning 0 there dropped the number off the button
+    entirely. tbr is in kbit/s and is almost always present, so the estimate
+    exists whenever the runtime does.
+    """
+    known = int(f.get("filesize") or f.get("filesize_approx") or 0)
+    if known:
+        return known
+    tbr = f.get("tbr") or 0
+    return int(tbr * 1000 / 8 * seconds) if tbr and seconds else 0
 
 
-def _sizes_by_quality(formats: list[dict]) -> dict[str, int]:
+def _sizes_by_quality(formats: list[dict], seconds: float = 0) -> dict[str, int]:
     """Roughly what each button will cost, mirroring how QUALITY_CHOICES picks.
 
     Approximate on purpose: yt-dlp reports filesize_approx for most streams and
@@ -475,34 +486,65 @@ def _sizes_by_quality(formats: list[dict]) -> dict[str, int]:
     if not video:
         return {}
 
-    best_audio = max((_size_of(f) for f in audio), default=0)
+    best_audio = max((_size_of(f, seconds) for f in audio), default=0)
 
+    # Which FORMAT each label resolves to, not just how big it is. When a
+    # client offers one video stream, every label picks it - and the menu
+    # then offered 360p, 480p, 720p, 1080p and best as five buttons showing
+    # 516MB each, which is one file wearing five names. Recording the pick is
+    # what lets the duplicates be dropped instead of displayed.
     sizes: dict[str, int] = {}
+    picked: dict[str, str] = {}
     for label in ("360p", "480p", "720p", "1080p"):
         cap = int(label.rstrip("p"))
         fitting = [f for f in video if (f.get("height") or 0) <= cap]
         if fitting:
-            pick = max(fitting, key=lambda f: (f.get("height") or 0, _size_of(f)))
-            if _size_of(pick):
-                sizes[label] = _size_of(pick) + best_audio
+            pick = max(fitting,
+                       key=lambda f: (f.get("height") or 0, _size_of(f, seconds)))
+            if _size_of(pick, seconds):
+                sizes[label] = _size_of(pick, seconds) + best_audio
+                picked[label] = str(pick.get("format_id") or pick.get("height"))
 
     # "best" has no ceiling in QUALITY_CHOICES, which is exactly why it needs a
     # number next to it more than any of the others do.
-    top = max(video, key=lambda f: (f.get("height") or 0, _size_of(f)))
-    if _size_of(top):
-        sizes["best"] = _size_of(top) + best_audio
+    top = max(video, key=lambda f: (f.get("height") or 0, _size_of(f, seconds)))
+    if _size_of(top, seconds):
+        sizes["best"] = _size_of(top, seconds) + best_audio
+        picked["best"] = str(top.get("format_id") or top.get("height"))
+
+    # A label that lands on the same stream as a lower one is not a choice.
+    seen: dict[str, str] = {}
+    for label in ("360p", "480p", "720p", "1080p", "best"):
+        fmt = picked.get(label)
+        if fmt is None:
+            continue
+        if fmt in seen.values():
+            sizes.pop(label, None)
+        else:
+            seen[label] = fmt
     return sizes
 
 
 def quality_options_for(info: VideoInfo) -> list[str]:
-    """Filter QUALITY_CHOICES to those actually available + always include 'best'."""
+    """The qualities that are genuinely different files.
+
+    Offering a label that resolves to the same stream as another is worse than
+    offering fewer: it reads as a choice, and picking it changes nothing. When
+    the sizes are known they decide, because two labels sharing one stream is
+    exactly what _sizes_by_quality dropped.
+    """
+    sizes = info.size_by_quality
     out: list[str] = []
     for label in ("360p", "480p", "720p", "1080p"):
         h = int(label.rstrip("p"))
-        if any(av and av <= h for av in info.available_heights if av):
-            out.append(label)
-    out.append("best")
-    return out
+        if not any(av and av <= h for av in info.available_heights if av):
+            continue
+        if sizes and label not in sizes:
+            continue
+        out.append(label)
+    if not sizes or "best" in sizes:
+        out.append("best")
+    return out or ["best"]
 
 
 # ---------- download ----------

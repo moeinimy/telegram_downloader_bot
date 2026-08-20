@@ -831,8 +831,11 @@ check("sizes: best is the uncapped one and says so",
       _sizes["best"] == 1608 * 1048576, f"{_sizes.get('best', 0) / 1048576:.0f}MB")
 check("sizes: filesize_approx counts when filesize is absent",
       _sizes["best"] > _sizes["720p"])
-check("sizes: 1080p falls back to the largest stream under the cap",
-      _sizes["1080p"] == _sizes["720p"])
+# This asserted the bug. With no stream between 720 and 2160, the 1080p label
+# resolved to the same 720p file - and showing it was offering a choice that
+# changed nothing, which is how five buttons came to read 516MB each.
+check("sizes: a label with no stream of its own is not offered",
+      "1080p" not in _sizes)
 check("sizes: no formats means no numbers rather than zeroes",
       _yt._sizes_by_quality([]) == {})
 check("sizes: a stream with no size reported is skipped, not shown as 0MB",
@@ -1239,6 +1242,51 @@ _yt._preferred_at["probe"] = _now3
 # The ladder was five rungs with the slowest client third, so a refusal on the
 # first two landed on the 88.8s one almost immediately. Timed every rung
 # against a real track before reordering.
+# The quality menu offered 360p, 480p, 720p, 1080p and best as five buttons
+# reading 516MB each. When a client serves one video stream every label picks
+# it, so that was one file wearing five names - and four of the five were a
+# choice that changed nothing.
+_ONE = [{"format_id": "18", "vcodec": "avc1", "acodec": "mp4a", "height": 360,
+         "filesize_approx": 516 * 1048576}]
+_i1 = _yt.VideoInfo(id="x", title="t", duration=600, thumbnail="", uploader="u",
+                    available_heights=[360, 480, 720, 1080],
+                    size_by_quality=_yt._sizes_by_quality(_ONE, 600))
+check("quality menu: one stream is offered once, not five times",
+      len(_yt.quality_options_for(_i1)) == 1)
+check("quality menu: labels that resolve to the same stream are dropped",
+      len(_i1.size_by_quality) == 1)
+
+_MANY = [{"format_id": "134", "vcodec": "avc1", "acodec": "none", "height": 360,
+          "filesize": 18_000_000},
+         {"format_id": "299", "vcodec": "avc1", "acodec": "none", "height": 1080,
+          "filesize": 257_000_000},
+         {"format_id": "140", "vcodec": "none", "acodec": "mp4a",
+          "filesize": 5_000_000}]
+_i2 = _yt.VideoInfo(id="y", title="t", duration=600, thumbnail="", uploader="u",
+                    available_heights=[360, 1080],
+                    size_by_quality=_yt._sizes_by_quality(_MANY, 600))
+check("quality menu: genuinely different streams are all offered",
+      set(_i2.size_by_quality) == {"360p", "1080p"})
+check("quality menu: and their sizes differ",
+      len(set(_i2.size_by_quality.values())) == 2)
+
+check("quality menu: a size is estimated from bitrate when none is reported",
+      _yt._size_of({"tbr": 400}, 300) > 0)
+check("quality menu: and stays zero when there is nothing to estimate from",
+      _yt._size_of({}, 300) == 0)
+
+from modules import spotify as _spq2
+# SoundCloud serves a 30-second preview for restricted tracks, at a perfectly
+# ordinary 128kbps, with the full runtime still in the metadata.
+check("audio: a file far shorter than the track is rejected",
+      _spq2._SHORT_RATIO < 1.0)
+check("audio: an unreadable length never rejects",
+      _spq2._too_short(Path("nope-does-not-exist"),
+                       _spq2.TrackMeta("x", "t", ["a"], "", 198000, "", "")) == 1.0)
+check("audio: the preview check runs on the downloaded file, not the search",
+      "_too_short(out_path, meta)" in
+      Path("modules/spotify.py").read_text(encoding="utf-8"))
+
 # YouTube shapes a download per CONNECTION, so one stream sits at whatever
 # rate it is given - the difference between three minutes and under one on the
 # same file. concurrent_fragment_downloads only ever applied to fragmented
