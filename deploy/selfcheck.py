@@ -1397,8 +1397,27 @@ _asyncio_run = _aio2.run
 from handlers import inline as _inline_mod
 check("inline: a track already on Telegram is sent as the real audio",
       "InlineQueryResultCachedAudio" in _inl)
-check("inline: anything else offers a link that fetches it",
-      "?start=trk_" in _inl)
+# The card version worked and was the wrong thing: what landed in the other
+# chat was a text message ABOUT a song rather than the song.
+check("inline: no card is offered, only real audio",
+      "InlineQueryResultArticle" not in _inl)
+check("inline: the audio carries no caption repeating its own tags",
+      "caption=" not in _inl)
+check("inline: an inline query warms the cache for the next person",
+      "asyncio.create_task(_warm(" in _inl)
+check("inline: the warm sends to the store, not to a user",
+      "chat_id=settings.cache_channel_id" in _inl)
+check("inline: no store configured means no warm, not a crash",
+      "settings.cache_channel_id and _should_warm(query)" in _inl)
+check("inline: a keystroke does not queue a download",
+      "_WARM_DEBOUNCE" in _inl)
+check("inline: the same track is not warmed twice at once",
+      "_warming" in _inl)
+_iw = _inline_mod
+_iw._warm_seen.clear()
+_iw._should_warm("q")
+check("inline: typing does not warm; a pause does",
+      not _iw._should_warm("q"))
 # The first version wrapped sp.search_tracks in run_in_thread - but that
 # function is ALREADY decorated with it. The inner call returned a coroutine
 # nothing awaited, `for track in tracks` raised TypeError, and the query was

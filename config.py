@@ -160,6 +160,14 @@ class Settings:
     # Telegram user ids allowed to open the admin panel. Empty = disabled.
     admin_ids: frozenset[int]
 
+    # A private channel the bot is admin of, used purely as a file store.
+    #
+    # A Telegram file_id only exists once a file has been SENT, so there is no
+    # way to fill the cache without sending somewhere. Sending to this channel
+    # mints the id without putting anything in anybody's chat. Empty = inline
+    # mode can only offer what users have already downloaded themselves.
+    cache_channel_id: str
+
     # Channel users must join before the bot answers, e.g. "@mychannel".
     # The bot has to be an admin of it. Empty = no gate.
     required_channel: str
@@ -357,6 +365,7 @@ settings = Settings(
         s for s in _get("LYRICS_SOURCES", "lrclib,lyricsovh,genius").replace(" ", "").split(",") if s
     ),
     admin_ids=_admin_ids(),
+    cache_channel_id=_get("CACHE_CHANNEL_ID"),
     required_channel=_channel_name(),
     log_level=_get("LOG_LEVEL", "INFO"),
 )
