@@ -1385,6 +1385,52 @@ _leaks = []
 for _f in sorted(Path("modules").glob("*.py")) + sorted(Path("handlers").glob("*.py")):
     _leaks += _scope_leaks(_f)
 
+
+def _undefined_privates(path):
+    """Module-private names used but never defined anywhere in the file.
+
+    A helper referenced before it exists imports perfectly and raises only
+    when that line runs - twice today: _yt_fast_opts and _is_cold. Restricted
+    to leading-underscore names, which are by convention local to the module,
+    so a missing one is a mistake rather than an import this pass cannot see.
+    """
+    tree = _ast.parse(Path(path).read_text(encoding="utf-8"))
+    defined, used = set(), {}
+
+    for node in _ast.walk(tree):
+        if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef,
+                             _ast.ClassDef)):
+            defined.add(node.name)
+            for a in getattr(node, "args", None).args if hasattr(node, "args") else []:
+                defined.add(a.arg)
+        elif isinstance(node, _ast.Name) and isinstance(node.ctx, _ast.Store):
+            defined.add(node.id)
+        elif isinstance(node, _ast.arg):
+            defined.add(node.arg)
+        elif isinstance(node, (_ast.Import, _ast.ImportFrom)):
+            for a in node.names:
+                defined.add(a.asname or a.name.split(".")[0])
+        elif isinstance(node, _ast.Global):
+            defined.update(node.names)
+        elif isinstance(node, _ast.ExceptHandler) and node.name:
+            defined.add(node.name)
+
+    for node in _ast.walk(tree):
+        if (isinstance(node, _ast.Name) and isinstance(node.ctx, _ast.Load)
+                and node.id.startswith("_") and not node.id.startswith("__")):
+            used.setdefault(node.id, node.lineno)
+
+    return [f"{Path(path).name}:{line} {name} is used but never defined"
+            for name, line in used.items() if name not in defined]
+
+
+_undef = []
+for _f in sorted(Path("modules").glob("*.py")) + sorted(Path("handlers").glob("*.py")):
+    _undef += _undefined_privates(_f)
+
+check("scope: no module-private helper is used before it exists",
+      not _undef, "; ".join(_undef[:3]))
+
 check("scope: no function uses a name another function imported",
       not _leaks, "; ".join(_leaks[:3]))
 
@@ -1601,6 +1647,32 @@ check("video: mp4-native codecs are preferred so the merge is a remux",
       '"format_sort": ["vcodec:h264", "acodec:m4a"]' in _yts)
 check("video: it is a preference, not a filter that can fail",
       not any("vcodec^=" in v for v in _yt.QUALITY_CHOICES.values()))
+
+# The ladder is walked in full on EVERY call, and download_track calls it once
+# per candidate - seven clients times six candidates is forty-two attempts,
+# most of them to clients that never return audio on this address. That is
+# most of a two-minute download spent on predictable refusals.
+_saved_ref = dict(_yt._refusals)
+_yt._refusals.clear()
+check("ladder: it starts out willing to try everything",
+      len(_yt._ladder("t")) == len(_yt._CLIENT_LADDER))
+for _c in ("ios", "mweb", "web_embedded", "web_safari", "tv_simply"):
+    for _ in range(3):
+        _yt._note_refusal("t", _c)
+check("ladder: clients that keep refusing are dropped",
+      len(_yt._ladder("t")) == 2)
+for _c in ("android_vr", ""):
+    for _ in range(3):
+        _yt._note_refusal("t", _c)
+check("ladder: it never empties itself",
+      len(_yt._ladder("t")) == len(_yt._CLIENT_LADDER))
+_yt._note_success("t", "ios")
+check("ladder: one success brings a client straight back",
+      not _yt._is_cold("t", "ios"))
+_yt._refusals.clear()
+_yt._refusals.update(_saved_ref)
+check("ladder: a cold client is retried after the cooldown",
+      _yt._REFUSAL_COOLDOWN > 0 and _yt._REFUSALS_BEFORE_SKIP >= 2)
 
 check("speed: the slowest client is the last resort, not the third",
       _yt._CLIENT_LADDER[-1] == "tv_simply")

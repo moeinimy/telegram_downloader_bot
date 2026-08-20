@@ -279,6 +279,47 @@ _SLOW_SECONDS = 20.0
 _REPROBE_AFTER = 600.0
 
 
+# Clients that have just refused, so the ladder stops paying for them.
+#
+# ytdlp_run walks the WHOLE ladder on every call, and download_track calls it
+# once per candidate - up to six of them. Seven clients times six candidates is
+# forty-two attempts, and on a given address most of the seven never return an
+# audio format at all. Each costs a couple of seconds to say no, which is most
+# of a two-minute download spent on refusals that were entirely predictable by
+# the second candidate.
+#
+# So a refusal is remembered. Three in a row and the client is skipped for a
+# while; one success clears it. Nothing here hardcodes WHICH clients are good,
+# because that differs per address and changes without notice - the ladder just
+# stops asking the ones currently saying no.
+_REFUSALS_BEFORE_SKIP = 3
+_REFUSAL_COOLDOWN = 900.0
+_refusals: dict[tuple[str, str], tuple[int, float]] = {}
+
+# Never skip everything. If every rung has gone cold, trying them is the
+# shortest way back to a working one.
+_MIN_RUNGS = 2
+
+
+def _note_refusal(kind: str, client: str) -> None:
+    count, _ = _refusals.get((kind, client), (0, 0.0))
+    _refusals[(kind, client)] = (count + 1, time.monotonic())
+
+
+def _note_success(kind: str, client: str) -> None:
+    _refusals.pop((kind, client), None)
+
+
+def _is_cold(kind: str, client: str) -> bool:
+    count, when = _refusals.get((kind, client), (0, 0.0))
+    if count < _REFUSALS_BEFORE_SKIP:
+        return False
+    if time.monotonic() - when > _REFUSAL_COOLDOWN:
+        _refusals.pop((kind, client), None)      # long enough; try it again
+        return False
+    return True
+
+
 def _ladder(kind: str = "") -> tuple[str, ...]:
     # With a cookie jar the default client becomes the strongest option, so
     # promote it to the front; otherwise keep the account-free order.
@@ -296,7 +337,14 @@ def _ladder(kind: str = "") -> tuple[str, ...]:
                      "fast clients", winner or "default", _preferred_cost[kind])
             winner = None
     if winner is not None and winner in base:
-        return (winner,) + tuple(c for c in base if c != winner)
+        base = (winner,) + tuple(c for c in base if c != winner)
+
+    # Drop the rungs that are currently only costing time. Never all of them:
+    # if every one is cold, trying them is the shortest way back to a working
+    # client.
+    warm = tuple(c for c in base if not _is_cold(kind, c))
+    if len(warm) >= _MIN_RUNGS:
+        return warm
     return base
 
 
@@ -351,6 +399,7 @@ def ytdlp_run(extra: dict, fn: Callable[[YoutubeDL], T], kind: str = "") -> T:
             _preferred[kind] = client
             _preferred_cost[kind] = took
             _preferred_at[kind] = time.monotonic()
+            _note_success(kind, client)
             log.info("yt-dlp client '%s' served %s in %.1fs", client or "default",
                      kind or "it", took)
             return result
@@ -368,6 +417,7 @@ def ytdlp_run(extra: dict, fn: Callable[[YoutubeDL], T], kind: str = "") -> T:
             # every subsequent request.
             if _preferred.get(kind) == client:
                 _preferred.pop(kind, None)
+            _note_refusal(kind, client)
             log.warning("yt-dlp client '%s' refused %s after %.1fs (%s) — trying next.",
                         client or "default", kind or "it",
                         time.monotonic() - started, e)
