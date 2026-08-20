@@ -1317,6 +1317,77 @@ check("tls: cookies are still loaded into whichever transport won",
 check("install: curl_cffi cannot take the install down with it",
       "curl_cffi" in Path("deploy/manage.sh").read_text(encoding="utf-8"))
 
+# A local import landed in the wrong function.
+#
+# `from modules.youtube import _fast_download_opts as _yt_fast_opts` was added
+# to _flat_entries while the call sat in download_track, so every single music
+# download died with NameError - and nothing here noticed, because the module
+# imports perfectly and the name only fails when that line runs.
+#
+# This walks every module for the same shape: a name that some function
+# imports locally, used by a DIFFERENT function that does not import it and
+# where it is not a module-level name either. It is a real class of bug that
+# no import check can see.
+import ast as _ast
+
+
+def _scope_leaks(path):
+    tree = _ast.parse(Path(path).read_text(encoding="utf-8"))
+    module_names = set()
+    funcs = []
+
+    for node in tree.body:
+        if isinstance(node, (_ast.Import, _ast.ImportFrom)):
+            for a in node.names:
+                module_names.add(a.asname or a.name.split(".")[0])
+        elif isinstance(node, _ast.Assign):
+            for tgt in node.targets:
+                if isinstance(tgt, _ast.Name):
+                    module_names.add(tgt.id)
+        elif isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+            module_names.add(node.name)
+            funcs.append(node)
+        elif isinstance(node, _ast.ClassDef):
+            module_names.add(node.name)
+
+    local_imports = {}
+    for fn in funcs:
+        names = set()
+        for sub in _ast.walk(fn):
+            if isinstance(sub, (_ast.Import, _ast.ImportFrom)):
+                for a in sub.names:
+                    names.add(a.asname or a.name.split(".")[0])
+        local_imports[fn.name] = names
+
+    everywhere = set().union(*local_imports.values()) if local_imports else set()
+
+    leaks = []
+    for fn in funcs:
+        bound = set(local_imports[fn.name])
+        for sub in _ast.walk(fn):
+            if isinstance(sub, _ast.arg):
+                bound.add(sub.arg)
+            elif isinstance(sub, _ast.Name) and isinstance(sub.ctx, _ast.Store):
+                bound.add(sub.id)
+            elif isinstance(sub, _ast.alias):
+                bound.add(sub.asname or sub.name.split(".")[0])
+        for sub in _ast.walk(fn):
+            if (isinstance(sub, _ast.Name) and isinstance(sub.ctx, _ast.Load)
+                    and sub.id in everywhere
+                    and sub.id not in bound
+                    and sub.id not in module_names):
+                leaks.append(f"{Path(path).name}:{sub.lineno} {fn.name}() uses "
+                             f"{sub.id}, imported in another function")
+    return leaks
+
+
+_leaks = []
+for _f in sorted(Path("modules").glob("*.py")) + sorted(Path("handlers").glob("*.py")):
+    _leaks += _scope_leaks(_f)
+
+check("scope: no function uses a name another function imported",
+      not _leaks, "; ".join(_leaks[:3]))
+
 # Inline mode. Every other way into this bot needs somebody to already know
 # it exists; an inline result is used in front of an audience, with the bot's
 # name under the message.

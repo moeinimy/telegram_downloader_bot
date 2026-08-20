@@ -455,7 +455,6 @@ def _lookup_metadata_track(track_id: str) -> TrackMeta:
 # ---------------- yt-dlp based search / probing ----------------
 
 def _flat_entries(search_url: str) -> list[dict]:
-    from modules.youtube import _fast_download_opts as _yt_fast_opts
     from modules.youtube import ytdlp_run
 
     info = ytdlp_run(
@@ -1761,6 +1760,7 @@ def download_track(meta: TrackMeta) -> Path:
     tags. yt_/sc_ tracks download their exact source URL; Spotify tracks
     are located via a YouTube search.
     """
+    from modules.youtube import _fast_download_opts as _yt_fast_opts
     from modules.youtube import ytdlp_run
 
     # Fix metadata + cover before computing the filename.
