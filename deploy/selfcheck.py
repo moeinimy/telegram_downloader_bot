@@ -1321,12 +1321,26 @@ check("install: curl_cffi cannot take the install down with it",
 # it exists; an inline result is used in front of an audience, with the bot's
 # name under the message.
 _inl = Path("handlers/inline.py").read_text(encoding="utf-8")
+import asyncio as _aio2
+_asyncio_run = _aio2.run
+from handlers import inline as _inline_mod
 check("inline: a track already on Telegram is sent as the real audio",
       "InlineQueryResultCachedAudio" in _inl)
 check("inline: anything else offers a link that fetches it",
       "?start=trk_" in _inl)
-check("inline: the search runs off the event loop",
-      "@run_in_thread" in _inl)
+# The first version wrapped sp.search_tracks in run_in_thread - but that
+# function is ALREADY decorated with it. The inner call returned a coroutine
+# nothing awaited, `for track in tracks` raised TypeError, and the query was
+# never answered. From a chat that is indistinguishable from inline mode being
+# switched off. The test missed it by patching _search, which is the one thing
+# it should not have replaced.
+check("inline: the search is not wrapped in a second thread pool",
+      "from utils.helpers import run_in_thread" not in _inl)
+check("inline: it awaits the already-async search",
+      "await sp.search_tracks(" in _inl)
+_isearch = _asyncio_run(_inline_mod._search("drake"))
+check("inline: _search really returns a list, not a coroutine",
+      isinstance(_isearch, list))
 check("inline: an empty query explains itself instead of looking broken",
       "switch_pm_text" in _inl)
 check("inline: the handler is registered",

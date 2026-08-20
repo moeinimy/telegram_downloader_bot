@@ -40,7 +40,6 @@ from telegram.ext import ContextTypes
 
 from modules import spotify as sp
 from utils import file_cache
-from utils.helpers import run_in_thread
 
 log = logging.getLogger(__name__)
 
@@ -58,15 +57,17 @@ def _bot_username(context) -> str:
     return user.lstrip("@")
 
 
-@run_in_thread
-def _search(query: str):
-    """The catalogue search, off the event loop.
+async def _search(query: str):
+    """The catalogue search.
 
-    search_tracks is synchronous and does network I/O; called directly it
-    would block every other update for its duration, and inline queries
-    arrive on every keystroke.
+    sp.search_tracks is ALREADY @run_in_thread - it is awaitable, and it
+    already runs off the event loop. Wrapping it in a second run_in_thread
+    made the inner call return a coroutine that nothing ever awaited, so the
+    handler got a coroutine where it expected a list, `for track in tracks`
+    raised TypeError, and the query was never answered at all. From the chat
+    that looks exactly like a bot with inline mode switched off.
     """
-    return sp.search_tracks(query, limit=_LIMIT)
+    return await sp.search_tracks(query, limit=_LIMIT)
 
 
 async def on_inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
