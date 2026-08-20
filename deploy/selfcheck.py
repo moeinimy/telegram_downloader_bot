@@ -1148,6 +1148,7 @@ check("realtime gate: ig_direct builds mqtt from that gate, not the web one",
 # Silence is right for a stranger; with ADMIN_IDS unset NOBODY is an admin, so
 # the owner got the same nothing and had no way to tell that apart from a bug.
 _adm = Path("handlers/admin.py").read_text(encoding="utf-8")
+from handlers import admin as _adm_mod
 check("admin: an unconfigured bot answers instead of staying silent",
       "if not settings.admin_ids:" in _adm and "botctl admin" in _adm)
 check("admin: it hands over the id needed to fix the deadlock",
@@ -1201,6 +1202,27 @@ check("broadcast: the text is taken off the raw message, newlines and all",
       "msg.text or msg.caption" in _adm and "head.partition" in _adm)
 check("broadcast: joining context.args is not how the body is built",
       'text = " ".join(context.args)' not in _adm)
+# Plain text fixed the crash and lost the formatting with it: the link on
+# "Ù¾ÛØ¬ Ø¬Ø¯ÛØ¯" stopped being a link. Telegram keeps that beside the words as
+# entities, so they are carried across rather than re-marked-up - offsets in
+# UTF-16 units, because a ð¢ is one character and two of those.
+from telegram import MessageEntity as _ME
+_raw = "/broadcast Ø³ÙØ§Ù ð¢ ÙÛÙÚ©"
+_body = "Ø³ÙØ§Ù ð¢ ÙÛÙÚ©"
+_ent = [_ME(type="text_link", offset=_adm_mod._u16("/broadcast Ø³ÙØ§Ù ð¢ "),
+            length=_adm_mod._u16("ÙÛÙÚ©"), url="https://example.com")]
+_moved = _adm_mod._shift_entities(_raw, _body, _ent)
+check("broadcast: formatting survives the command being stripped",
+      len(_moved) == 1)
+check("broadcast: the link lands on the word it was on",
+      _moved and _moved[0].offset == _adm_mod._u16("Ø³ÙØ§Ù ð¢ "))
+check("broadcast: an emoji counts as two units, the way Telegram counts",
+      _adm_mod._u16("🟢") == 2 and len("🟢") == 1)
+check("broadcast: the preview shows the same formatting",
+      len(_adm_mod._preview_entities(17, _moved)) == 1)
+check("broadcast: entities reach both senders",
+      _adm.count("entities=entities") >= 2)
+
 check("broadcast: it can be sent to the admin alone first",
       "adm:bctest:" in _adm)
 check("broadcast: the test does not consume the pending send",

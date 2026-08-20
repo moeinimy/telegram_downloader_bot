@@ -565,7 +565,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         if not pending:
             await query.message.reply_text("⌛ منقضی شد. دوباره /broadcast بزن.")
             return
-        src_msg_id, src_chat_id, text = pending
+        src_msg_id, src_chat_id, text, entities = pending
         try:
             if src_msg_id and src_chat_id:
                 await context.bot.copy_message(
@@ -573,7 +573,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                     from_chat_id=src_chat_id, message_id=src_msg_id)
             else:
                 await context.bot.send_message(
-                    chat_id=query.message.chat_id, text=text)
+                    chat_id=query.message.chat_id, text=text, entities=entities)
             await query.message.reply_text(
                 "👆 دقیقا همین برای همه می‌ره. اگه درسته «✅ بفرست» رو بزن.")
         except Exception as e:
@@ -633,6 +633,85 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 # ---------------- broadcast ----------------
 
+def _u16(text: str) -> int:
+    """Length as Telegram counts it: UTF-16 code units, not characters.
+
+    A 🟢 is one Python character and TWO of these. Shifting entity offsets by
+    a character count puts every link after an emoji in the wrong place, which
+    is a subtler wrong than losing them outright.
+    """
+    return len(text.encode("utf-16-le")) // 2
+
+
+def _shift_entities(raw: str, body: str, entities) -> list:
+    """The message's own formatting, moved to sit on the body alone.
+
+    Taking msg.text gives the words and drops everything Telegram keeps
+    beside them - a hyperlink, bold, a monospace span. The broadcast then
+    went out as flat text with "پیج جدید" no longer linking anywhere.
+
+    parse_mode is not the answer here: re-marking-up text somebody already
+    formatted is how an unpaired underscore rejected the whole message in the
+    first place. The entities are carried across instead, which is exactly
+    what the sender composed - no parsing, nothing to get wrong.
+    """
+    if not entities:
+        return []
+    lead = raw.find(body)
+    if lead < 0:
+        return []
+    shift = _u16(raw[:lead])
+    span = _u16(body)
+
+    from telegram import MessageEntity
+
+    out = []
+    for e in entities:
+        start = e.offset - shift
+        # Anything overlapping the command itself belongs to the command.
+        if start < 0 or start + e.length > span:
+            continue
+        try:
+            data = e.to_dict()
+            data["offset"] = start
+            moved = MessageEntity.de_json(data, None)
+        except Exception:
+            continue
+        if moved is not None:
+            out.append(moved)
+    return out
+
+
+def _preview_header(total: int) -> str:
+    return f"📣 برای {total} کاربر ارسال بشه؟\n\n"
+
+
+def _preview_entities(total: int, entities) -> list:
+    """The same formatting, pushed past the header the preview adds.
+
+    Without this the preview shows the words but not the link, so the one
+    screen meant to answer "is this right before it goes to everyone?" cannot
+    show the part most likely to be wrong.
+    """
+    if not entities:
+        return []
+    shift = _u16(_preview_header(total))
+
+    from telegram import MessageEntity
+
+    out = []
+    for e in entities:
+        try:
+            data = e.to_dict()
+            data["offset"] = e.offset + shift
+            moved = MessageEntity.de_json(data, None)
+        except Exception:
+            continue
+        if moved is not None:
+            out.append(moved)
+    return out
+
+
 async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/broadcast <text>, or reply to a message with /broadcast to send that."""
     if await _reject(update):
@@ -650,6 +729,7 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     head, _, tail = raw.partition("\n")
     _, _, after_cmd = head.partition(" ")
     text = (after_cmd + ("\n" + tail if tail else "")).strip()
+    entities = _shift_entities(raw, text, msg.entities or msg.caption_entities)
     source = msg.reply_to_message
 
     if not text and not source:
@@ -668,6 +748,7 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         source.message_id if source else None,
         source.chat_id if source else None,
         text,
+        entities,
     )
     total = stats.user_count()
     preview = text or "(همون پیامی که ریپلای کردی)"
@@ -680,7 +761,8 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     # غیرمنتظره پیش اومد" with nothing about what was wrong. The preview only
     # has to be readable, so it is sent as plain text and can never fail.
     await msg.reply_text(
-        f"📣 برای {total} کاربر ارسال بشه؟\n\n{preview[:500]}",
+        f"{_preview_header(total)}{preview[:500]}",
+        entities=_preview_entities(total, entities),
         reply_markup=InlineKeyboardMarkup(
             [
                 [InlineKeyboardButton("🧪 اول فقط برای خودم",
@@ -705,7 +787,7 @@ async def _run_broadcast(query, context, key: str) -> None:
         await query.edit_message_text("⌛ منقضی شد. دوباره /broadcast بزن.")
         return
 
-    src_msg_id, src_chat_id, text = pending
+    src_msg_id, src_chat_id, text, entities = pending
     user_ids = [row[0] for row in stats.list_users(limit=100000, offset=0)]
     status = await query.message.reply_text(f"📣 ارسال به {len(user_ids)} کاربر…")
 
@@ -717,7 +799,8 @@ async def _run_broadcast(query, context, key: str) -> None:
                     chat_id=uid, from_chat_id=src_chat_id, message_id=src_msg_id
                 )
             else:
-                await context.bot.send_message(chat_id=uid, text=text)
+                await context.bot.send_message(chat_id=uid, text=text,
+                                               entities=entities)
             sent += 1
         except Exception as e:
             detail = str(e).lower()
