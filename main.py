@@ -13,6 +13,7 @@ from telegram import Update
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
+    InlineQueryHandler,
     CommandHandler,
     MessageHandler,
     TypeHandler,
@@ -21,6 +22,7 @@ from telegram.ext import (
 
 from config import settings, setup_logging
 from handlers import (
+    inline,
     admin,
     gate,
     ig_direct_handler,
@@ -138,6 +140,9 @@ def build_app() -> Application:
         log.info("Channel lock active: %s", settings.required_channel)
 
     # Commands
+    # Inline mode: `@bot <song>` inside any chat. Registered before the
+    # command handlers only for readability; handler groups decide order.
+    app.add_handler(InlineQueryHandler(inline.on_inline_query))
     app.add_handler(CommandHandler("start", start.start_cmd))
     app.add_handler(CommandHandler("help", start.help_cmd))
     app.add_handler(CommandHandler(["admin", "stats"], admin.admin_cmd))

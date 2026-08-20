@@ -1242,6 +1242,28 @@ _yt._preferred_at["probe"] = _now3
 # The ladder was five rungs with the slowest client third, so a refusal on the
 # first two landed on the 88.8s one almost immediately. Timed every rung
 # against a real track before reordering.
+# Inline mode. Every other way into this bot needs somebody to already know
+# it exists; an inline result is used in front of an audience, with the bot's
+# name under the message.
+_inl = Path("handlers/inline.py").read_text(encoding="utf-8")
+check("inline: a track already on Telegram is sent as the real audio",
+      "InlineQueryResultCachedAudio" in _inl)
+check("inline: anything else offers a link that fetches it",
+      "?start=trk_" in _inl)
+check("inline: the search runs off the event loop",
+      "@run_in_thread" in _inl)
+check("inline: an empty query explains itself instead of looking broken",
+      "switch_pm_text" in _inl)
+check("inline: the handler is registered",
+      "InlineQueryHandler(inline.on_inline_query)" in
+      Path("main.py").read_text(encoding="utf-8"))
+_st = Path("handlers/start.py").read_text(encoding="utf-8")
+check("inline: the deep link delivers the track, not the welcome text",
+      'arg.startswith("trk_")' in _st and "deliver_track" in _st)
+check("inline: delivery reuses the button path rather than a second copy",
+      "_send_and_download_track(msg, meta)" in
+      Path("handlers/spotify_handler.py").read_text(encoding="utf-8"))
+
 # A reel arrived unstreamable with its length shown as 00:00 - it had to be
 # fully downloaded before it would play - while a YouTube video of the same
 # size arrived fine. The YouTube path had been taught to TELL Telegram the

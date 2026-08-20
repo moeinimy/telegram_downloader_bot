@@ -748,6 +748,22 @@ async def _send_and_download_track(msg, meta, *, quiet: bool = False) -> bool:
 
 # ---------- callbacks ----------
 
+async def deliver_track(msg, track_id: str) -> None:
+    """Send one track by id. The deep link from an inline card lands here.
+
+    Shared with the sp:trk: button rather than reimplemented, so a track
+    fetched from a chat and a track fetched from a search are the same track
+    with the same cover, tags and buttons.
+    """
+    try:
+        meta = await sp.get_track_meta(track_id)
+    except Exception as e:
+        log.info("deep link %r failed: %s", track_id, e)
+        await msg.reply_text(t(msg.chat_id, "❌ این آهنگ رو پیدا نکردم."))
+        return
+    await _send_and_download_track(msg, meta)
+
+
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     data = query.data

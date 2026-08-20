@@ -136,6 +136,7 @@ _EN: dict[str, str] = {
     "⏹ متوقف شد — ترک‌های در حال دانلود تموم می‌شن.":
         "⏹ Stopping — downloads already in flight will finish.",
     "⏹ در حال توقف…": "⏹ Stopping…",
+    "❌ این آهنگ رو پیدا نکردم.": "❌ Could not find that track.",
     "⏳ یکم آروم‌تر! حدود {n} ثانیه دیگه دوباره بفرست.": "⏳ Easy there! Try again in about {n} seconds.",
     "\n\n⏳ ترافیک زیاده، برای اینکه اکانت اینستاگرام بلاک نشه فعلا کندتر چک می\u200cکنم — تحویل چند ده ثانیه دیرتره.": "\n\n⏳ Traffic is high. To keep the Instagram account from being blocked I am checking more slowly for now, so delivery is a few tens of seconds later.",
     "چیزی تو این محدوده نیست.": "Nothing in that range.",

@@ -53,8 +53,19 @@ def welcome_for(chat_id: int) -> str:
     return WELCOME_EN if i18n.get_lang(chat_id) == i18n.EN else WELCOME_FA
 
 
-async def start_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
+
+    # `?start=trk_<id>` - the link under an inline card for a track Telegram
+    # has never seen. Without this the button opens the bot and shows the
+    # welcome text, which reads as the link being broken: somebody pressed
+    # "get the song" and got a menu.
+    arg = (context.args or [None])[0] if context else None
+    if arg and arg.startswith("trk_"):
+        from handlers import spotify_handler
+
+        await spotify_handler.deliver_track(update.effective_message, arg[4:])
+        return
     # Ask once, on the very first /start; afterwards go straight to the help
     # text so returning users are not nagged.
     if not i18n.has_lang(chat_id):
