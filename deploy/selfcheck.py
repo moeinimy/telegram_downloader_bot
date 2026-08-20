@@ -1189,6 +1189,25 @@ _rl._buckets.clear()
 check("rate: the panel can report it",
       set(_rl.rate_snapshot()) >= {"burst", "per_minute", "throttled"})
 
+# The broadcast preview was sent with parse_mode="Markdown" while containing
+# whatever the admin typed. A broadcast is exactly the message that carries
+# links, underscores and slashes - "پیج_جدید", "/igdirect" - so Telegram
+# rejected it, the failure reached the generic handler, and the answer on
+# screen was "یه خطای غیرمنتظره پیش اومد" with nothing about what was wrong.
+_adm = Path("handlers/admin.py").read_text(encoding="utf-8")
+check("broadcast: the preview cannot be rejected for bad markup",
+      "f\"📣 برای {total} کاربر ارسال بشه؟" in _adm)
+check("broadcast: the text is taken off the raw message, newlines and all",
+      "msg.text or msg.caption" in _adm and "head.partition" in _adm)
+check("broadcast: joining context.args is not how the body is built",
+      'text = " ".join(context.args)' not in _adm)
+check("broadcast: it can be sent to the admin alone first",
+      "adm:bctest:" in _adm)
+check("broadcast: the test does not consume the pending send",
+      "_pending_broadcast.get(key)" in _adm)
+check("admin: a bot with no admins configured says so instead of ignoring you",
+      "botctl admin" in _adm and "_reject" in _adm)
+
 # A 2:57 track came back as 1.1MB - about 50kbps - where every other source
 # has it at 3MB+. Nothing failed: the client ladder had landed on a client
 # offering only YouTube's 48kbps rungs, and a download that succeeds is not

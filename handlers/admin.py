@@ -554,6 +554,31 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if data.startswith("adm:bc:"):
         await _run_broadcast(query, context, data.split(":", 2)[2])
         return
+
+    # Send it to the admin alone first, keeping the pending entry so the real
+    # send is still one button away. A broadcast is the one action here that
+    # cannot be taken back, and seeing the actual delivered message - not a
+    # truncated preview of it - is the cheapest way to catch a mistake.
+    if data.startswith("adm:bctest:"):
+        key = data.split(":", 2)[2]
+        pending = _pending_broadcast.get(key)
+        if not pending:
+            await query.message.reply_text("⌛ منقضی شد. دوباره /broadcast بزن.")
+            return
+        src_msg_id, src_chat_id, text = pending
+        try:
+            if src_msg_id and src_chat_id:
+                await context.bot.copy_message(
+                    chat_id=query.message.chat_id,
+                    from_chat_id=src_chat_id, message_id=src_msg_id)
+            else:
+                await context.bot.send_message(
+                    chat_id=query.message.chat_id, text=text)
+            await query.message.reply_text(
+                "👆 دقیقا همین برای همه می‌ره. اگه درسته «✅ بفرست» رو بزن.")
+        except Exception as e:
+            await query.message.reply_text(f"❌ همین الان هم نرفت: {str(e)[:200]}")
+        return
     if data == "adm:bccancel":
         await query.edit_message_text("لغو شد.")
         return
@@ -614,7 +639,17 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     msg = update.effective_message
-    text = " ".join(context.args) if context.args else ""
+
+    # Everything after the command, newlines and all.
+    #
+    # " ".join(context.args) splits on every run of whitespace, so a broadcast
+    # written as several paragraphs went out as one long line. The text is
+    # taken off the raw message instead, which is the only place the newlines
+    # still exist.
+    raw = msg.text or msg.caption or ""
+    head, _, tail = raw.partition("\n")
+    _, _, after_cmd = head.partition(" ")
+    text = (after_cmd + ("\n" + tail if tail else "")).strip()
     source = msg.reply_to_message
 
     if not text and not source:
@@ -636,14 +671,25 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     )
     total = stats.user_count()
     preview = text or "(همون پیامی که ریپلای کردی)"
+
+    # No parse_mode on the preview. It contains whatever the admin typed, and
+    # a broadcast is exactly the kind of message that carries links,
+    # underscores and slashes - "پیج_جدید", "/igdirect". Telegram rejects the
+    # whole message when those do not form valid Markdown, the failure reached
+    # the generic error handler, and the answer on screen was "یه خطای
+    # غیرمنتظره پیش اومد" with nothing about what was wrong. The preview only
+    # has to be readable, so it is sent as plain text and can never fail.
     await msg.reply_text(
-        f"📣 برای *{total}* کاربر ارسال بشه؟\n\n{preview[:500]}",
-        parse_mode="Markdown",
+        f"📣 برای {total} کاربر ارسال بشه؟\n\n{preview[:500]}",
         reply_markup=InlineKeyboardMarkup(
-            [[
-                InlineKeyboardButton("✅ بفرست", callback_data=f"adm:bc:{key}"),
-                InlineKeyboardButton("❌ لغو", callback_data="adm:bccancel"),
-            ]]
+            [
+                [InlineKeyboardButton("🧪 اول فقط برای خودم",
+                                      callback_data=f"adm:bctest:{key}")],
+                [
+                    InlineKeyboardButton("✅ بفرست", callback_data=f"adm:bc:{key}"),
+                    InlineKeyboardButton("❌ لغو", callback_data="adm:bccancel"),
+                ],
+            ]
         ),
     )
 
