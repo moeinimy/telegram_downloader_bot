@@ -1399,10 +1399,16 @@ check("inline: a track already on Telegram is sent as the real audio",
       "InlineQueryResultCachedAudio" in _inl)
 # The card version worked and was the wrong thing: what landed in the other
 # chat was a text message ABOUT a song rather than the song.
-check("inline: no card is offered, only real audio",
-      "InlineQueryResultArticle" not in _inl)
+# Showing ONLY cached results meant an empty list for any song nobody had
+# fetched yet, which is worse than a card. Telegram gives no third option:
+# an inline answer has seconds, the message is posted the instant a result is
+# picked, and a text result cannot be edited into an audio one afterwards.
+check("inline: a cached track is sent as real audio",
+      "InlineQueryResultCachedAudio(id=str(uuid4()), audio_file_id=cached)" in _inl)
 check("inline: the audio carries no caption repeating its own tags",
-      "caption=" not in _inl)
+      "audio_file_id=cached)" in _inl and "caption=f" not in _inl)
+check("inline: an uncached track still offers a way to get it",
+      "InlineQueryResultArticle" in _inl and "?start=trk_" in _inl)
 check("inline: an inline query warms the cache for the next person",
       "asyncio.create_task(_warm(" in _inl)
 check("inline: the warm sends to the store, not to a user",

@@ -7,24 +7,28 @@ audience - the bot's name sits under the message in whichever chat it was
 sent to - so the people who see it are exactly the people who were about to
 want it. It is the one feature here that recruits.
 
-Only real audio is offered.
+Real audio first, and a card only where Telegram leaves no choice.
 
-An earlier version also returned a card with a "get the track" link for
-anything not yet downloaded. It worked, and it was the wrong thing: what
-lands in the other person's chat is a text message about a song rather than
-the song, and the point of sending a track inline is to send the track.
+Telegram will not let a bot download-on-pick. An inline answer has seconds,
+the message is posted from the result itself the instant it is chosen, and
+there is no step in between where a bot could fetch anything - a text result
+cannot later be edited into an audio one either. So "pick it and it downloads
+and sends" is not a thing that can be built here, however reasonable it
+sounds.
 
-So a result appears when, and only when, Telegram already holds the file -
-which it does for anything this bot has sent before, because every upload
-records its file_id. A query with nothing cached answers with the "search in
-the bot" button instead of a card that promises less than it looks like.
+What can be built is a cache big enough that the question rarely comes up.
+Anything this bot has ever sent has a file_id, and those come back as real
+audio with no download and no wait. Everything else gets a card whose button
+opens the bot and delivers the track there - not as good, and better than an
+empty result list, which is what showing only cached results produced on any
+song nobody had fetched yet.
 
-That would leave the feature dependent on what users happened to download, so
-the searching fills the cache too: an inline query quietly warms its own top
-result in the background, and the next person to type it gets the file. The
-warm needs somewhere to send to, since a file_id does not exist until a file
-has been sent - CACHE_CHANNEL_ID, a private channel the bot is admin of.
-Without it nothing breaks; the cache simply only grows from real downloads.
+The cache fills itself from use: an inline query warms its own best uncached
+match in the background, so the next person to search it gets the file. That
+needs somewhere to send, since a file_id does not exist until a file has been
+carried - CACHE_CHANNEL_ID, a private channel the bot is admin of. Nothing
+there reaches a user. Unset, the warm is skipped and the cache grows only from
+real downloads.
 """
 
 from __future__ import annotations
@@ -34,7 +38,14 @@ import logging
 import time
 from uuid import uuid4
 
-from telegram import InlineQueryResultCachedAudio, Update
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InlineQueryResultArticle,
+    InlineQueryResultCachedAudio,
+    InputTextMessageContent,
+    Update,
+)
 from telegram.ext import ContextTypes
 
 from config import settings
@@ -141,6 +152,7 @@ async def on_inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         log.info("inline search failed for %r: %s", query, e)
         tracks = []
 
+    username = (getattr(context.bot, "username", "") or "").lstrip("@")
     results = []
     uncached = []
     for track in tracks:
@@ -153,6 +165,21 @@ async def on_inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             )
         else:
             uncached.append(track)
+            if username:
+                artists = ", ".join(track.artists) if track.artists else "?"
+                results.append(
+                    InlineQueryResultArticle(
+                        id=str(uuid4()),
+                        title=track.name,
+                        description=f"{artists} · تو بات باز می‌شه",
+                        thumbnail_url=track.cover_url or None,
+                        input_message_content=InputTextMessageContent(
+                            f"🎧 {track.name} — {artists}"),
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
+                            "⬇️ دریافت آهنگ",
+                            url=f"https://t.me/{username}?start=trk_{track.id}")]]),
+                    )
+                )
 
     # Warm the best match nobody has downloaded yet, so the next person to
     # search this gets the file rather than this same empty answer.

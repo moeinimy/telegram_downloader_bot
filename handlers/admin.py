@@ -564,10 +564,32 @@ async def igtest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def whoami_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Lets the owner discover the id to put in ADMIN_IDS."""
+    """The id for ADMIN_IDS - and, when a channel post is forwarded in,
+    that channel's id for CACHE_CHANNEL_ID.
+
+    Third-party id bots do not always report a channel, and asking someone
+    to trust one with a forward out of their private channel is worse
+    advice than answering it here. The bot is already in the channel; the
+    forward header carries the id.
+    """
+    msg = update.effective_message
+    origin = getattr(msg, "forward_from_chat", None)
+    if origin is not None:
+        title = _md(getattr(origin, "title", "") or "?")
+        await msg.reply_text(
+            f"📢 *{title}*\n"
+            f"🆔 `{origin.id}`\n\n"
+            "برای کش، تو .env بذار:\n"
+            f"`CACHE_CHANNEL_ID={origin.id}`",
+            parse_mode="Markdown",
+        )
+        return
+
     user = update.effective_user
-    await update.effective_message.reply_text(
-        f"🆔 آیدی عددی تو: `{user.id}`", parse_mode="Markdown"
+    await msg.reply_text(
+        f"🆔 آیدی عددی تو: `{user.id}`\n\n"
+        "_آیدی یه کانال رو می‌خوای؟ یه پیام از توش رو فوروارد کن اینجا._",
+        parse_mode="Markdown",
     )
 
 
