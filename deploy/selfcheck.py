@@ -1239,6 +1239,30 @@ _yt._preferred_at["probe"] = _now3
 # The ladder was five rungs with the slowest client third, so a refusal on the
 # first two landed on the 88.8s one almost immediately. Timed every rung
 # against a real track before reordering.
+# YouTube shapes a download per CONNECTION, so one stream sits at whatever
+# rate it is given - the difference between three minutes and under one on the
+# same file. concurrent_fragment_downloads only ever applied to fragmented
+# streams; a progressive mp4 is one file and never benefited.
+_yts = Path("modules/youtube.py").read_text(encoding="utf-8")
+check("speed: an external downloader is used when one is installed",
+      "external_downloader" in _yts)
+check("speed: it splits the file across connections",
+      '"-x", "16"' in _yts and '"-s", "16"' in _yts)
+check("speed: no pre-allocation pause before the first byte",
+      "--file-allocation=none" in _yts)
+_saved_aria = _yt._aria2c
+_yt._aria2c = False
+check("speed: a missing aria2c changes nothing rather than breaking",
+      _yt._fast_download_opts() == {})
+_yt._aria2c = True
+check("speed: a present aria2c is actually wired in",
+      _yt._fast_download_opts().get("external_downloader"))
+_yt._aria2c = _saved_aria
+check("speed: audio downloads get it too",
+      "_yt_fast_opts()" in Path("modules/spotify.py").read_text(encoding="utf-8"))
+check("install: aria2 is installed with the other tools",
+      "aria2" in Path("deploy/manage.sh").read_text(encoding="utf-8"))
+
 # A 710MB video arrived with its length shown as 00:00 and the thumbnail
 # stretched. Telegram is told the shape of a video or it guesses one.
 _yth = Path("handlers/youtube_handler.py").read_text(encoding="utf-8")
@@ -1253,7 +1277,6 @@ check("video: an unreadable file falls back rather than breaking the upload",
 
 # merge_output_format asks for mp4; YouTube's best streams are AV1 + Opus,
 # which mp4 will not hold, so ffmpeg re-encoded every video ever downloaded.
-_yts = Path("modules/youtube.py").read_text(encoding="utf-8")
 check("video: mp4-native codecs are preferred so the merge is a remux",
       '"format_sort": ["vcodec:h264", "acodec:m4a"]' in _yts)
 check("video: it is a preference, not a filter that can fail",

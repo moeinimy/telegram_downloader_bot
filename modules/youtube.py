@@ -145,6 +145,59 @@ def probe_dimensions(path) -> tuple[int, int, int]:
         log.info("ffprobe could not read %s (%s)", path, e)
         return 0, 0, 0
 
+
+# One connection is one throttle. aria2c opens several.
+#
+# YouTube shapes a download PER CONNECTION, so a single stream sits at
+# whatever rate it decides to give - which is the difference between three
+# minutes and under one on the same file and the same link. aria2c splits the
+# file and fetches the parts at once, and the shaping applies to each part
+# separately.
+#
+# concurrent_fragment_downloads already does this, but only for streams that
+# ARE fragmented. A plain progressive mp4 - which is most of what a quality
+# button resolves to - is one file, so that setting never applied to it.
+#
+# Looked up once per process: it is an apt package that either exists or does
+# not, and shelling out to `which` on every download is a syscall for an
+# answer that cannot change.
+_aria2c: bool | None = None
+
+
+def _have_aria2c() -> bool:
+    global _aria2c
+
+    if _aria2c is None:
+        import shutil
+
+        _aria2c = shutil.which("aria2c") is not None
+        log.info("aria2c %s - downloads will be %s",
+                 "found" if _aria2c else "not installed",
+                 "split across connections" if _aria2c else "single-stream")
+    return _aria2c
+
+
+def _fast_download_opts() -> dict:
+    """aria2c settings, or nothing when it is not installed.
+
+    -x is connections per host, -s is pieces per file, -k is piece size. 16 is
+    yt-dlp's own default pairing and the number the field has settled on;
+    higher gets refused by some hosts for no extra speed.
+
+    --file-allocation=none matters on a VPS: the default pre-allocates the
+    whole file before the first byte arrives, which on a 710MB download is a
+    visible pause where nothing appears to happen.
+    """
+    if not _have_aria2c():
+        return {}
+    return {
+        "external_downloader": {"default": "aria2c"},
+        "external_downloader_args": {
+            "aria2c": ["-x", "16", "-s", "16", "-k", "1M",
+                       "--file-allocation=none", "--summary-interval=0"],
+        },
+    }
+
 # ---------- yt-dlp plumbing ----------
 
 def _base_opts(client: str = "") -> dict:
@@ -497,6 +550,7 @@ def download_video(
         "format_sort": ["vcodec:h264", "acodec:m4a"],
         "outtmpl": _make_outtmpl(info, quality),
         "merge_output_format": "mp4",
+        **_fast_download_opts(),
         # A file left behind by an upload that died mid-flight is not a
         # finished download, and yt-dlp cannot tell the difference. Say so
         # rather than inheriting whatever is on disk.

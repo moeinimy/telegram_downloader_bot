@@ -455,6 +455,7 @@ def _lookup_metadata_track(track_id: str) -> TrackMeta:
 # ---------------- yt-dlp based search / probing ----------------
 
 def _flat_entries(search_url: str) -> list[dict]:
+    from modules.youtube import _fast_download_opts as _yt_fast_opts
     from modules.youtube import ytdlp_run
 
     info = ytdlp_run(
@@ -1798,6 +1799,9 @@ def download_track(meta: TrackMeta) -> Path:
         "format": "bestaudio/best",
         "format_sort": ["abr"],
         "outtmpl": str(base) + ".%(ext)s",
+        # Same throttle, same answer - see modules/youtube.py. A track is
+        # smaller than a video, so the win is smaller, but it is the same win.
+        **_yt_fast_opts(),
         "postprocessors": [
             {
                 "key": "FFmpegExtractAudio",

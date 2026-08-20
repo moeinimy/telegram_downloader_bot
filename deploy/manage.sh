@@ -70,8 +70,8 @@ ensure_packages() {
     pyver=$(python3 -c 'import sys;print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null)
     apt-get install -y -qq \
         python3 python3-pip python3-venv "python${pyver}-venv" \
-        ffmpeg git unzip curl ca-certificates libchromaprint-tools 2>/dev/null \
-      || apt-get install -y python3 python3-pip "python${pyver}-venv" ffmpeg git unzip curl ca-certificates libchromaprint-tools \
+        ffmpeg git unzip curl ca-certificates libchromaprint-tools aria2 2>/dev/null \
+      || apt-get install -y python3 python3-pip "python${pyver}-venv" ffmpeg git unzip curl ca-certificates libchromaprint-tools aria2 \
       || warn "بعضی پکیج‌ها نصب نشدن - ادامه می‌دم و venv رو چک می‌کنم"
 
     # Verify venv actually works now, otherwise stop before we build a broken one.
