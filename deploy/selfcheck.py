@@ -1239,6 +1239,26 @@ _yt._preferred_at["probe"] = _now3
 # The ladder was five rungs with the slowest client third, so a refusal on the
 # first two landed on the 88.8s one almost immediately. Timed every rung
 # against a real track before reordering.
+# A 710MB video arrived with its length shown as 00:00 and the thumbnail
+# stretched. Telegram is told the shape of a video or it guesses one.
+_yth = Path("handlers/youtube_handler.py").read_text(encoding="utf-8")
+check("video: the length is sent, so Telegram does not show 00:00",
+      "duration=probed or info.duration" in _yth)
+check("video: the dimensions are sent, so the thumbnail is not stretched",
+      "width=width or None" in _yth and "height=height or None" in _yth)
+check("video: they are read from the file that is actually being sent",
+      "probe_dimensions(path)" in _yth)
+check("video: an unreadable file falls back rather than breaking the upload",
+      _yt.probe_dimensions(Path("does-not-exist.mp4")) == (0, 0, 0))
+
+# merge_output_format asks for mp4; YouTube's best streams are AV1 + Opus,
+# which mp4 will not hold, so ffmpeg re-encoded every video ever downloaded.
+_yts = Path("modules/youtube.py").read_text(encoding="utf-8")
+check("video: mp4-native codecs are preferred so the merge is a remux",
+      '"format_sort": ["vcodec:h264", "acodec:m4a"]' in _yts)
+check("video: it is a preference, not a filter that can fail",
+      not any("vcodec^=" in v for v in _yt.QUALITY_CHOICES.values()))
+
 check("speed: the slowest client is the last resort, not the third",
       _yt._CLIENT_LADDER[-1] == "tv_simply")
 check("speed: a client that returns no audio is not on the ladder at all",

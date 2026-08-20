@@ -211,10 +211,18 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                     file_cache.put(cache_key, sent.audio.file_id)
                 stats.record_download(query.message.chat_id, "yt-audio", info.title)
             else:
+                # Told, not guessed. Without these Telegram picks a default
+                # box and stretches the thumbnail into it, and shows the
+                # length as 00:00 - both visible on a 710MB upload that was
+                # otherwise perfectly fine.
+                width, height, probed = yt.probe_dimensions(path)
                 sent = await query.message.reply_video(
                     video=fh,
                     caption=info.title,
                     supports_streaming=True,
+                    duration=probed or info.duration or None,
+                    width=width or None,
+                    height=height or None,
                     thumbnail=thumb_path.open("rb") if thumb_path else None,
                 )
                 if sent and sent.video:
