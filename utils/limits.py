@@ -138,6 +138,96 @@ def stats_snapshot() -> dict:
 # Disk
 # --------------------------------------------------------------------------
 
+# --------------------------------------------------------------------------
+# Per-user request rate
+#
+# The download semaphores above cap how much work runs AT ONCE. They do not
+# cap how much work is asked for: a script pasting links in a loop queues
+# every one of them, and each queued job holds metadata, a search, and
+# eventually a slot. Nothing here was ever refused, only made to wait.
+#
+# A token bucket, sized to be invisible to a person and obvious to a loop. A
+# real user opens the bot, pastes a handful of links, waits for the files.
+# Twenty in a burst covers that with room to spare; twenty a minute after that
+# covers anyone still going. Refusal is not a ban - the bucket refills while
+# they read the message.
+#
+# Admins are exempt: the one account that might legitimately fire a hundred
+# commands is the one running the thing.
+# --------------------------------------------------------------------------
+
+_RATE_BURST = _int_env("RATE_LIMIT_BURST", 20)
+_RATE_PER_MINUTE = _int_env("RATE_LIMIT_PER_MINUTE", 20)
+
+# Everyone together. One user cannot take the server down on their own budget,
+# but a few hundred can, and this is the ceiling that says so.
+_RATE_GLOBAL_PER_MINUTE = _int_env("RATE_LIMIT_GLOBAL_PER_MINUTE", 600)
+
+_buckets: dict[int, tuple[float, float]] = {}   # user -> (tokens, last refill)
+_global_bucket: tuple[float, float] = (float(_RATE_GLOBAL_PER_MINUTE), 0.0)
+_rate_lock = threading.Lock()
+
+
+def _drip(tokens: float, last: float, cap: float, per_minute: float,
+          now: float) -> tuple[float, float]:
+    if last:
+        tokens = min(cap, tokens + (now - last) * per_minute / 60.0)
+    return tokens, now
+
+
+def allow(user_id: int, *, is_admin: bool = False) -> tuple[bool, float]:
+    """(allowed, seconds until the next token) for one incoming request.
+
+    Never raises and never blocks. A caller that ignores the second value is
+    still correct; it exists so the refusal can say when to try again instead
+    of leaving somebody guessing.
+    """
+    global _global_bucket
+
+    if is_admin:
+        return True, 0.0
+
+    now = time.monotonic()
+    with _rate_lock:
+        gt, gl = _global_bucket
+        gt, gl = _drip(gt, gl, float(_RATE_GLOBAL_PER_MINUTE), _RATE_GLOBAL_PER_MINUTE, now)
+        if gt < 1.0:
+            _global_bucket = (gt, gl)
+            return False, max(1.0, 60.0 / max(1, _RATE_GLOBAL_PER_MINUTE))
+
+        tokens, last = _buckets.get(user_id, (float(_RATE_BURST), 0.0))
+        tokens, last = _drip(tokens, last, float(_RATE_BURST), _RATE_PER_MINUTE, now)
+        if tokens < 1.0:
+            _buckets[user_id] = (tokens, last)
+            wait = (1.0 - tokens) * 60.0 / max(1, _RATE_PER_MINUTE)
+            return False, max(1.0, wait)
+
+        _buckets[user_id] = (tokens - 1.0, last)
+        _global_bucket = (gt - 1.0, gl)
+
+        # The dict must not grow without bound on a busy bot. A full bucket is
+        # indistinguishable from an absent one, so full ones are droppable.
+        if len(_buckets) > 5000:
+            for uid in [u for u, (t, _) in _buckets.items() if t >= _RATE_BURST - 0.01]:
+                _buckets.pop(uid, None)
+        return True, 0.0
+
+
+def rate_snapshot() -> dict:
+    """What the limiter is currently holding, for the admin panel."""
+    with _rate_lock:
+        gt, _ = _global_bucket
+        throttled = sum(1 for t, _ in _buckets.values() if t < 1.0)
+        return {
+            "burst": _RATE_BURST,
+            "per_minute": _RATE_PER_MINUTE,
+            "global_per_minute": _RATE_GLOBAL_PER_MINUTE,
+            "global_left": int(gt),
+            "tracked": len(_buckets),
+            "throttled": throttled,
+        }
+
+
 _last_sweep = 0.0
 
 # Files under downloads/ that are state, not cache. The sweeper deletes the

@@ -1144,6 +1144,51 @@ check("realtime gate: ig_direct builds mqtt from that gate, not the web one",
       "settings.has_ig_realtime" in
       Path("modules/ig_direct.py").read_text(encoding="utf-8"))
 
+# "The broadcast does not work" was every admin command silently returning.
+# Silence is right for a stranger; with ADMIN_IDS unset NOBODY is an admin, so
+# the owner got the same nothing and had no way to tell that apart from a bug.
+_adm = Path("handlers/admin.py").read_text(encoding="utf-8")
+check("admin: an unconfigured bot answers instead of staying silent",
+      "if not settings.admin_ids:" in _adm and "botctl admin" in _adm)
+check("admin: it hands over the id needed to fix the deadlock",
+      "uid = user.id if user else" in _adm)
+check("admin: a stranger is still met with silence",
+      "if _is_admin(update):" in _adm and "return False" in _adm)
+check("admin: every command goes through the same gate",
+      _adm.count("await _reject(update)") >= 6)
+check("admin: buttons reuse the commands rather than copying them",
+      "_FromButton" in _adm and "await srcstatus_cmd(shim" in _adm)
+check("botctl: admin ids can be set without editing .env by hand",
+      "do_admin()" in _mg)
+check("botctl: a second admin does not replace the first",
+      'set_env ADMIN_IDS "$cur,$want"' in _mg)
+
+# Nothing capped how much work could be ASKED for - only how much ran at once.
+from utils import limits as _rl
+_rl._buckets.clear()
+check("rate: a person pasting five links is untouched",
+      all(_rl.allow(101)[0] for _ in range(5)))
+_rl._buckets.clear()
+check("rate: twenty at once is still allowed",
+      sum(_rl.allow(102)[0] for _ in range(20)) == 20)
+_rl._buckets.clear()
+check("rate: a loop of two hundred is cut off",
+      sum(_rl.allow(103)[0] for _ in range(200)) == _rl._RATE_BURST)
+_rl._buckets.clear()
+check("rate: the refusal says when to come back",
+      [_rl.allow(104) for _ in range(30)][-1][1] > 0)
+_rl._buckets.clear()
+check("rate: the admin is never throttled",
+      all(_rl.allow(105, is_admin=True)[0] for _ in range(500)))
+_rl._buckets.clear()
+for _u in range(6000):
+    _rl.allow(_u)
+check("rate: the bucket table cannot grow without bound",
+      len(_rl._buckets) < 6000)
+_rl._buckets.clear()
+check("rate: the panel can report it",
+      set(_rl.rate_snapshot()) >= {"burst", "per_minute", "throttled"})
+
 # A 2:57 track came back as 1.1MB - about 50kbps - where every other source
 # has it at 3MB+. Nothing failed: the client ladder had landed on a client
 # offering only YouTube's 48kbps rungs, and a download that succeeds is not

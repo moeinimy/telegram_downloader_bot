@@ -720,6 +720,50 @@ do_igweblogin() {
 }
 
 
+do_admin() {
+    local want="${1:-}"
+    local cur
+    cur=$(get_env ADMIN_IDS)
+
+    echo; info "=== ادمین‌های بات ==="; echo
+    if [[ -n "$cur" ]]; then
+        echo "الان: $cur"
+    else
+        warn "هیچ ادمینی تنظیم نشده - پنل و ارسال همگانی برای هیچ‌کس کار نمی‌کنه."
+    fi
+    echo
+
+    if [[ -z "$want" ]]; then
+        echo "آیدی عددیت رو از خود بات بگیر: تو تلگرام /admin بزن،"
+        echo "بات آیدیت رو بهت می‌گه."
+        echo
+        read -rp "آیدی عددی (خالی = انصراف): " want
+        [[ -z "$want" ]] && return 0
+    fi
+
+    if [[ ! "$want" =~ ^[0-9]+$ ]]; then
+        err "آیدی باید فقط عدد باشه: $want"
+        return 1
+    fi
+
+    # Added to the list rather than replacing it: a second admin must not
+    # silently remove the first, which is how somebody locks themselves out.
+    if [[ ",$cur," == *",$want,"* ]]; then
+        ok "این آیدی از قبل ادمینه"
+        return 0
+    fi
+    if [[ -n "$cur" ]]; then
+        set_env ADMIN_IDS "$cur,$want"
+    else
+        set_env ADMIN_IDS "$want"
+    fi
+    ok "اضافه شد: $want"
+
+    systemctl restart "$SERVICE_NAME"
+    ok "ریستارت شد - تو تلگرام /admin بزن"
+}
+
+
 do_iglogin() {
     echo; info "=== لاگین موبایل اینستاگرام (سشن ماندگار) ==="; echo
     warn "با اکانت اصلیت این کارو نکن."
@@ -2167,6 +2211,7 @@ case "${1:-}" in
     ytdlp)   do_ytdlp;   exit $? ;;
     ytcookies) do_ytcookies; exit $? ;;
     iglogin) do_iglogin "${2:-}"; exit $? ;;
+    admin)   do_admin "${2:-}"; exit $? ;;
     igweblogin) do_igweblogin; exit $? ;;
     update)  do_update;  exit $? ;;
     restart) systemctl restart "$SERVICE_NAME"; exit $? ;;

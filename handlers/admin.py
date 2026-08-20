@@ -48,6 +48,51 @@ def _is_admin(update: Update) -> bool:
     return bool(user and user.id in settings.admin_ids)
 
 
+async def _reject(update: Update) -> bool:
+    """True when the caller is not an admin and the command must stop.
+
+    Silence is the right answer for a stranger: an admin panel that announces
+    itself is an invitation. It is the wrong answer for the owner, and with
+    ADMIN_IDS unset NOBODY is an admin - so every admin command replies to a
+    legitimate owner with nothing whatsoever, which is indistinguishable from
+    a broken bot. That is what "the broadcast does not work" turned out to be.
+
+    So: strangers still get silence, but a bot with no admins configured says
+    so, and hands over the one piece of information needed to fix it. There is
+    no privilege to leak at that point - the deadlock is that nobody has any.
+    """
+    if _is_admin(update):
+        return False
+    if not settings.admin_ids:
+        user = update.effective_user
+        uid = user.id if user else "?"
+        await update.effective_message.reply_text(
+            "🔒 *هیچ ادمینی تنظیم نشده*\n\n"
+            "برای همین، این دستور برای هیچ‌کس کار نمی‌کنه.\n\n"
+            f"آیدی عددی تو: `{uid}`\n\n"
+            "روی سرور بزن:\n"
+            f"`botctl admin {uid}`",
+            parse_mode="Markdown",
+        )
+    return True
+
+
+class _FromButton:
+    """Enough of an Update for the admin commands to run unchanged.
+
+    They touch exactly two things - effective_user, to decide whether the
+    caller is an admin, and effective_message, to answer on. Handing them
+    those from a callback query is what lets a button reuse the command
+    instead of a second copy of its body drifting out of step with the first.
+    """
+
+    __slots__ = ("effective_user", "effective_message")
+
+    def __init__(self, query):
+        self.effective_user = query.from_user
+        self.effective_message = query.message
+
+
 def _ago(ts: int) -> str:
     if not ts:
         return "-"
@@ -63,8 +108,14 @@ def _panel_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("👥 لیست کاربران", callback_data="adm:users:0")],
-            [InlineKeyboardButton("📣 ارسال همگانی", callback_data="adm:bchelp")],
-            [InlineKeyboardButton("🔄 بروزرسانی", callback_data="adm:home")],
+            [
+                InlineKeyboardButton("📣 ارسال همگانی", callback_data="adm:bchelp"),
+                InlineKeyboardButton("🧩 منابع", callback_data="adm:src"),
+            ],
+            [
+                InlineKeyboardButton("⚙️ موتورها", callback_data="adm:eng"),
+                InlineKeyboardButton("🔄 بروزرسانی", callback_data="adm:home"),
+            ],
         ]
     )
 
@@ -100,6 +151,34 @@ def _summary_text() -> str:
         if d["top_tracks"]
         else ["   — هنوز چیزی نیست"]
     )
+
+    # What the machine is doing right now, not just what it has done. The
+    # panel could say how many downloads happened this week but not whether
+    # anything was running, which is the question asked when it feels slow.
+    try:
+        from config import settings as _st
+        from utils import limits as _lim
+
+        load = _lim.stats_snapshot()
+        rate = _lim.rate_snapshot()
+        disk = _lim.disk_report(_st.download_dir)
+
+        lines += ["", "*همین الان:*"]
+        lines.append(f"   • دانلود همزمان: {load.get('active', '?')}"
+                     f"/{load.get('capacity', '?')}")
+        if load.get("batches"):
+            lines.append(f"   • دانلود گروهی فعال: {load['batches']}")
+        lines.append(f"   • سقف نرخ: {rate['burst']} پشت‌سرهم، "
+                     f"{rate['per_minute']}/دقیقه هر نفر")
+        if rate["throttled"]:
+            lines.append(f"   • الان محدودشده: {rate['throttled']} کاربر")
+        lines.append(f"   • ظرفیت کل باقی‌مونده: {rate['global_left']}"
+                     f"/{rate['global_per_minute']}")
+        if disk.get("total_mb") is not None:
+            lines.append(f"   • دیسک دانلودها: {disk['total_mb']:.0f}MB "
+                         f"({disk.get('files', 0)} فایل)")
+    except Exception as e:      # a panel that fails is worse than one that is thin
+        log.info("panel: live section unavailable (%s)", e)
 
     lines += ["", f"🕐 {time.strftime('%H:%M:%S')}"]
     return "\n".join(lines)
@@ -163,15 +242,12 @@ def _user_detail_view(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
 
 
 async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not settings.admin_ids:
-        await update.effective_message.reply_text(
-            "پنل مدیریت غیرفعاله. تو سرور آیدی عددیت رو تو ADMIN_IDS بذار:\n"
-            "`botctl` → گزینه ۷ (ویرایش .env)",
-            parse_mode="Markdown",
-        )
+    # No special case here any more. _reject already answers an unconfigured
+    # bot, and it answers it better: it prints the caller's own id, which is
+    # the one thing needed to get out of the deadlock and the one thing this
+    # message left out.
+    if await _reject(update):
         return
-    if not _is_admin(update):
-        return  # stay silent for non-admins
     await update.effective_message.reply_text(
         _summary_text(), parse_mode="Markdown", reply_markup=_panel_keyboard()
     )
@@ -180,7 +256,7 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def igcheck_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Report whether the Instagram session actually works, so a dead cookie
     is visible directly instead of being guessed from a failed download."""
-    if not _is_admin(update):
+    if await _reject(update):
         return
     from modules import instagram as ig
 
@@ -194,7 +270,7 @@ async def igcheck_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 async def recstatus_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/recstatus - which recognition engines are usable right now."""
-    if not _is_admin(update):
+    if await _reject(update):
         return
     from modules import engines, recognize
 
@@ -246,7 +322,7 @@ async def srcstatus_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     the embed page and everything keeps working except playlists past ~100
     tracks, which simply come back short with no error anywhere.
     """
-    if not _is_admin(update):
+    if await _reject(update):
         return
     import asyncio
 
@@ -445,7 +521,7 @@ def _ig_direct_lines() -> list[str]:
 
 async def igtest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/igtest [shortcode] - which cookie-free routes work from THIS server."""
-    if not _is_admin(update):
+    if await _reject(update):
         return
     from modules import instagram as ig
 
@@ -471,7 +547,7 @@ async def whoami_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
-    if not _is_admin(update):
+    if await _reject(update):
         return
 
     data = query.data
@@ -480,6 +556,22 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     if data == "adm:bccancel":
         await query.edit_message_text("لغو شد.")
+        return
+
+    # Two commands that were only reachable by typing them. Somebody looking
+    # at a panel should not have to remember /srcstatus exists.
+    if data in ("adm:src", "adm:eng"):
+        shim = _FromButton(query)
+        if data == "adm:src":
+            await srcstatus_cmd(shim, context)
+        else:
+            await recstatus_cmd(shim, context)
+        await query.message.reply_text(
+            "🏠 برگشت به پنل",
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("🏠 پنل", callback_data="adm:home")]]
+            ),
+        )
         return
 
     if data == "adm:bchelp":
@@ -518,7 +610,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/broadcast <text>, or reply to a message with /broadcast to send that."""
-    if not _is_admin(update):
+    if await _reject(update):
         return
 
     msg = update.effective_message

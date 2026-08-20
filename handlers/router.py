@@ -15,6 +15,7 @@ import logging
 from telegram import Update
 from telegram.ext import ContextTypes
 
+from utils import limits
 from utils.i18n import t
 from utils.url_router import Platform, route
 
@@ -27,6 +28,29 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     msg = update.effective_message
     if not msg or not msg.text:
         return
+
+    # Before anything is parsed, searched or downloaded. The semaphores
+    # elsewhere cap how much runs at once; nothing capped how much could be
+    # ASKED for, so a loop pasting links queued every one of them and each
+    # queued job holds a search and eventually a slot.
+    #
+    # Sized to be invisible to a person: twenty in a burst, twenty a minute
+    # after that. Refusal is not a ban - the bucket refills while the message
+    # is being read - and admins are exempt.
+    user = update.effective_user
+    if user:
+        from config import settings
+
+        ok, wait = limits.allow(user.id, is_admin=user.id in settings.admin_ids)
+        if not ok:
+            try:
+                await msg.reply_text(
+                    t(msg.chat_id, "\u23f3 \u06cc\u06a9\u0645 \u0622\u0631\u0648\u0645\u200c\u062a\u0631! \u062d\u062f\u0648\u062f {n} \u062b\u0627\u0646\u06cc\u0647 \u062f\u06cc\u06af\u0647 \u062f\u0648\u0628\u0627\u0631\u0647 \u0628\u0641\u0631\u0633\u062a.")
+                    .format(n=int(wait) + 1)
+                )
+            except Exception:
+                pass
+            return
 
     text = msg.text.strip()
 
