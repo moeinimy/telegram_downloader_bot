@@ -563,17 +563,35 @@ async def igtest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await msg.edit_text(f"❌ {scrub(e)}")
 
 
-async def whoami_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """The id for ADMIN_IDS - and, when a channel post is forwarded in,
-    that channel's id for CACHE_CHANNEL_ID.
+def _forwarded_chat(msg):
+    """The channel a message was forwarded from, across PTB versions.
 
-    Third-party id bots do not always report a channel, and asking someone
-    to trust one with a forward out of their private channel is worse
-    advice than answering it here. The bot is already in the channel; the
-    forward header carries the id.
+    python-telegram-bot 21 REMOVED Message.forward_from_chat and replaced
+    it with forward_origin, so the getattr that looked for the old name
+    returned None for every forward and /id always answered with the
+    user's own id - which is exactly what it looked like from the chat.
+
+    Both spellings are read, and the reply target too: forwarding a post
+    and then typing /id underneath is the obvious way to ask, and it puts
+    the forward on a DIFFERENT message from the command.
     """
+    for candidate in (msg, getattr(msg, "reply_to_message", None)):
+        if candidate is None:
+            continue
+        origin = getattr(candidate, "forward_origin", None)
+        chat = getattr(origin, "chat", None) or getattr(origin, "sender_chat", None)
+        if chat is not None:
+            return chat
+        legacy = getattr(candidate, "forward_from_chat", None)
+        if legacy is not None:
+            return legacy
+    return None
+
+
+async def whoami_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """The id for ADMIN_IDS - and a channel's id for CACHE_CHANNEL_ID."""
     msg = update.effective_message
-    origin = getattr(msg, "forward_from_chat", None)
+    origin = _forwarded_chat(msg)
     if origin is not None:
         title = _md(getattr(origin, "title", "") or "?")
         await msg.reply_text(
@@ -588,7 +606,7 @@ async def whoami_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     user = update.effective_user
     await msg.reply_text(
         f"🆔 آیدی عددی تو: `{user.id}`\n\n"
-        "_آیدی یه کانال رو می‌خوای؟ یه پیام از توش رو فوروارد کن اینجا._",
+        "_آیدی یه کانال رو می‌خوای؟ یه پیام از توش رو فوروارد کن اینجا، بعد روش ریپلای کن و /id بزن._",
         parse_mode="Markdown",
     )
 

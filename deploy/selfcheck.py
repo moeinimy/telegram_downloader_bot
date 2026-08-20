@@ -1388,6 +1388,39 @@ for _f in sorted(Path("modules").glob("*.py")) + sorted(Path("handlers").glob("*
 check("scope: no function uses a name another function imported",
       not _leaks, "; ".join(_leaks[:3]))
 
+# /id answered with the user's own id for a forwarded channel post, every
+# time. python-telegram-bot 21 REMOVED Message.forward_from_chat in favour of
+# forward_origin, so the getattr looking for the old name found None - a
+# rename that fails silently, because getattr with a default cannot tell
+# "absent" from "empty".
+import datetime as _dt
+from telegram import Chat as _Chat, Message as _Msg
+from telegram import MessageOriginChannel as _Origin, User as _User
+
+_now = _dt.datetime.now(_dt.timezone.utc)
+_chan = _Chat(id=-1001234567890, type=_Chat.CHANNEL, title="music archive")
+_org = _Origin(date=_now, chat=_chan, message_id=5)
+
+
+def _mk(**kw):
+    return _Msg(message_id=1, date=_now, chat=_Chat(id=7, type=_Chat.PRIVATE),
+                from_user=_User(id=7, first_name="m", is_bot=False), **kw)
+
+
+check("chat id: a forwarded channel post is recognised on PTB 21",
+      _adm_mod._forwarded_chat(_mk(text="/id", forward_origin=_org)) is not None)
+check("chat id: and its numeric id is the channel's",
+      _adm_mod._forwarded_chat(_mk(text="/id", forward_origin=_org)).id
+      == -1001234567890)
+check("chat id: asking by replying to the forward works too",
+      _adm_mod._forwarded_chat(
+          _mk(text="/id", reply_to_message=_mk(text=".", forward_origin=_org))
+      ) is not None)
+check("chat id: a plain message is not mistaken for a forward",
+      _adm_mod._forwarded_chat(_mk(text="/id")) is None)
+check("chat id: the old attribute is still read, for older PTB",
+      "forward_from_chat" in Path("handlers/admin.py").read_text(encoding="utf-8"))
+
 # Inline mode. Every other way into this bot needs somebody to already know
 # it exists; an inline result is used in front of an audience, with the bot's
 # name under the message.
