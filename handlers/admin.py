@@ -750,7 +750,7 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         text,
         entities,
     )
-    total = stats.user_count()
+    total = stats.reachable_count()
     preview = text or "(همون پیامی که ریپلای کردی)"
 
     # No parse_mode on the preview. It contains whatever the admin typed, and
@@ -788,10 +788,14 @@ async def _run_broadcast(query, context, key: str) -> None:
         return
 
     src_msg_id, src_chat_id, text, entities = pending
-    user_ids = [row[0] for row in stats.list_users(limit=100000, offset=0)]
+    # Names too, so the summary can say WHO was unreachable rather than
+    # only how many. "4 blocked" is not something anyone can act on.
+    people = {row[0]: (row[1], row[2]) for row in stats.reachable_users()}
+    user_ids = list(people)
     status = await query.message.reply_text(f"📣 ارسال به {len(user_ids)} کاربر…")
 
     sent = blocked = failed = 0
+    gone: list[str] = []
     for i, uid in enumerate(user_ids, 1):
         try:
             if src_msg_id and src_chat_id:
@@ -806,6 +810,12 @@ async def _run_broadcast(query, context, key: str) -> None:
             detail = str(e).lower()
             if "blocked" in detail or "deactivated" in detail or "not found" in detail:
                 blocked += 1
+                uname, fname = people.get(uid, ("", ""))
+                who = f"@{uname}" if uname else (fname or "").strip()
+                gone.append(f"{who} `{uid}`" if who else f"`{uid}`")
+                # Remembered, so the next broadcast does not spend a
+                # request per run learning the same thing again.
+                stats.mark_blocked(uid)
             else:
                 failed += 1
                 log.info("broadcast to %s failed: %s", uid, e)
@@ -821,9 +831,22 @@ async def _run_broadcast(query, context, key: str) -> None:
             except Exception:
                 pass
 
-    await status.edit_text(
-        f"📣 تموم شد\n✅ رسید: {sent}\n🚫 بلاک کرده/حذف شده: {blocked}\n⚠️ خطا: {failed}"
-    )
+    summary = (f"📣 تموم شد\n✅ رسید: {sent}\n"
+               f"🚫 بلاک کرده/حذف شده: {blocked}\n⚠️ خطا: {failed}")
+    if gone:
+        shown = gone[:30]
+        summary += ("\n\n*کسایی که نرسید:*\n"
+                    + "\n".join(f"• {g}" for g in shown))
+        if len(gone) > len(shown):
+            summary += f"\n… و {len(gone) - len(shown)} نفر دیگه"
+        summary += ("\n\nاینا از پخش بعدی رد می\u200cشن. اگه برگردن "
+                    "و با بات کار کنن، خودکار برمی\u200cگردن تو لیست.")
+    try:
+        await status.edit_text(summary, parse_mode="Markdown")
+    except Exception:
+        # The ids are wrapped in backticks; a name is not. Rather than lose
+        # the whole report to one stray character, send it unformatted.
+        await status.edit_text(summary.replace("*", "").replace("`", ""))
 
 
 async def track_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

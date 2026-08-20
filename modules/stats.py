@@ -61,6 +61,11 @@ def init() -> None:
             cols = {r[1] for r in conn.execute("PRAGMA table_info(users)")}
             if "lang" not in cols:
                 conn.execute("ALTER TABLE users ADD COLUMN lang TEXT")
+            # When a broadcast last found this user unreachable. A count of
+            # "4 blocked" answers how many but not who, and who is the part
+            # worth acting on.
+            if "blocked_at" not in cols:
+                conn.execute("ALTER TABLE users ADD COLUMN blocked_at INTEGER")
         _ready = True
 
 
@@ -106,7 +111,8 @@ def touch_user(user_id: int, username: str | None, first_name: str | None) -> No
                        username   = excluded.username,
                        first_name = excluded.first_name,
                        last_seen  = excluded.last_seen,
-                       actions    = users.actions + 1""",
+                       actions    = users.actions + 1,
+                       blocked_at = NULL""",
                 (user_id, username or "", first_name or "", now, now),
             )
     except Exception as e:
@@ -190,3 +196,55 @@ def user_detail(user_id: int) -> tuple | None:
         ).fetchall()
         total = _scalar(conn, "SELECT COUNT(*) FROM downloads WHERE user_id=?", (user_id,))
     return row, recent, total
+
+
+def mark_blocked(user_id: int, blocked: bool = True) -> None:
+    """Remember that a broadcast could not reach this user.
+
+    Cleared by touch_user, because Telegram delivers nothing at all to
+    somebody who has blocked the bot - so any activity from them is proof
+    they have not, and they should be in the next broadcast.
+    """
+    try:
+        init()
+        with _lock, _connect() as conn:
+            conn.execute("UPDATE users SET blocked_at=? WHERE user_id=?",
+                         (int(time.time()) if blocked else None, user_id))
+    except Exception as e:
+        log.warning("stats mark_blocked failed: %s", e)
+
+
+def blocked_users(limit: int = 50) -> list[tuple]:
+    """(user_id, username, first_name, blocked_at), most recent first."""
+    init()
+    with _lock, _connect() as conn:
+        return conn.execute(
+            """SELECT user_id, username, first_name, blocked_at
+               FROM users WHERE blocked_at IS NOT NULL
+               ORDER BY blocked_at DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+
+
+def reachable_count() -> int:
+    """Users a broadcast can actually land on."""
+    init()
+    with _lock, _connect() as conn:
+        return _scalar(conn, "SELECT COUNT(*) FROM users WHERE blocked_at IS NULL")
+
+
+def reachable_users(limit: int = 100000) -> list[tuple]:
+    """(user_id, username, first_name) for everyone a broadcast can land on.
+
+    Blocked users are left out rather than tried and counted: Telegram will
+    refuse each one, which costs a request and 50ms per run to learn again
+    something already known.
+    """
+    init()
+    with _lock, _connect() as conn:
+        return conn.execute(
+            """SELECT user_id, username, first_name FROM users
+               WHERE blocked_at IS NULL
+               ORDER BY last_seen DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()

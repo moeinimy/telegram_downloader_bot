@@ -1223,6 +1223,21 @@ check("broadcast: the preview shows the same formatting",
 check("broadcast: entities reach both senders",
       _adm.count("entities=entities") >= 2)
 
+# "🚫 4 blocked" answers how many and not who, and who is the part anyone can
+# act on. It also cost a refused request per blocked user on every future run.
+check("broadcast: the unreachable are named, not just counted",
+      "gone.append(" in _adm and "people.get(uid" in _adm)
+check("broadcast: being unreachable is remembered",
+      "stats.mark_blocked(uid)" in _adm)
+check("broadcast: the next run does not retry them",
+      "stats.reachable_users()" in _adm)
+check("broadcast: the count offered for confirmation is the count sent to",
+      "total = stats.reachable_count()" in _adm)
+check("stats: coming back clears the flag on its own",
+      "blocked_at = NULL" in Path("modules/stats.py").read_text(encoding="utf-8"))
+check("stats: the column is added by migration, not a fresh schema",
+      "ADD COLUMN blocked_at" in Path("modules/stats.py").read_text(encoding="utf-8"))
+
 check("broadcast: it can be sent to the admin alone first",
       "adm:bctest:" in _adm)
 check("broadcast: the test does not consume the pending send",
