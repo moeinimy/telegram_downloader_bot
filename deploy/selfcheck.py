@@ -1236,6 +1236,20 @@ _now3 = _tt3.monotonic()
 _yt._preferred["probe"] = "ios"
 _yt._preferred_cost["probe"] = 3.2
 _yt._preferred_at["probe"] = _now3
+# The ladder was five rungs with the slowest client third, so a refusal on the
+# first two landed on the 88.8s one almost immediately. Timed every rung
+# against a real track before reordering.
+check("speed: the slowest client is the last resort, not the third",
+      _yt._CLIENT_LADDER[-1] == "tv_simply")
+check("speed: a client that returns no audio is not on the ladder at all",
+      "android" not in _yt._CLIENT_LADDER)
+check("speed: and neither is the one that takes 12s to refuse",
+      "tv" not in _yt._CLIENT_LADDER)
+check("speed: the two rungs measured to actually deliver audio lead it",
+      _yt._CLIENT_LADDER[:2] == ("android_vr", ""))
+check("speed: fragmented streams are fetched in parallel",
+      _yt._base_opts().get("concurrent_fragment_downloads", 0) >= 8)
+
 check("speed: a fast winner keeps the lead",
       _yt._ladder("probe")[0] == "ios")
 
