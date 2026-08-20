@@ -1223,6 +1223,42 @@ check("broadcast: the preview shows the same formatting",
 check("broadcast: entities reach both senders",
       _adm.count("entities=entities") >= 2)
 
+# Downloads went from under 15s to about two minutes. The comment in
+# modules/youtube.py already held the measurement: android_vr refused in 7.8s,
+# the default refused in 7.8s, tv_simply served it in 88.8s. Remembering only
+# WHO won made that one-off fallback the permanent first choice, so every
+# later download began by paying eighty-eight seconds and the fast clients
+# were never tried again.
+from modules import youtube as _yt
+import time as _tt3
+_now3 = _tt3.monotonic()
+
+_yt._preferred["probe"] = "ios"
+_yt._preferred_cost["probe"] = 3.2
+_yt._preferred_at["probe"] = _now3
+check("speed: a fast winner keeps the lead",
+      _yt._ladder("probe")[0] == "ios")
+
+_yt._preferred["probe"] = "tv_simply"
+_yt._preferred_cost["probe"] = 88.8
+_yt._preferred_at["probe"] = _now3
+check("speed: a slow winner still leads while it is fresh",
+      _yt._ladder("probe")[0] == "tv_simply")
+
+_yt._preferred_at["probe"] = _now3 - _yt._REPROBE_AFTER - 1
+check("speed: a slow winner loses the lead on re-probe",
+      _yt._ladder("probe")[0] == _yt._CLIENT_LADDER[0])
+check("speed: the re-probe is not so rare that a bad hour lasts all day",
+      _yt._REPROBE_AFTER <= 1800)
+_yt._preferred.pop("probe", None)
+_yt._preferred_cost.pop("probe", None)
+_yt._preferred_at.pop("probe", None)
+
+check("speed: a refused extraction is not retried three times before moving on",
+      _yt._base_opts().get("extractor_retries") == 1)
+check("speed: transfer retries are left alone, a dropped fragment is transient",
+      _yt._base_opts().get("retries") == 3)
+
 # "🚫 4 blocked" answers how many and not who, and who is the part anyone can
 # act on. It also cost a refused request per blocked user on every future run.
 check("broadcast: the unreachable are named, not just counted",

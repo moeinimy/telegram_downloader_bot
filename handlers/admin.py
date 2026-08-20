@@ -114,8 +114,9 @@ def _panel_keyboard() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton("⚙️ موتورها", callback_data="adm:eng"),
-                InlineKeyboardButton("🔄 بروزرسانی", callback_data="adm:home"),
+                InlineKeyboardButton("🚫 بلاک‌کرده‌ها", callback_data="adm:blocked"),
             ],
+            [InlineKeyboardButton("🔄 بروزرسانی", callback_data="adm:home")],
         ]
     )
 
@@ -182,6 +183,30 @@ def _summary_text() -> str:
 
     lines += ["", f"🕐 {time.strftime('%H:%M:%S')}"]
     return "\n".join(lines)
+
+
+def _blocked_view() -> tuple[str, InlineKeyboardMarkup]:
+    """Who a broadcast can no longer reach.
+
+    Kept out of the main user list on purpose: those are the people who
+    use the bot. This answers the other question - who stopped.
+    """
+    rows = stats.blocked_users(limit=60)
+    back = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("🏠 پنل", callback_data="adm:home")]]
+    )
+    total = stats.user_count()
+    reach = stats.reachable_count()
+    if not rows:
+        return (f"🚫 *بلاک‌کرده‌ها*\n\nهیچ‌کس. هر {reach} کاربر در دسترسن.", back)
+
+    lines = [f"🚫 *بلاک کرده یا اکانتشون رفته* ({len(rows)})",
+             f"در دسترس: {reach} از {total}", ""]
+    for uid, uname, fname, when in rows:
+        handle = f"@{_md(uname)}" if uname else _md(fname or "بدون نام")
+        lines.append(f"• {handle} — `{uid}` · {_ago(when)} پیش")
+    lines += ["", "_اگه دوباره با بات کار کنن خودکار برمی‌گردن._"]
+    return "\n".join(lines), back
 
 
 def _users_view(offset: int) -> tuple[str, InlineKeyboardMarkup]:
@@ -608,7 +633,9 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
-    if data == "adm:home":
+    if data == "adm:blocked":
+        text, kb = _blocked_view()
+    elif data == "adm:home":
         text, kb = _summary_text(), _panel_keyboard()
     elif data.startswith("adm:users:"):
         text, kb = _users_view(int(data.split(":")[2]))

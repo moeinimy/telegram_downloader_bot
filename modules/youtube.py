@@ -100,6 +100,12 @@ def _base_opts(client: str = "") -> dict:
         # Hung connections must not freeze a worker thread forever.
         "socket_timeout": 30,
         "retries": 3,
+        # Retries of the TRANSFER, above, are worth having: a dropped fragment
+        # is usually transient. Retries of the EXTRACTION are not - a client
+        # YouTube is refusing gets refused again - and at three apiece they
+        # tripled the cost of walking the ladder past every refusing client.
+        # The ladder is the retry that helps here.
+        "extractor_retries": 1,
         # YouTube requires a JS runtime (deno) + remote challenge-solver
         # scripts; allow yt-dlp to fetch the EJS solver from GitHub.
         "remote_components": ["ejs:github"],
@@ -140,6 +146,25 @@ def _base_opts(client: str = "") -> dict:
 # save one.
 _preferred: dict[str, str] = {}
 
+# What that winner cost, and when it won.
+#
+# Remembering only WHO won turns a one-off fallback into a permanent tax. The
+# measurement in the comment above says it plainly: android_vr refused in
+# 7.8s, the default refused in 7.8s, and tv_simply served it in 88.8s. Once
+# tv_simply is the remembered winner it leads the ladder on every later
+# request, so every download starts by paying eighty-eight seconds - and the
+# fast clients are never tried again while it keeps working.
+#
+# A slow client is a fallback, not a preference. It keeps the lead only until
+# the next re-probe, and then the fast ones get another chance: whether
+# YouTube refuses this address changes with cookies, with a proxy, and on its
+# own.
+_preferred_cost: dict[str, float] = {}
+_preferred_at: dict[str, float] = {}
+
+_SLOW_SECONDS = 20.0
+_REPROBE_AFTER = 600.0
+
 
 def _ladder(kind: str = "") -> tuple[str, ...]:
     # With a cookie jar the default client becomes the strongest option, so
@@ -152,6 +177,11 @@ def _ladder(kind: str = "") -> tuple[str, ...]:
     # "" is a real client here (yt-dlp's default), so this tests for presence
     # rather than truthiness.
     winner = _preferred.get(kind)
+    if winner is not None and _preferred_cost.get(kind, 0.0) >= _SLOW_SECONDS:
+        if time.monotonic() - _preferred_at.get(kind, 0.0) >= _REPROBE_AFTER:
+            log.info("yt-dlp: '%s' is a slow winner (%.0fs) - re-probing the "
+                     "fast clients", winner or "default", _preferred_cost[kind])
+            winner = None
     if winner is not None and winner in base:
         return (winner,) + tuple(c for c in base if c != winner)
     return base
@@ -204,9 +234,12 @@ def ytdlp_run(extra: dict, fn: Callable[[YoutubeDL], T], kind: str = "") -> T:
         try:
             with YoutubeDL(opts) as ydl:
                 result = fn(ydl)
+            took = time.monotonic() - started
             _preferred[kind] = client
+            _preferred_cost[kind] = took
+            _preferred_at[kind] = time.monotonic()
             log.info("yt-dlp client '%s' served %s in %.1fs", client or "default",
-                     kind or "it", time.monotonic() - started)
+                     kind or "it", took)
             return result
         except Exception as e:
             if not _is_retryable(e):
