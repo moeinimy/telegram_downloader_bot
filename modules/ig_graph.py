@@ -29,6 +29,8 @@ from pathlib import Path
 from config import settings
 from utils.helpers import run_in_thread
 
+from utils.secrets import scrub
+
 log = logging.getLogger(__name__)
 
 API = "https://graph.instagram.com"
@@ -162,7 +164,7 @@ async def health() -> tuple[bool, str]:
     try:
         who = await me()
     except Exception as e:
-        return False, f"token rejected - {e}"
+        return False, f"token rejected - {scrub(e)}"
 
     username = who.get("username") or who.get("user_id") or "?"
 

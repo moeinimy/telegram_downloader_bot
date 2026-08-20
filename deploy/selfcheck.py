@@ -1242,6 +1242,63 @@ _yt._preferred_at["probe"] = _now3
 # The ladder was five rungs with the slowest client third, so a refusal on the
 # first two landed on the 88.8s one almost immediately. Timed every rung
 # against a real track before reordering.
+# Security audit.
+#
+# httpx puts the whole failing url in its exception message, and this bot's
+# urls carry credentials: /srcstatus formatted `token rejected - {e}` straight
+# into a Telegram message, which put a sixty-day Instagram token into a chat
+# history that syncs to Telegram's servers and stays there.
+from utils.secrets import scrub as _scrub
+import httpx as _hx
+
+_req = _hx.Request("GET", "https://graph.instagram.com/v21.0/me"
+                          "?access_token=EAAGsecretTOKEN1234567890")
+try:
+    _hx.Response(400, request=_req).raise_for_status()
+except Exception as _e:
+    _leak, _clean = str(_e), _scrub(_e)
+
+check("secrets: the raw exception really does carry the token",
+      "EAAGsecretTOKEN1234567890" in _leak)
+check("secrets: and scrub takes it out",
+      "EAAGsecretTOKEN1234567890" not in _clean)
+check("secrets: the message is still readable afterwards",
+      "400 Bad Request" in _clean)
+check("secrets: a session cookie is redacted",
+      "12345abcdef" not in _scrub("sessionid=12345abcdef"))
+check("secrets: an Authorization header is redacted",
+      "ya29.SECRET" not in _scrub("Authorization: Bearer ya29.SECRETVALUE00"))
+check("secrets: a spotify client secret is redacted",
+      "abc123def456" not in _scrub("?client_secret=abc123def456"))
+check("secrets: an ordinary message is left alone",
+      _scrub("Connection reset by peer") == "Connection reset by peer")
+check("secrets: a url with nothing sensitive is left alone",
+      _scrub("https://youtube.com/watch?v=abc") == "https://youtube.com/watch?v=abc")
+check("secrets: scrub never raises on an unprintable value",
+      _scrub(type("B", (), {"__str__": lambda self: 1 / 0})()) == "<unprintable>")
+check("secrets: the leak that started this is fixed at the source",
+      "scrub(e)" in Path("modules/ig_graph.py").read_text(encoding="utf-8"))
+check("secrets: user-facing error templates are scrubbed too",
+      ".format(err=scrub(e))" in
+      Path("handlers/recognize_handler.py").read_text(encoding="utf-8"))
+
+# The rest of the audit, recorded so a regression is caught rather than
+# rediscovered.
+check("audit: nothing is executed through a shell",
+      not any("shell=True" in Path(f).read_text(encoding="utf-8")
+              for f in ("modules/youtube.py", "modules/spotify.py",
+                        "modules/recognize.py", "modules/instagram.py")))
+from utils import helpers as _hlp
+check("audit: a filename cannot climb out of the download directory",
+      "/" not in _hlp.safe_filename("../../etc/passwd")
+      and "\\" not in _hlp.safe_filename("..\..\windows"))
+check("audit: a filename of only dots does not become empty",
+      _hlp.safe_filename("..") == "file")
+check("audit: every admin command is gated",
+      Path("handlers/admin.py").read_text(encoding="utf-8").count("_reject(update)") >= 7)
+check("audit: the rate limiter sees every user message",
+      "limits.allow(" in Path("handlers/router.py").read_text(encoding="utf-8"))
+
 # Every HTTPS client has a TLS handshake fingerprint, and Instagram reads it.
 # Sending Chrome's User-Agent over httpx says "I am Chrome" in the header while
 # the handshake says otherwise; curl_cffi makes both halves agree.

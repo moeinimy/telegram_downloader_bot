@@ -31,6 +31,8 @@ from utils import limits
 from utils.i18n import t
 from utils.limits import BoundedDict
 
+from utils.secrets import scrub
+
 log = logging.getLogger(__name__)
 
 _VIDEO_EXTS = {".mp4", ".mov"}
@@ -312,7 +314,7 @@ async def _fetch_and_send(dm: ig_direct.DirectMessage, chat_id: int, shortcode: 
                 # url that expires within minutes, so it is fetched now.
                 files = await ig.fetch_direct_url(dm.media_url, dm.mid or str(int(dm.timestamp)))
     except Exception as e:
-        await status.edit_text(t(chat_id, "❌ خطا: {err}").format(err=e))
+        await status.edit_text(t(chat_id, "❌ خطا: {err}").format(err=scrub(e)))
         return
 
     permalink = dm.permalink or (
@@ -329,7 +331,7 @@ async def _fetch_and_send(dm: ig_direct.DirectMessage, chat_id: int, shortcode: 
         await instagram_handler.deliver(bot, chat_id, files, caption=caption)
         await status.delete()
     except Exception as e:
-        await status.edit_text(t(chat_id, "❌ آپلود ناموفق: {err}").format(err=e))
+        await status.edit_text(t(chat_id, "❌ آپلود ناموفق: {err}").format(err=scrub(e)))
         return
 
     limits.sweep_downloads(settings.download_dir)

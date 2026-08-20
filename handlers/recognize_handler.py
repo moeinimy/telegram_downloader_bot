@@ -55,6 +55,8 @@ from modules import spotify as sp
 from utils.i18n import t
 from utils.limits import BoundedDict
 
+from utils.secrets import scrub
+
 log = logging.getLogger(__name__)
 
 
@@ -68,7 +70,7 @@ async def recognize_from_url(msg, url: str) -> None:
             snippet = await rec.fetch_audio_snippet(url, seconds=90, offset=offset)
         except Exception as e:
             if offset == 0:
-                await status.edit_text(t(msg.chat_id, "❌ نتونستم صدای ویدیو رو بگیرم: {err}").format(err=e))
+                await status.edit_text(t(msg.chat_id, "❌ نتونستم صدای ویدیو رو بگیرم: {err}").format(err=scrub(e)))
                 return
             break  # second chunk unavailable (video too short)
 
@@ -108,7 +110,7 @@ async def _recognize_and_send(msg, status, audio_path: Path, *, cleanup: bool) -
         )
         return
     except Exception as e:
-        await status.edit_text(t(msg.chat_id, "❌ خطا در تشخیص آهنگ: {err}").format(err=e))
+        await status.edit_text(t(msg.chat_id, "❌ خطا در تشخیص آهنگ: {err}").format(err=scrub(e)))
         return
     finally:
         if cleanup:
@@ -250,7 +252,7 @@ async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         saved = await _fetch_to_disk(context, media.file_id, dest)
     except Exception as e:
-        await status.edit_text(t(msg.chat_id, "❌ دریافت فایل ناموفق: {err}").format(err=e))
+        await status.edit_text(t(msg.chat_id, "❌ دریافت فایل ناموفق: {err}").format(err=scrub(e)))
         return
 
     await status.delete()

@@ -18,6 +18,8 @@ from config import settings
 from modules import stats
 from utils.limits import BoundedDict
 
+from utils.secrets import scrub
+
 log = logging.getLogger(__name__)
 
 _PAGE = 8
@@ -558,7 +560,7 @@ async def igtest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     try:
         await msg.edit_text(await ig.diagnose(sc))
     except Exception as e:
-        await msg.edit_text(f"❌ {e}")
+        await msg.edit_text(f"❌ {scrub(e)}")
 
 
 async def whoami_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

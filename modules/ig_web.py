@@ -44,6 +44,8 @@ from modules.ig_items import to_direct_message, to_epoch
 from utils import proxies
 from utils.helpers import run_in_thread
 
+from utils.secrets import scrub
+
 log = logging.getLogger(__name__)
 
 INBOX = "https://www.instagram.com/api/v1/direct_v2/inbox/"
@@ -952,7 +954,7 @@ async def health() -> tuple[bool, str]:
         await _collect(1, time.time(), False)
         return True, "web api reachable"
     except Exception as e:
-        return False, str(e)[:120]
+        return False, scrub(e)[:120]
 
 
 def source() -> Source:

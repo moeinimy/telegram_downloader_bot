@@ -26,6 +26,8 @@ from modules import instagram as ig
 from utils.i18n import t
 from utils.url_router import InstagramKind, RouteResult
 
+from utils.secrets import scrub
+
 log = logging.getLogger(__name__)
 
 _PHOTO_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
@@ -147,7 +149,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             await status.edit_text(t(query.message.chat_id, "اکشن نامعتبر."))
             return
     except Exception as e:
-        await status.edit_text(f"❌ {e}")
+        await status.edit_text(f"❌ {scrub(e)}")
         return
     await status.delete()
 

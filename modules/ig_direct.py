@@ -34,6 +34,8 @@ from pathlib import Path
 
 from config import settings
 
+from utils.secrets import scrub
+
 log = logging.getLogger(__name__)
 
 Dispatch = Callable[["DirectMessage"], Awaitable[None]]
@@ -340,7 +342,7 @@ async def start(on_message: Dispatch) -> None:
             _states["mqtt"].running = True
             log.info("ig direct: realtime channel starting - no polling while it holds")
         except Exception as e:
-            _states["mqtt"].detail = str(e)[:120]
+            _states["mqtt"].detail = scrub(e)[:120]
             log.warning("ig direct: realtime source failed to start (%s)", e)
 
     # The web reader starts NOW, even with realtime starting beside it.
@@ -361,7 +363,7 @@ async def start(on_message: Dispatch) -> None:
             _states["web"].running = True
             log.info("ig direct: reading the inbox through the web api")
         except Exception as e:
-            _states["web"].detail = str(e)[:120]
+            _states["web"].detail = scrub(e)[:120]
             log.error("ig direct: web source failed to start: %s", e)
 
     _health_task = asyncio.create_task(_health_loop())

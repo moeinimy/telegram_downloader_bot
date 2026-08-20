@@ -30,6 +30,8 @@ from utils.helpers import fmt_duration
 from utils.i18n import t
 from utils.limits import BoundedDict
 
+from utils.secrets import scrub
+
 log = logging.getLogger(__name__)
 
 # shortcode -> PostInfo, and shortcode -> path of the video already sent.
@@ -205,7 +207,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await handler(query, chat_id, shortcode, parts)
     except Exception as e:
         log.warning("ig post menu %s failed for %s: %s", action, shortcode, e)
-        await query.message.reply_text(t(chat_id, "❌ خطا: {err}").format(err=e))
+        await query.message.reply_text(t(chat_id, "❌ خطا: {err}").format(err=scrub(e)))
 
 
 # ---------------- actions ----------------
