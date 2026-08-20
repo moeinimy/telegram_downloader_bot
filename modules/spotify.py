@@ -1516,15 +1516,45 @@ _PLATFORM_FA = {
 }
 
 
+def odesli_state() -> str:
+    """Empty when usable, otherwise why not.
+
+    Read by /engines so a service that RETIRED its free tier is not shown
+    as a fault in this bot. A red cross next to it sent somebody looking
+    for a bug that was never here.
+    """
+    if settings.odesli_api_key:
+        return ""
+    return ("این سرویس API عمومیش رو بسته — "
+            "بدون کلید کار نمی‌کنه. ODESLI_API_KEY")
+
+
 def _where_else(meta: TrackMeta) -> list[str]:
-    """Which services carry this exact release. Empty when we cannot tell."""
+    """Which services carry this exact release. Empty when we cannot tell.
+
+    song.link answers anonymous callers with
+
+        401 {"code": "PUBLIC_API_ACCESS_DEPRECATED"}
+
+    for every url and every spelling of it. The free tier is gone, not broken,
+    so the call is not made at all without a key: a request that is refused
+    before it is read is latency spent on a certainty.
+
+    Set ODESLI_API_KEY to bring it back. Nothing depends on it - this only ever
+    answered "is the track absent from the open web, or did our search miss
+    it?", which is a nicety on a failure path.
+    """
+    if not settings.odesli_api_key:
+        return []
+
     url = meta.spotify_url or meta.itunes_url
     if not url.startswith("http"):
         return []
     try:
         from utils import http
 
-        r = http.get(_ODESLI, params={"url": url, "userCountry": "US"}, timeout=12)
+        r = http.get(_ODESLI, params={"url": url, "userCountry": "US",
+                                      "key": settings.odesli_api_key}, timeout=12)
         if r.status_code != 200:
             return []
         return sorted((r.json().get("linksByPlatform") or {}).keys())
@@ -1786,6 +1816,7 @@ def download_track(meta: TrackMeta) -> Path:
     last: Exception | None = None
     reasons: list[str] = []
     out_path = None
+    best_thin: tuple | None = None
     for i, target in enumerate(targets):
         try:
             ytdlp_run(extra, lambda ydl: ydl.download([target]), kind="audio")
@@ -1797,15 +1828,71 @@ def download_track(meta: TrackMeta) -> Path:
             continue
         out_path = _find_output(base)
         if out_path is not None:
+            # A file is not the same thing as the RIGHT file. On this server
+            # YouTube's client ladder sometimes lands on a client that offers
+            # only the 48kbps rungs, and the download succeeds perfectly - it
+            # just produces a 1.1MB file for a track that is 3MB everywhere
+            # else. Nothing upstream notices, because nothing failed.
+            #
+            # Measured against the duration the catalogue already gave us, so
+            # this costs no extra request. A thin one is kept only if every
+            # other candidate is thinner.
+            kbps = _bitrate_kbps(out_path, meta)
+            if kbps and kbps < _THIN_KBPS and i + 1 < len(targets):
+                log.info("candidate %d/%d came back at %.0fkbps - too thin, "
+                         "trying the next", i + 1, len(targets), kbps)
+                if best_thin is None or kbps > best_thin[1]:
+                    thin = out_path.with_suffix(out_path.suffix + f".thin{i}")
+                    out_path.replace(thin)
+                    if best_thin is not None:
+                        best_thin[0].unlink(missing_ok=True)
+                    best_thin = (thin, kbps)
+                else:
+                    out_path.unlink(missing_ok=True)
+                out_path = None
+                continue
             break
         log.info("candidate %d/%d produced no file - trying the next",
                  i + 1, len(targets))
+
+    # Every candidate was thin. The best of them still beats nothing, and
+    # beats an error that says the track could not be found when it was.
+    if out_path is None and best_thin is not None:
+        out_path = _find_output(base) or base.with_suffix(best_thin[0].suffix
+                                                          .replace(".thin", ""))
+        best_thin[0].replace(out_path)
+        log.warning("every candidate for %r was thin - kept the best at %.0fkbps",
+                    meta.display, best_thin[1])
+    elif best_thin is not None:
+        best_thin[0].unlink(missing_ok=True)
 
     if out_path is None:
         raise _download_failed(meta, targets, reasons, last)
 
     _embed_cover_and_tags(out_path, meta)
     return out_path
+
+
+# Below this a file is not a copy of the track, it is a sketch of one. The
+# 48kbps rungs YouTube keeps for slow connections land here; every real music
+# upload is 128 and up.
+_THIN_KBPS = 96.0
+
+
+def _bitrate_kbps(path, meta) -> float:
+    """The delivered bitrate, from the file size and the known duration.
+
+    The duration comes from the catalogue entry we already have, so this is
+    arithmetic rather than another probe. Returns 0 when it cannot be judged,
+    which is treated as "do not reject".
+    """
+    seconds = (meta.duration_ms or 0) / 1000.0
+    if seconds < 30:                      # too short to judge, or unknown
+        return 0.0
+    try:
+        return path.stat().st_size * 8 / seconds / 1000.0
+    except Exception:
+        return 0.0
 
 
 _LOSSLESS_CODECS = ("flac", "alac", "wav", "pcm")

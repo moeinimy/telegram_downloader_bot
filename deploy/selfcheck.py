@@ -1144,6 +1144,47 @@ check("realtime gate: ig_direct builds mqtt from that gate, not the web one",
       "settings.has_ig_realtime" in
       Path("modules/ig_direct.py").read_text(encoding="utf-8"))
 
+# A 2:57 track came back as 1.1MB - about 50kbps - where every other source
+# has it at 3MB+. Nothing failed: the client ladder had landed on a client
+# offering only YouTube's 48kbps rungs, and a download that succeeds is not
+# checked again by anything.
+from modules import spotify as _spq
+_qmeta = _spq.TrackMeta("sp_x", "Void", ["Paablow"], "", 177000, "", "")
+_iws0 = Path("modules/spotify.py").read_text(encoding="utf-8")
+
+
+class _F:
+    def __init__(self, n):
+        self.n = n
+
+    def stat(self):
+        return type("S", (), {"st_size": self.n})()
+
+
+check("quality: the file that shipped is judged too thin",
+      _spq._bitrate_kbps(_F(1_100_000), _qmeta) < _spq._THIN_KBPS)
+check("quality: a normal youtube rip passes",
+      _spq._bitrate_kbps(_F(3_200_000), _qmeta) >= _spq._THIN_KBPS)
+check("quality: a high-bitrate rip passes",
+      _spq._bitrate_kbps(_F(6_700_000), _qmeta) >= _spq._THIN_KBPS)
+check("quality: an unknown duration is never used to reject",
+      _spq._bitrate_kbps(_F(1_100_000),
+                         _spq.TrackMeta("z", "z", ["z"], "", 0, "", "")) == 0.0)
+check("quality: a short interlude is not judged by bitrate",
+      _spq._bitrate_kbps(_F(1_100_000),
+                         _spq.TrackMeta("z", "z", ["z"], "", 12000, "", "")) == 0.0)
+check("quality: a thin file is only dropped when another candidate remains",
+      "and i + 1 < len(targets)" in _iws0)
+check("quality: the best thin one is kept rather than failing outright",
+      "every candidate for %r was thin" in _iws0)
+
+# song.link retired its free tier: every anonymous call is 401
+# PUBLIC_API_ACCESS_DEPRECATED. A red cross for that read as a fault here.
+check("odesli: without a key the call is not made at all",
+      "if not settings.odesli_api_key:" in _iws0)
+check("odesli: /engines explains rather than showing a failure",
+      "odesli_state" in Path("handlers/admin.py").read_text(encoding="utf-8"))
+
 # Every sweep read TWO endpoints - the inbox and the message-requests folder -
 # so the real request rate was double what the poll interval implies, and every
 # safe-interval calculation was out by a factor of two. On a busy day that is

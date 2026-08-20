@@ -289,10 +289,21 @@ async def srcstatus_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "iTunes", lambda: http.get("https://itunes.apple.com/search",
                                    params={"term": "test", "limit": 1},
                                    timeout=8).status_code == 200))
-    lines.append(await check(
-        "Odesli", lambda: http.get("https://api.song.link/v1-alpha.1/links",
-                                   params={"url": "spotify:track:0wwPcA6wtMf6HUMpIRdeP7"},
-                                   timeout=12).status_code == 200))
+    # Not a check any more when there is no key. song.link retired its free
+    # tier - every anonymous call is 401 PUBLIC_API_ACCESS_DEPRECATED - and a
+    # red cross next to it read as a fault in this bot, which sent somebody
+    # looking for a bug that was never here.
+    from modules.spotify import odesli_state
+
+    _odesli = odesli_state()
+    if _odesli:
+        lines.append(f"➖ Odesli\n   ↳ {_odesli}")
+    else:
+        lines.append(await check(
+            "Odesli", lambda: http.get("https://api.song.link/v1-alpha.1/links",
+                                       params={"url": "spotify:track:0wwPcA6wtMf6HUMpIRdeP7",
+                                               "key": settings.odesli_api_key},
+                                       timeout=12).status_code == 200))
     lines += _ig_direct_lines()
 
     from handlers import gate

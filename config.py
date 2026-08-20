@@ -138,6 +138,11 @@ class Settings:
     # detail - it is a lossless container around lossy content.
     audio_format: str
 
+    # song.link/Odesli. Its free tier now answers every anonymous call with
+    # 401 PUBLIC_API_ACCESS_DEPRECATED, so without a key the lookup is skipped
+    # rather than attempted and failed.
+    odesli_api_key: str
+
     # Extra music-recognition engines. Shazam always runs and needs nothing;
     # these are optional and tried in the order given by RECOGNITION_ENGINES.
     acoustid_key: str
@@ -341,6 +346,7 @@ settings = Settings(
     whisper_model=(_get("WHISPER_MODEL", "medium").lower() or "medium"),
     whisper_cpu_threads=_int("WHISPER_CPU_THREADS", 0),
     audio_format=(_get("AUDIO_FORMAT", "m4a").lower() or "m4a"),
+    odesli_api_key=_get("ODESLI_API_KEY"),
     acoustid_key=_get("ACOUSTID_API_KEY"),
     audd_token=_get("AUDD_API_TOKEN"),
     shazam_proxy=_get("SHAZAM_PROXY"),
