@@ -1816,6 +1816,34 @@ check("audio: the preview check runs on the downloaded file, not the search",
 _yts = Path("modules/youtube.py").read_text(encoding="utf-8")
 check("speed: an external downloader is used when one is installed",
       "external_downloader" in _yts)
+# aria2c cannot download HLS, and "default" handed SoundCloud's hls_aac_160k
+# to it anyway: ERROR: aria2c exited with code 22 - it fetched a playlist and
+# expected media.
+from yt_dlp.downloader import get_suitable_downloader as _gsd
+from yt_dlp.downloader.external import Aria2cFD as _A2
+
+_was_avail = _A2.available
+_A2.available = classmethod(lambda cls, path=None: True)
+_saved_a2 = _yt._aria2c
+_yt._aria2c = True
+_o = _yt._fast_download_opts()
+
+
+def _dl_for(proto, url):
+    return _gsd({"protocol": proto, "url": url}, _o).__name__
+
+
+check("speed: plain http goes to aria2c",
+      _dl_for("https", "https://x/a.m4a") == "Aria2cFD")
+check("speed: HLS does NOT - that is the code 22",
+      _dl_for("m3u8_native", "https://x/a.m3u8") == "HlsFD")
+check("speed: nor does DASH",
+      _dl_for("http_dash_segments", "https://x/a.mpd") == "DashSegmentsFD")
+check("speed: there is no catch-all that could take HLS again",
+      "default" not in _o["external_downloader"])
+_yt._aria2c = _saved_a2
+_A2.available = _was_avail
+
 check("speed: it splits the file across connections",
       '"-x", "16"' in _yts and '"-s", "16"' in _yts)
 check("speed: no pre-allocation pause before the first byte",

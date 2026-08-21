@@ -192,7 +192,21 @@ def _fast_download_opts() -> dict:
     if not _have_aria2c():
         return {}
     return {
-        "external_downloader": {"default": "aria2c"},
+        # Keyed on "http" and NOT on "default".
+        #
+        # aria2c cannot download HLS. SoundCloud serves hls_aac_160k, and
+        # "default" handed those to it too - which is
+        #
+        #     ERROR: aria2c exited with code 22
+        #
+        # (an unexpected HTTP header: it fetched a playlist and expected
+        # media). With this key, plain http and https go to aria2c and every
+        # fragmented protocol falls through to yt-dlp's own downloader, which
+        # is what concurrent_fragment_downloads is already parallelising.
+        #
+        # yt-dlp simplifies https -> http when it looks this up, so one key
+        # covers both.
+        "external_downloader": {"http": "aria2c"},
         "external_downloader_args": {
             "aria2c": ["-x", "16", "-s", "16", "-k", "1M",
                        "--file-allocation=none", "--summary-interval=0"],
