@@ -1410,7 +1410,16 @@ _SEARCH_POOL = 6
 # Bandcamp, Audiomack, Audius and Radio Javan have no search prefix, and their
 # own APIs are either keyed (Audiomack answers 401) or carry catalogues too
 # thin to have answered any track tested here.
-_AUDIO_SOURCES = ("ytsearch", "scsearch")
+# YouTube tops out near 146kbps and SoundCloud's streams at 160, so 320 was
+# not something a setting could produce - it had to come from a source that
+# has it. Audius serves the uploader's original file: measured at 9.0MB for
+# 3:55, which is 320kbps.
+#
+# Searched in parallel with the others and scored by the same rules, so it
+# wins only where it deserves to. Its catalogue is artist-uploaded - deep on
+# Persian rap and remixes, thin on western chart music - which is why it is a
+# third opinion rather than a replacement.
+_AUDIO_SOURCES = ("ytsearch", "scsearch", "audius")
 
 # SoundCloud is uploader-driven, so a top placement there says less about
 # being the canonical release than YouTube's does. Small, and only a tie
@@ -1653,6 +1662,13 @@ def _locate_audio(meta: TrackMeta) -> list[str]:
         queries.append(f"{meta.name} {meta.artists[0] if meta.artists else ''}".strip())
 
     def fetch(source: str, query: str) -> list[dict]:
+        # Audius is not a yt-dlp search prefix - it has none - so it goes
+        # through its own module. Everything after this point treats the
+        # entries identically, which is the point of shaping them the same.
+        if source == "audius":
+            from modules import audius
+
+            return audius.search(query, limit=_SEARCH_POOL)
         try:
             return _flat_entries(f"{source}{_SEARCH_POOL}:{query}")
         except Exception as e:

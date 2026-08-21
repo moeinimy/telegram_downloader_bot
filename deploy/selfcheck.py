@@ -1750,6 +1750,28 @@ check("speed: the cover is only sent when its url is already known",
 check("speed: the enrichment still happens, just after delivery",
       "asyncio.create_task(_enrich_later(meta))" in _sph0)
 
+# YouTube tops out near 146kbps and SoundCloud's streams at 160, so 320 was
+# never a setting away - it had to come from a source that has it. Audius
+# serves the uploader's original: 9.0MB for 3:55, measured, which is 320.
+from modules import audius as _aud
+check("audius: entries are shaped like yt-dlp's, so the scoring can read them",
+      all(k in _aud.search.__doc__ for k in ("Flat entries", "yt-dlp")))
+_ahits = _aud.search("hichkas", limit=3)
+check("audius: the public api answers without a key",
+      isinstance(_ahits, list))
+if _ahits:
+    check("audius: every entry has what _match_entry needs",
+          all(h.get("url", "").startswith("https://audius.co/")
+              and h.get("title") and h.get("duration") is not None
+              and h.get("uploader") is not None for h in _ahits))
+check("audius: a query it cannot answer returns nothing, not an error",
+      _aud.search("zzzqqqxxx nonexistent track") == [])
+check("audius: it is searched alongside the other two",
+      "audius" in _sp._AUDIO_SOURCES)
+check("audius: and it is not a yt-dlp search prefix",
+      'if source == "audius":' in
+      Path("modules/spotify.py").read_text(encoding="utf-8"))
+
 check("audio: the uploader's original is preferred when there is one",
       _picks(_SEL, [_ORIG, _AAC]) == "download")
 check("audio: sorting alone would have missed it",
