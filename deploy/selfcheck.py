@@ -1467,6 +1467,30 @@ check("chat id: a plain message is not mistaken for a forward",
 check("chat id: the old attribute is still read, for older PTB",
       "forward_from_chat" in Path("handlers/admin.py").read_text(encoding="utf-8"))
 
+# A cached send that failed dropped the id on ANY exception, so one
+# flood-wait or dropped connection threw away a good file_id and bought a full
+# re-download - the opposite of what a cache is for.
+from utils import file_cache as _fc
+check("cache: an id Telegram disowns is dropped",
+      _fc.is_dead_reference(Exception("Bad Request: wrong file identifier")))
+check("cache: and the other spelling of it",
+      _fc.is_dead_reference(Exception("wrong remote file identifier specified")))
+check("cache: a timeout is not a dead id",
+      not _fc.is_dead_reference(Exception("Timed out")))
+check("cache: nor is a flood wait",
+      not _fc.is_dead_reference(Exception("Flood control exceeded. Retry in 12 seconds")))
+check("cache: nor is a connection error",
+      not _fc.is_dead_reference(Exception("ConnectError: connection refused")))
+check("cache: music only drops on a dead reference",
+      "file_cache.is_dead_reference(e)" in
+      Path("handlers/spotify_handler.py").read_text(encoding="utf-8"))
+check("cache: youtube does the same",
+      "file_cache.is_dead_reference(e)" in
+      Path("handlers/youtube_handler.py").read_text(encoding="utf-8"))
+check("cache: a dropped id is re-downloaded rather than reported as an error",
+      "file_cache.drop(cache_key)" in
+      Path("handlers/spotify_handler.py").read_text(encoding="utf-8"))
+
 # Everything delivered is mirrored into the archive channel, by file_id -
 # Telegram re-sends a file it already holds without the bytes leaving this
 # server again, so archiving a 700MB video costs one api call and no

@@ -89,3 +89,29 @@ def snapshot() -> dict[str, str]:
     """
     with _LOCK:
         return dict(_load())
+
+
+# Telegram's ways of saying "that id names nothing I will send".
+#
+# A file_id normally outlives the message it came from, so deleting a post in
+# the archive channel usually changes nothing. Usually is not always: ids can
+# be invalidated, and a bot that has cached one then fails the same way
+# forever, because nothing ever removes it. Re-downloading once is cheap;
+# being permanently unable to deliver a track nobody can see the reason for
+# is not.
+_DEAD_REFERENCE = (
+    "wrong file identifier",
+    "wrong remote file identifier",
+    "file_id doesn't correspond",
+    "file is temporarily unavailable",
+    "file reference expired",
+    "wrong url",
+    "failed to get http url content",
+    "there is no photo in the request",
+)
+
+
+def is_dead_reference(exc: Exception) -> bool:
+    """True when an id should be dropped rather than retried as-is."""
+    text = str(exc).lower()
+    return any(marker in text for marker in _DEAD_REFERENCE)

@@ -678,8 +678,16 @@ async def _send_and_download_track(msg, meta, *, quiet: bool = False) -> bool:
             await sp.fill_details(meta)
             return await _send_cached(msg, meta, cached)
         except Exception as e:
-            log.info("cached file_id rejected (%s) - re-downloading", e)
-            file_cache.drop(cache_key)
+            # Only drop an id Telegram has actually disowned. The previous
+            # rule dropped on ANY exception, so one flood-wait or dropped
+            # connection threw away a perfectly good id and bought a full
+            # re-download - the opposite of what the cache is for.
+            if file_cache.is_dead_reference(e):
+                log.info("cached file_id is dead (%s) - re-downloading", e)
+                file_cache.drop(cache_key)
+            else:
+                log.info("cached send failed (%s) - keeping the id, retrying "
+                         "the long way", e)
 
     # The cover goes out first, carrying the progress line in its caption.
     # A separate status message plus its edits and deletion cost three extra
