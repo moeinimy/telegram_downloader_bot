@@ -378,7 +378,8 @@ def _friendly(e: Exception | None) -> RuntimeError:
     return RuntimeError(f"YouTube: {e}")
 
 
-def ytdlp_run(extra: dict, fn: Callable[[YoutubeDL], T], kind: str = "") -> T:
+def ytdlp_run(extra: dict, fn: Callable[[YoutubeDL], T], kind: str = "",
+              accept: Callable[[T], bool] | None = None) -> T:
     """Run `fn` against a YoutubeDL instance, retrying down the client ladder.
 
     Shared by every module that extracts media so the account-free fallbacks
@@ -387,7 +388,17 @@ def ytdlp_run(extra: dict, fn: Callable[[YoutubeDL], T], kind: str = "") -> T:
     `kind` groups requests that behave alike - a metadata probe and a media
     download are refused by different clients, so they remember different
     winners.
+
+    `accept` is for the failure that does not raise. Some clients answer a
+    probe with a clean extraction containing one video format, and a quality
+    menu built from that offers 360p for an hour-long video that has eight
+    resolutions. Nothing errored; the answer was simply not usable. A client
+    whose result is rejected is walked past like one that refused, but the
+    rejected result is kept - if no client does better, a thin answer still
+    beats no answer.
     """
+    thin: T | None = None
+    thin_seen = False
     last: Exception | None = None
     for client in _ladder(kind):
         opts = _base_opts(client) | extra
@@ -396,6 +407,18 @@ def ytdlp_run(extra: dict, fn: Callable[[YoutubeDL], T], kind: str = "") -> T:
             with YoutubeDL(opts) as ydl:
                 result = fn(ydl)
             took = time.monotonic() - started
+
+            if accept is not None and not accept(result):
+                if not thin_seen:
+                    thin, thin_seen = result, True
+                log.info("yt-dlp client '%s' answered %s in %.1fs but the "
+                         "result is too thin to use - trying the next",
+                         client or "default", kind or "it", took)
+                _note_refusal(kind, client)
+                if _preferred.get(kind) == client:
+                    _preferred.pop(kind, None)
+                continue
+
             _preferred[kind] = client
             _preferred_cost[kind] = took
             _preferred_at[kind] = time.monotonic()
@@ -422,10 +445,43 @@ def ytdlp_run(extra: dict, fn: Callable[[YoutubeDL], T], kind: str = "") -> T:
                         client or "default", kind or "it",
                         time.monotonic() - started, e)
             last = e
+
+    # Every client either refused or answered thinly. A thin answer is still
+    # an answer - a video that genuinely has one resolution looks exactly like
+    # this, and erroring would be wrong for it.
+    if thin_seen:
+        log.warning("yt-dlp: no client gave a full answer for %s - using the "
+                    "thin one", kind or "it")
+        return thin
+
     raise _friendly(last)
 
 
 # ---------- probe ----------
+
+def _usable_probe(info) -> bool:
+    """Whether a probe is rich enough to build a quality menu from.
+
+    Some clients answer with one progressive stream and nothing else. That is
+    a clean, successful extraction - and an hour-long video with eight
+    resolutions then arrived as a single "360p" button, because one stream is
+    all the menu had to offer.
+
+    A video that genuinely has one resolution is indistinguishable from this
+    at the probe, so a thin answer is not an error; it is a reason to ask a
+    different client first and keep this one only if nobody does better.
+    """
+    formats = (info or {}).get("formats") or []
+    heights = {f.get("height") for f in formats
+               if f.get("vcodec") not in (None, "none") and f.get("height")}
+    audio_only = [f for f in formats
+                  if f.get("vcodec") in (None, "none")
+                  and f.get("acodec") not in (None, "none")]
+    # Two heights, or one height with a separate audio track: either shape
+    # means the client is showing the adaptive ladder rather than a single
+    # muxed file.
+    return len(heights) >= 2 or bool(audio_only)
+
 
 @run_in_thread
 def probe_video(url: str) -> VideoInfo:
@@ -433,6 +489,7 @@ def probe_video(url: str) -> VideoInfo:
         {"skip_download": True},
         lambda ydl: ydl.extract_info(url, download=False),
         kind="probe",
+        accept=_usable_probe,
     )
 
     formats = info.get("formats") or []

@@ -1467,6 +1467,19 @@ check("chat id: a plain message is not mistaken for a forward",
 check("chat id: the old attribute is still read, for older PTB",
       "forward_from_chat" in Path("handlers/admin.py").read_text(encoding="utf-8"))
 
+# 282 files at three seconds each is fourteen minutes, and a backfill started
+# by accident has no way out without this.
+_arc0 = Path("utils/archive.py").read_text(encoding="utf-8")
+check("archive: the backfill can be stopped",
+      "should_stop" in _arc0)
+check("archive: and it is checked before each file, not each batch",
+      _arc0.index("if should_stop is not None and should_stop():")
+      < _arc0.index('kind = key.split(":", 1)[0]'))
+check("archive: the button exists and is answered",
+      'callback_data="adm:arcstop"' in _adm and '"adm:arcstop"' in _adm)
+check("archive: stopping is reported rather than looking finished",
+      "متوقف شد" in _adm)
+
 # A cached send that failed dropped the id on ANY exception, so one
 # flood-wait or dropped connection threw away a good file_id and bought a full
 # re-download - the opposite of what a cache is for.

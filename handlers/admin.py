@@ -611,6 +611,10 @@ async def whoami_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     )
 
 
+# Set by the ⏹ button; read before every file.
+_archive_stop: set[int] = set()
+
+
 async def archive_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/archive - put everything already cached into the archive channel.
 
@@ -637,22 +641,34 @@ async def archive_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             "کش خالیه - هنوز چیزی فرستاده نشده.")
         return
 
+    chat = update.effective_message.chat_id
+    _archive_stop.discard(chat)
+    stop_kb = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("⏹ توقف", callback_data="adm:arcstop")]]
+    )
     status = await update.effective_message.reply_text(
         f"📦 {total} فایل تو کشه - شروع می‌کنم…\n\n"
         "_هر ۳ ثانیه یکی، تا تلگرام محدودمون نکنه._",
-        parse_mode="Markdown")
+        parse_mode="Markdown", reply_markup=stop_kb)
 
     async def progress(done, of, sent, failed):
+        stopping = chat in _archive_stop
         try:
             await status.edit_text(
-                f"📦 {done}/{of} — ✅ {sent}"
-                + (f" · ⚠️ {failed}" if failed else ""))
+                (f"⏹ در حال توقف… " if stopping else f"📦 {done}/{of} ")
+                + f"— ✅ {sent}"
+                + (f" · ⚠️ {failed}" if failed else ""),
+                reply_markup=None if stopping else stop_kb)
         except Exception:
             pass
 
-    sent, failed = await archive.mirror_cache(context.bot, progress)
+    sent, failed = await archive.mirror_cache(
+        context.bot, progress, should_stop=lambda: chat in _archive_stop)
+    stopped = chat in _archive_stop
+    _archive_stop.discard(chat)
     await status.edit_text(
-        f"📦 تموم شد\n✅ {sent}"
+        ("⏹ متوقف شد" if stopped else "📦 تموم شد")
+        + f"\n✅ {sent}"
         + (f"\n⚠️ {failed} ناموفق" if failed else ""))
 
 
@@ -718,6 +734,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             "• یا روی یه پیام ریپلای کن و `/broadcast` بزن",
             parse_mode="Markdown",
         )
+        return
+
+    if data == "adm:arcstop":
+        _archive_stop.add(query.message.chat_id)
         return
 
     if data == "adm:blocked":

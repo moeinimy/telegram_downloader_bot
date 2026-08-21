@@ -64,7 +64,7 @@ async def mirror(bot, kind: str, file_id: str, caption: str = "") -> None:
         log.info("archive: could not mirror %s (%s)", kind, e)
 
 
-async def mirror_cache(bot, progress=None) -> tuple[int, int]:
+async def mirror_cache(bot, progress=None, should_stop=None) -> tuple[int, int]:
     """Push everything already in the file_id cache into the archive.
 
     For the channel created after the bot had already been running: those
@@ -80,6 +80,12 @@ async def mirror_cache(bot, progress=None) -> tuple[int, int]:
     # Telegram refuses past roughly 20 messages a minute to one channel.
     # This is a backfill, so it can afford to crawl.
     for i, (key, file_id) in enumerate(entries.items(), 1):
+        # Checked before each file rather than between batches: a backfill of
+        # 282 files at three seconds each runs for fourteen minutes, and
+        # "stop" has to mean now, not at the end of the current chunk.
+        if should_stop is not None and should_stop():
+            log.info("archive: stopped after %d of %d", i - 1, len(entries))
+            break
         kind = key.split(":", 1)[0]
         try:
             await mirror(bot, kind, file_id, caption=key)
