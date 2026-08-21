@@ -151,7 +151,24 @@ def probe_dimensions(path) -> tuple[int, int, int]:
         return 0, 0, 0
 
 
-# One connection is one throttle. aria2c opens several.
+# One connection is one throttle. aria2c opens several - where that is
+# allowed.
+#
+# OFF by default, on the evidence. Measured on the live server, every single
+# attempt ended:
+#
+#     ERROR: aria2c exited with code 22
+#     retrying natively
+#     android_vr refused audio after 14.2s (HTTP Error 403: Forbidden)
+#
+# YouTube refuses the parallel range requests that make aria2c fast, so the
+# 403 the native retry then gets is the same refusal - and the six seconds
+# spent discovering that were added to every download. An optimisation that
+# never lands is a tax.
+#
+# It stays available because it is genuinely faster on hosts that allow it,
+# and because a different address may be treated differently. YT_USE_ARIA2C=1
+# switches it on.
 #
 # YouTube shapes a download PER CONNECTION, so a single stream sits at
 # whatever rate it decides to give - which is the difference between three
@@ -175,10 +192,15 @@ def _have_aria2c() -> bool:
     if _aria2c is None:
         import shutil
 
-        _aria2c = shutil.which("aria2c") is not None
-        log.info("aria2c %s - downloads will be %s",
-                 "found" if _aria2c else "not installed",
-                 "split across connections" if _aria2c else "single-stream")
+        installed = shutil.which("aria2c") is not None
+        _aria2c = installed and settings.yt_use_aria2c
+        if installed and not settings.yt_use_aria2c:
+            log.info("aria2c is installed but switched off (YT_USE_ARIA2C) - "
+                     "single-stream downloads")
+        else:
+            log.info("aria2c %s - downloads will be %s",
+                     "found" if _aria2c else "not installed",
+                     "split across connections" if _aria2c else "single-stream")
     return _aria2c
 
 
@@ -310,24 +332,46 @@ def _load_preferred() -> None:
         stored = json.loads(_PREFERRED_PATH.read_text(encoding="utf-8"))
     except Exception:
         return
-    for kind, client in (stored or {}).items():
+    if not isinstance(stored, dict):
+        return
+    for kind, client in (stored.get("preferred") or {}).items():
         if isinstance(kind, str) and isinstance(client, str) and client in _CLIENT_LADDER:
             _preferred[kind] = client
-    if _preferred:
-        log.info("yt-dlp: resuming with %s", dict(_preferred))
+
+    # Resumed as skipped, not as one-attempt-from-skipped.
+    #
+    # The cooldown is what re-tries a client, and it already does: _is_cold
+    # clears an entry after fifteen minutes and the ladder picks it up again.
+    # Restoring one attempt short of the threshold instead would buy a fresh
+    # 14-second 403 on every restart - and during a day of deploys that is the
+    # difference the whole exercise is about.
+    now = time.monotonic()
+    for key, count in (stored.get("refusals") or {}).items():
+        kind, _, client = str(key).partition("|")
+        if client in _CLIENT_LADDER and isinstance(count, int) and count >= _REFUSALS_BEFORE_SKIP:
+            _refusals[(kind, client)] = (count, now)
+
+    if _preferred or _refusals:
+        log.info("yt-dlp: resuming with %s, %d client(s) known to refuse",
+                 dict(_preferred), len(_refusals))
 
 
 def _save_preferred() -> None:
     try:
         _PREFERRED_PATH.parent.mkdir(parents=True, exist_ok=True)
         tmp = _PREFERRED_PATH.with_suffix(".tmp")
-        tmp.write_text(json.dumps(_preferred), encoding="utf-8")
+        tmp.write_text(json.dumps({
+            "preferred": _preferred,
+            # The refusals too. android_vr answers a probe fine and then 403s
+            # every media request from this address; without this, each
+            # restart re-learns that at 8-14 seconds a download, three times
+            # over before the ladder gives up on it.
+            "refusals": {f"{k[0]}|{k[1]}": v[0] for k, v in _refusals.items()},
+        }), encoding="utf-8")
         tmp.replace(_PREFERRED_PATH)
     except Exception:
         pass          # a cache that cannot be written is not a failure
 
-
-_load_preferred()
 
 
 _preferred_cost: dict[str, float] = {}
@@ -362,6 +406,8 @@ _MIN_RUNGS = 2
 def _note_refusal(kind: str, client: str) -> None:
     count, _ = _refusals.get((kind, client), (0, 0.0))
     _refusals[(kind, client)] = (count + 1, time.monotonic())
+    if count + 1 >= _REFUSALS_BEFORE_SKIP:
+        _save_preferred()      # worth surviving a restart at this point
 
 
 def _note_success(kind: str, client: str) -> None:
@@ -376,6 +422,10 @@ def _is_cold(kind: str, client: str) -> bool:
         _refusals.pop((kind, client), None)      # long enough; try it again
         return False
     return True
+
+
+# Everything it reads now exists: the ladder, _preferred and _refusals.
+_load_preferred()
 
 
 def _ladder(kind: str = "") -> tuple[str, ...]:

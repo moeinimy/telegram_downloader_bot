@@ -123,6 +123,12 @@ class Settings:
     # setting for all of them meant fixing one broke another.
     yt_proxy: str
 
+    # Split downloads across connections with aria2c when it is installed.
+    # Off by default: YouTube refuses parallel range requests, so on this
+    # server every attempt failed with aria2c exit code 22 and added six
+    # seconds to a download that then had to be retried natively anyway.
+    yt_use_aria2c: bool
+
     # Video subtitles. An OpenAI-compatible transcription endpoint is used
     # when a key is set - it is both better at Persian and free of CPU cost
     # here. The local faster-whisper model is the fallback.
@@ -348,6 +354,7 @@ settings = Settings(
     max_upload_mb=int(_get("MAX_UPLOAD_MB", "50") or 50),
     yt_cookies_file=_cookies_path(),
     yt_proxy=_get("YT_PROXY"),
+    yt_use_aria2c=_get("YT_USE_ARIA2C", "").lower() in ("1", "true", "yes"),
     whisper_api_url=_get("WHISPER_API_URL", "https://api.groq.com/openai/v1"),
     whisper_api_key=_get("WHISPER_API_KEY"),
     whisper_api_model=_get("WHISPER_API_MODEL", "whisper-large-v3") or "whisper-large-v3",

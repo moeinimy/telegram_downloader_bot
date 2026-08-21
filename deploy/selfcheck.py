@@ -1837,6 +1837,38 @@ def _dl_for(proto, url):
 # immediately - no next client, no next candidate, and the user saw "all 1
 # candidates failed". aria2c is an optimisation; its failure should cost speed,
 # not the track.
+# Measured on the live server: every aria2c attempt ended in code 22, then a
+# native retry, then the same 403 - six seconds added to every download for an
+# optimisation YouTube does not permit.
+check("aria2c: it is off unless asked for",
+      not _cfg.yt_use_aria2c)
+check("aria2c: asking for it is a documented setting",
+      "YT_USE_ARIA2C" in Path("config.py").read_text(encoding="utf-8"))
+_saved_a2b = _yt._aria2c
+_yt._aria2c = False
+check("aria2c: off means no external downloader at all",
+      _yt._fast_download_opts() == {})
+_yt._aria2c = _saved_a2b
+
+# android_vr answers a probe and then 403s every media request from this
+# address. In memory that was re-learned at 8-14 seconds a download, three
+# times over, after every restart.
+_yt._refusals.clear()
+for _ in range(_yt._REFUSALS_BEFORE_SKIP):
+    _yt._note_refusal("selfcheck", "android_vr")
+check("ladder: a refusing client is written down, not just remembered",
+      _yt._PREFERRED_PATH.exists())
+_yt._refusals.clear()
+_yt._load_preferred()
+check("ladder: and it is still skipped after a restart",
+      _yt._is_cold("selfcheck", "android_vr"))
+_yt._refusals[("selfcheck", "android_vr")] = (
+    _yt._REFUSALS_BEFORE_SKIP, _yt.time.monotonic() - _yt._REFUSAL_COOLDOWN - 1)
+check("ladder: the cooldown still gives it another chance",
+      not _yt._is_cold("selfcheck", "android_vr"))
+_yt._refusals.clear()
+_yt._save_preferred()
+
 check("aria2c: its failure is told apart from the site refusing",
       _yt._is_external_downloader_failure(Exception("ERROR: aria2c exited with code 22")))
 check("aria2c: a real 403 is not mistaken for it",
