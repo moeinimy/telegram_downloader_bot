@@ -1467,6 +1467,35 @@ check("chat id: a plain message is not mistaken for a forward",
 check("chat id: the old attribute is still read, for older PTB",
       "forward_from_chat" in Path("handlers/admin.py").read_text(encoding="utf-8"))
 
+# Everything delivered is mirrored into the archive channel, by file_id -
+# Telegram re-sends a file it already holds without the bytes leaving this
+# server again, so archiving a 700MB video costs one api call and no
+# bandwidth. That is the only reason doing it for everything is reasonable.
+_arc = Path("utils/archive.py").read_text(encoding="utf-8")
+check("archive: audio, video and photo each get their own send method",
+      all(k in _arc for k in ("bot.send_audio", "bot.send_video",
+                              "bot.send_photo", "bot.send_document")))
+check("archive: a failure never reaches the caller",
+      "log.info(\"archive: could not mirror" in _arc)
+check("archive: nothing is attempted without a channel configured",
+      "if not enabled() or not file_id:" in _arc)
+check("archive: music deliveries are mirrored",
+      "archive.mirror(" in Path("handlers/spotify_handler.py").read_text(encoding="utf-8"))
+check("archive: youtube audio and video are mirrored",
+      Path("handlers/youtube_handler.py").read_text(encoding="utf-8").count(
+          "archive.mirror(") == 2)
+check("archive: instagram deliveries are mirrored",
+      "_archive_sent(" in Path("handlers/instagram_handler.py").read_text(encoding="utf-8"))
+check("archive: what was actually sent decides the kind, not what we asked",
+      "getattr(sent, \"animation\", None)" in
+      Path("handlers/instagram_handler.py").read_text(encoding="utf-8"))
+check("archive: the backfill crawls rather than racing the flood limit",
+      "asyncio.sleep(3.0)" in _arc)
+check("archive: /archive is registered",
+      'CommandHandler("archive"' in Path("main.py").read_text(encoding="utf-8"))
+check("archive: the cache can be enumerated without holding its lock",
+      "def snapshot(" in Path("utils/file_cache.py").read_text(encoding="utf-8"))
+
 # Inline mode. Every other way into this bot needs somebody to already know
 # it exists; an inline result is used in front of an audience, with the bot's
 # name under the message.

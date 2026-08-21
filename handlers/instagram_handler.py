@@ -184,6 +184,28 @@ def _prepare_photo(path: Path) -> tuple[Path, str]:
         return path, "document"
 
 
+async def _archive_sent(bot, sent, caption: str = "") -> None:
+    """Mirror whatever a send actually produced.
+
+    Which attribute holds the file depends on how Telegram classified it, and
+    that is not always the kind we asked for - a short mp4 can come back as an
+    animation. Reading it off the result rather than the request is the only
+    way to archive what was really sent.
+    """
+    from utils import archive
+
+    if sent is None:
+        return
+    for kind, obj in (("video", getattr(sent, "video", None)),
+                      ("photo", (getattr(sent, "photo", None) or [None])[-1]),
+                      ("audio", getattr(sent, "audio", None)),
+                      ("animation", getattr(sent, "animation", None)),
+                      ("document", getattr(sent, "document", None))):
+        if obj is not None:
+            await archive.mirror(bot, kind, obj.file_id, caption=caption)
+            return
+
+
 def video_kwargs(path) -> dict:
     """What Telegram needs to be TOLD about a video, rather than guess.
 
@@ -232,13 +254,17 @@ async def deliver(bot, chat_id: int, files: list[Path], caption: str | None = No
         path, kind = items[0]
         with path.open("rb") as handle:
             if kind == "video":
-                await bot.send_video(chat_id=chat_id, video=handle,
-                                     caption=caption,
-                                     **video_kwargs(path))
+                sent = await bot.send_video(chat_id=chat_id, video=handle,
+                                            caption=caption,
+                                            **video_kwargs(path))
             elif kind == "photo":
-                await bot.send_photo(chat_id=chat_id, photo=handle, caption=caption)
+                sent = await bot.send_photo(chat_id=chat_id, photo=handle,
+                                            caption=caption)
             else:
-                await bot.send_document(chat_id=chat_id, document=handle, caption=caption)
+                sent = await bot.send_document(chat_id=chat_id, document=handle,
+                                               caption=caption)
+        # Archived by id, so the bytes are not uploaded a second time.
+        await _archive_sent(bot, sent, caption)
         return
 
     # batch into groups of 10 (Telegram limit)

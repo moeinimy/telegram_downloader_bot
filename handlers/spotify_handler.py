@@ -29,6 +29,7 @@ from telegram.ext import ContextTypes
 
 from modules import spotify as sp
 from modules import stats
+from utils import archive
 from utils.i18n import t
 from utils.limits import BoundedDict
 from utils.url_router import RouteResult, SpotifyKind
@@ -587,6 +588,8 @@ async def _upload_track(msg, meta, path, *, with_cover: bool = True, thumb=None)
             )
         if sent and sent.audio:
             file_cache.put(cache_key, sent.audio.file_id)
+            await archive.mirror(msg.get_bot(), "audio", sent.audio.file_id,
+                                 caption=meta.display)
         stats.record_download(msg.chat_id, "music", meta.display)
         return True
     except Exception as e:

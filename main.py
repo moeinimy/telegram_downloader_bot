@@ -149,6 +149,7 @@ def build_app() -> Application:
     app.add_handler(CommandHandler(["id", "whoami"], admin.whoami_cmd))
     app.add_handler(CommandHandler(["lang", "language"], start.lang_cmd))
     app.add_handler(CommandHandler("broadcast", admin.broadcast_cmd))
+    app.add_handler(CommandHandler("archive", admin.archive_cmd))
     app.add_handler(CommandHandler("igcheck", admin.igcheck_cmd))
     app.add_handler(CommandHandler("igtest", admin.igtest_cmd))
     app.add_handler(CommandHandler("recstatus", admin.recstatus_cmd))

@@ -78,3 +78,14 @@ def drop(key: str) -> None:
         data = _load()
         if data.pop(key, None) is not None:
             _flush(data)
+
+
+def snapshot() -> dict[str, str]:
+    """A copy of every id held, for anything that needs to walk them.
+
+    A copy rather than the live dict: the backfill that reads this takes
+    minutes, and a download finishing halfway through would otherwise mutate
+    what it is iterating.
+    """
+    with _LOCK:
+        return dict(_load())

@@ -23,7 +23,7 @@ from config import settings
 from modules import stats
 from modules import youtube as yt
 from utils.i18n import t
-from utils import file_cache
+from utils import archive, file_cache
 from utils.helpers import file_too_big, fmt_duration, prepare_telegram_thumb
 from utils.progress import ProgressReporter
 from utils.url_router import RouteResult
@@ -209,6 +209,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 )
                 if sent and sent.audio:
                     file_cache.put(cache_key, sent.audio.file_id)
+                    await archive.mirror(context.bot, "audio",
+                                         sent.audio.file_id, caption=info.title)
                 stats.record_download(query.message.chat_id, "yt-audio", info.title)
             else:
                 # Told, not guessed. Without these Telegram picks a default
@@ -227,6 +229,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 )
                 if sent and sent.video:
                     file_cache.put(cache_key, sent.video.file_id)
+                    await archive.mirror(context.bot, "video",
+                                         sent.video.file_id, caption=info.title)
                 stats.record_download(query.message.chat_id, "yt-video", info.title)
         log.info("upload finished: %.1fMB in %.1fs", size_mb,
                  time.monotonic() - upload_started)

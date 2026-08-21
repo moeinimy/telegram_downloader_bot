@@ -611,6 +611,51 @@ async def whoami_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     )
 
 
+async def archive_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/archive - put everything already cached into the archive channel.
+
+    For the channel created after the bot had been running a while: those
+    files are on Telegram and reachable by id, they were simply never put
+    anywhere visible. Sending by id costs no bandwidth, but it does cost a
+    message each, so it crawls rather than races the flood limit.
+    """
+    if await _reject(update):
+        return
+
+    from utils import archive, file_cache
+
+    if not archive.enabled():
+        await update.effective_message.reply_text(
+            "اول CACHE_CHANNEL_ID رو تو .env بذار.\n\n"
+            "_یه پیام از کانال رو فوروارد کن اینجا، روش ریپلای کن و /id بزن._",
+            parse_mode="Markdown")
+        return
+
+    total = len(file_cache.snapshot())
+    if not total:
+        await update.effective_message.reply_text(
+            "کش خالیه - هنوز چیزی فرستاده نشده.")
+        return
+
+    status = await update.effective_message.reply_text(
+        f"📦 {total} فایل تو کشه - شروع می‌کنم…\n\n"
+        "_هر ۳ ثانیه یکی، تا تلگرام محدودمون نکنه._",
+        parse_mode="Markdown")
+
+    async def progress(done, of, sent, failed):
+        try:
+            await status.edit_text(
+                f"📦 {done}/{of} — ✅ {sent}"
+                + (f" · ⚠️ {failed}" if failed else ""))
+        except Exception:
+            pass
+
+    sent, failed = await archive.mirror_cache(context.bot, progress)
+    await status.edit_text(
+        f"📦 تموم شد\n✅ {sent}"
+        + (f"\n⚠️ {failed} ناموفق" if failed else ""))
+
+
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
