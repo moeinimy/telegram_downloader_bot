@@ -1840,6 +1840,22 @@ def _dl_for(proto, url):
 # Measured on the live server: every aria2c attempt ended in code 22, then a
 # native retry, then the same 403 - six seconds added to every download for an
 # optimisation YouTube does not permit.
+# "getting video info" is the slowest step between pasting a link and seeing
+# the menu - one extraction, and more when the first client answers thinly and
+# the ladder walks on. Nothing about a video changes minute to minute.
+check("probe: the same video is not extracted twice in a row",
+      "_probe_cache" in _yts and "_PROBE_TTL" in _yts)
+check("probe: youtu.be, /shorts and a watch url share one entry",
+      _yt._probe_key("https://youtu.be/cp-4X8hz9No")
+      == _yt._probe_key("https://www.youtube.com/watch?v=cp-4X8hz9No&t=30s")
+      == _yt._probe_key("https://www.youtube.com/shorts/cp-4X8hz9No"))
+check("probe: a url with no video id is still usable as a key",
+      _yt._probe_key("https://soundcloud.com/a/b") == "https://soundcloud.com/a/b")
+check("probe: the entry expires rather than being kept forever",
+      0 < _yt._PROBE_TTL <= 3600)
+check("probe: it is keyed on the id the response gave, not just the url",
+      "_probe_cache[probed.id]" in _yts)
+
 check("aria2c: it is off unless asked for",
       not _cfg.yt_use_aria2c)
 check("aria2c: asking for it is a documented setting",

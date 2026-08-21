@@ -629,8 +629,37 @@ def _usable_probe(info) -> bool:
     return len(heights) >= 2 or bool(audio_only)
 
 
+# A probe, kept for a few minutes.
+#
+# Nothing about a video changes minute to minute, and the probe is the slowest
+# thing between pasting a link and seeing the menu - one extraction, and more
+# than one when the first client answers thinly. Pasting the same link twice,
+# or two people sending the same video, paid for it twice.
+#
+# Short on purpose. This is not a store, it is a way of not asking the same
+# question twice in the span of one conversation.
+_PROBE_TTL = 600.0
+_probe_cache: dict[str, tuple[float, "VideoInfo"]] = {}
+
+
+def _probe_key(url: str) -> str:
+    """The video id where one can be found, so youtu.be and a watch url with
+    tracking parameters are recognised as the same video."""
+    import re
+
+    m = re.search(r"(?:v=|youtu\.be/|/shorts/|/embed/)([A-Za-z0-9_-]{11})", url)
+    return m.group(1) if m else url.strip()
+
+
 @run_in_thread
 def probe_video(url: str) -> VideoInfo:
+    key = _probe_key(url)
+    hit = _probe_cache.get(key)
+    if hit and time.monotonic() - hit[0] < _PROBE_TTL:
+        log.info("probe: reusing the one from %.0fs ago",
+                 time.monotonic() - hit[0])
+        return hit[1]
+
     info = ytdlp_run(
         {"skip_download": True},
         lambda ydl: ydl.extract_info(url, download=False),
@@ -644,7 +673,7 @@ def probe_video(url: str) -> VideoInfo:
         for f in formats
         if f.get("vcodec") != "none" and f.get("height")
     }
-    return VideoInfo(
+    probed = VideoInfo(
         id=info["id"],
         title=info.get("title", "video"),
         duration=info.get("duration") or 0,
@@ -654,6 +683,17 @@ def probe_video(url: str) -> VideoInfo:
         size_by_quality=_sizes_by_quality(formats, info.get("duration") or 0),
         channel_url=info.get("channel_url") or info.get("uploader_url") or "",
     )
+
+    # Keyed on the id from the response, not the url that was pasted, so every
+    # spelling of the same video shares one entry.
+    _probe_cache[probed.id] = (time.monotonic(), probed)
+    _probe_cache[key] = (time.monotonic(), probed)
+    if len(_probe_cache) > 200:
+        cutoff = time.monotonic() - _PROBE_TTL
+        for k, (seen, _) in list(_probe_cache.items()):
+            if seen < cutoff:
+                _probe_cache.pop(k, None)
+    return probed
 
 
 @dataclass
