@@ -1833,6 +1833,23 @@ def _dl_for(proto, url):
     return _gsd({"protocol": proto, "url": url}, _o).__name__
 
 
+# "aria2c exited with code 22" was not in _RETRYABLE, so it was re-raised
+# immediately - no next client, no next candidate, and the user saw "all 1
+# candidates failed". aria2c is an optimisation; its failure should cost speed,
+# not the track.
+check("aria2c: its failure is told apart from the site refusing",
+      _yt._is_external_downloader_failure(Exception("ERROR: aria2c exited with code 22")))
+check("aria2c: a real 403 is not mistaken for it",
+      not _yt._is_external_downloader_failure(Exception("HTTP Error 403: Forbidden")))
+check("aria2c: the same client is retried natively first",
+      "_without_external_downloader(opts)" in _yts)
+check("aria2c: stripping it leaves the rest of the options alone",
+      _yt._without_external_downloader(
+          {"format": "bestaudio", "external_downloader": {"http": "aria2c"},
+           "external_downloader_args": {"aria2c": []}}) == {"format": "bestaudio"})
+check("aria2c: and if native fails too, the ladder still moves on",
+      "aria2c exited" in _yt._RETRYABLE)
+
 check("speed: plain http goes to aria2c",
       _dl_for("https", "https://x/a.m4a") == "Aria2cFD")
 check("speed: HLS does NOT - that is the code 22",

@@ -83,6 +83,10 @@ _CLIENT_LADDER: tuple[str, ...] = (
 
 # Errors that mean "this client was refused" rather than "this video is gone".
 _RETRYABLE = (
+    # A downloader that fell over is worth another client, not a dead end:
+    # without this the ladder stopped on the first candidate and reported
+    # "all 1 candidates failed".
+    "aria2c exited",
     "sign in to confirm",
     "confirm you're not a bot",
     "not a bot",
@@ -402,6 +406,29 @@ def _ladder(kind: str = "") -> tuple[str, ...]:
     return base
 
 
+# An external downloader falling over is not the same as the site refusing.
+#
+# aria2c reports every HTTP problem as an exit code - 22 for an unexpected
+# header, which is what a 403 or a redirect it dislikes looks like from
+# outside. That is not a reason to give up on the track: aria2c is only here
+# to make a download faster, and yt-dlp's own downloader handles the headers
+# and the redirects it does not.
+#
+# So this is a signal to retry the SAME url natively, not to move on.
+_EXTERNAL_DL_FAILURE = ("aria2c exited", "external downloader",
+                        "downloader exited with code")
+
+
+def _is_external_downloader_failure(e: Exception) -> bool:
+    text = str(e).lower()
+    return any(marker in text for marker in _EXTERNAL_DL_FAILURE)
+
+
+def _without_external_downloader(opts: dict) -> dict:
+    return {k: v for k, v in opts.items()
+            if not k.startswith("external_downloader")}
+
+
 def _is_retryable(e: Exception) -> bool:
     s = str(e).lower()
     return any(marker in s for marker in _RETRYABLE)
@@ -458,8 +485,19 @@ def ytdlp_run(extra: dict, fn: Callable[[YoutubeDL], T], kind: str = "",
         opts = _base_opts(client) | extra
         started = time.monotonic()
         try:
-            with YoutubeDL(opts) as ydl:
-                result = fn(ydl)
+            try:
+                with YoutubeDL(opts) as ydl:
+                    result = fn(ydl)
+            except Exception as first:
+                # aria2c is an optimisation. When it fails, the download is
+                # still perfectly possible - just not that way.
+                if not (_is_external_downloader_failure(first)
+                        and "external_downloader" in opts):
+                    raise
+                log.warning("yt-dlp: the external downloader failed (%s) - "
+                            "retrying natively", str(first)[:80])
+                with YoutubeDL(_without_external_downloader(opts)) as ydl:
+                    result = fn(ydl)
             took = time.monotonic() - started
 
             if accept is not None and not accept(result):
