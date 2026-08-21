@@ -31,6 +31,7 @@ from modules import spotify as sp
 from modules import stats
 from utils import archive
 from utils.i18n import t
+from utils.secrets import scrub
 from utils.limits import BoundedDict
 from utils.url_router import RouteResult, SpotifyKind
 
@@ -62,7 +63,7 @@ async def handle_url(
             # The message is the exception's own, which arrives already
             # worded for the user; wrapping it in a translatable template
             # would just be that same string with a mark in front.
-            await ack.edit_text(f"❌ {e}")
+            await ack.edit_text(f"❌ {scrub(e)}")
             return
         log.info("get_track_meta for %s took %.1fs - nothing can be shown "
                  "before this", route.resource_id, _time.monotonic() - started)
@@ -594,7 +595,7 @@ async def _upload_track(msg, meta, path, *, with_cover: bool = True, thumb=None)
         return True
     except Exception as e:
         log.exception("audio upload failed")
-        await msg.reply_text(t(msg.chat_id, "❌ آپلود ناموفق: {name} — {err}").format(name=meta.display, err=e))
+        await msg.reply_text(t(msg.chat_id, "❌ آپلود ناموفق: {name} — {err}").format(name=meta.display, err=scrub(e)))
         return False
 
 
@@ -638,7 +639,7 @@ async def _send_best_quality(query, track_id: str) -> None:
         async with limits.download_slot(chat_id):
             path, codec, lossless = await sp.download_best(meta)
     except Exception as e:
-        await status.edit_text(t(chat_id, "❌ خطا: {err}").format(err=e))
+        await status.edit_text(t(chat_id, "❌ خطا: {err}").format(err=scrub(e)))
         return
 
     size_mb = path.stat().st_size / 1e6
@@ -662,7 +663,7 @@ async def _send_best_quality(query, track_id: str) -> None:
             )
         await status.delete()
     except Exception as e:
-        await status.edit_text(t(chat_id, "❌ آپلود ناموفق: {err}").format(err=e))
+        await status.edit_text(t(chat_id, "❌ آپلود ناموفق: {err}").format(err=scrub(e)))
 
 
 async def _send_and_download_track(msg, meta, *, quiet: bool = False) -> bool:
@@ -815,7 +816,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             meta = await sp.get_track_meta(track_id)
             tracks = await sp.similar_tracks(meta, limit=8)
         except Exception as e:
-            await status.edit_text(f"❌ {e}")
+            await status.edit_text(f"❌ {scrub(e)}")
             return
         if not tracks:
             await status.edit_text(t(query.message.chat_id, "چیزی شبیه این پیدا نکردم."))
@@ -842,7 +843,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             meta = await sp.get_track_meta(track_id)
             url = await sp.find_music_video(meta)
         except Exception as e:
-            await status.edit_text(f"❌ {e}")
+            await status.edit_text(f"❌ {scrub(e)}")
             return
         if not url:
             await status.edit_text(
@@ -871,7 +872,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             meta = await sp.get_track_meta(track_id)
             tracks = await sp.other_versions(meta, limit=8)
         except Exception as e:
-            await status.edit_text(f"❌ {e}")
+            await status.edit_text(f"❌ {scrub(e)}")
             return
         if not tracks:
             await status.edit_text(
@@ -933,7 +934,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         try:
             tracks = await sp.deep_search(search_query, limit=12)
         except Exception as e:
-            await status.edit_text(f"❌ {e}")
+            await status.edit_text(f"❌ {scrub(e)}")
             return
         if not tracks:
             await status.edit_text(t(query.message.chat_id, "چیز بیشتری پیدا نکردم."))

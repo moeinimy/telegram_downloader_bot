@@ -397,6 +397,11 @@ def _instagram_cookiefile() -> str | None:
     for name, value in cookies.items():
         lines.append(f".instagram.com\tTRUE\t/\tTRUE\t{expiry}\t{name}\t{value}")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # This file IS the session. Every other secret this bot writes is 0600;
+    # this one was left at whatever the umask gave it, which on a normal
+    # server is world-readable - so anyone with a shell on the box could
+    # lift the account out of it.
+    path.chmod(0o600)
     return str(path)
 
 

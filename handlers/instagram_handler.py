@@ -55,7 +55,7 @@ async def handle_url(
             await status.edit_text(t(msg.chat_id, "🤔 نوع لینک اینستا رو نشناختم."))
             return
     except Exception as e:
-        await status.edit_text(f"❌ خطا: {e}")
+        await status.edit_text(f"❌ خطا: {scrub(e)}")
         return
 
     await _send_media(msg, files)

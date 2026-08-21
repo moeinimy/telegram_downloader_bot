@@ -1467,6 +1467,67 @@ check("chat id: a plain message is not mistaken for a forward",
 check("chat id: the old attribute is still read, for older PTB",
       "forward_from_chat" in Path("handlers/admin.py").read_text(encoding="utf-8"))
 
+# Security audit.
+#
+# utils/secrets.py states the rule - text derived from an exception is
+# scrubbed before it is logged or sent - and the rule was applied in twelve
+# places and skipped in twelve others. An httpx error carries the whole
+# failing url, and this bot's urls carry sixty-day tokens, so the skipped half
+# put credentials into user chat histories.
+import re as _re2
+_unscrubbed = []
+for _h in sorted(Path("handlers").glob("*.py")):
+    _txt = _h.read_text(encoding="utf-8")
+    for _m in _re2.finditer(
+            r"(?:reply_text|edit_text|answer)\([^)]*?(?:\{e\}|err=e\))", _txt):
+        if "scrub" not in _m.group(0):
+            _unscrubbed.append(f"{_h.name}:{_txt[:_m.start()].count(chr(10)) + 1}")
+check("secrets: no exception reaches a user unscrubbed",
+      not _unscrubbed, "; ".join(_unscrubbed[:4]))
+
+from utils.secrets import scrub as _scrub
+check("secrets: an access token in a url is masked",
+      "EAAG" not in _scrub("url?access_token=EAAGm0PX4ZCpsBO1234"))
+check("secrets: a sessionid is masked",
+      "AbCdEf" not in _scrub("sessionid=76561198012345678%3AAbCdEfGh%3A17"))
+check("secrets: a bearer header is masked",
+      "eyJhbGci" not in _scrub("Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.x.y"))
+check("secrets: ordinary text is left alone",
+      _scrub("video unavailable") == "video unavailable")
+check("secrets: the redactor cannot itself raise",
+      _scrub(object()) is not None)
+
+# Every file that IS a credential is 0600. ig_cookies.txt was written at
+# whatever the umask gave it - world-readable on a normal server.
+check("secrets: the instagram cookie jar is not world-readable",
+      "path.chmod(0o600)" in Path("modules/instagram.py").read_text(encoding="utf-8"))
+
+# No shell, no eval: nothing user-supplied can become code.
+_danger = []
+for _f in (sorted(Path("modules").glob("*.py")) + sorted(Path("handlers").glob("*.py"))
+           + sorted(Path("utils").glob("*.py")) + sorted(Path("web").glob("*.py"))):
+    _t = _f.read_text(encoding="utf-8")
+    for _bad in ("shell=True", "os.system(", "eval(", "exec("):
+        if _bad in _t:
+            _danger.append(f"{_f.name}: {_bad}")
+check("security: no shell execution and no eval anywhere",
+      not _danger, "; ".join(_danger[:3]))
+
+# Meta signs webhook bodies; an unverified one is an open endpoint.
+_wh = Path("web/webhook.py").read_text(encoding="utf-8")
+check("security: webhook bodies are verified before being trusted",
+      "verify_signature(raw" in _wh)
+check("security: the comparison is constant-time",
+      "hmac.compare_digest" in _wh)
+
+# A crafted title must not escape the download directory.
+from utils.helpers import safe_filename as _sf
+check("security: a traversal attempt cannot leave the folder",
+      "/" not in _sf("../../etc/passwd")
+      and chr(92) not in _sf(chr(92) + chr(92) + "windows"))
+check("security: a name of only dots does not become empty",
+      _sf("...") == "file")
+
 # botctl find greps with -iE, where | is alternation and \| is a literal
 # pipe - so the habitual grep spelling matched nothing and read as "the bot
 # never logged that".
