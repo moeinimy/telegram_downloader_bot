@@ -1690,6 +1690,39 @@ check("instagram video: and never sends a made-up duration",
 # re-encodes otherwise. Sorting on bitrate alone picked opus 146kbps over aac
 # 129kbps and then transcoded it to aac 320k - a second lossy generation and a
 # bigger file than the source.
+# SoundCloud exposes the uploader's ORIGINAL file as format_id "download",
+# with quality 10 and no abr at all. Sorting by aext then abr reads a missing
+# bitrate as zero, so the best file available sorted LAST and a 320kbps
+# original lost to a 160kbps stream - which is the 1.9MB against 3.6MB the
+# same track arrived at from two different bots.
+from yt_dlp import YoutubeDL as _YDL
+
+_ORIG = {"format_id": "download", "ext": "mp3", "quality": 10, "vcodec": "none",
+         "acodec": "mp3", "url": "https://x/a.mp3", "filesize": 3_600_000}
+_AAC = {"format_id": "hls_aac_160k", "ext": "m4a", "abr": 160, "vcodec": "none",
+        "acodec": "mp4a.40.2", "url": "https://x/b.m4a", "filesize": 1_900_000}
+
+
+def _picks(selector, formats):
+    with _YDL({"format": selector, "format_sort": ["aext:m4a", "abr"],
+               "quiet": True, "no_warnings": True, "simulate": True}) as _y:
+        _y.sort_formats({"formats": formats})
+        _got = list(_y.build_format_selector(selector)(
+            {"formats": formats, "incomplete_formats": False}))
+    return _got[0]["format_id"] if _got else None
+
+
+_SEL = "bestaudio[format_id=download]/bestaudio/best"
+check("audio: the uploader's original is preferred when there is one",
+      _picks(_SEL, [_ORIG, _AAC]) == "download")
+check("audio: sorting alone would have missed it",
+      _picks("bestaudio/best", [_ORIG, _AAC]) == "hls_aac_160k")
+check("audio: a track without an original is unaffected",
+      _picks(_SEL, [_AAC]) == "hls_aac_160k")
+check("audio: the download path actually asks for it",
+      "bestaudio[format_id=download]" in
+      Path("modules/spotify.py").read_text(encoding="utf-8"))
+
 check("audio: aac is preferred so the file is copied, not transcoded",
       '"format_sort": ["aext:m4a", "abr"]' in
       Path("modules/spotify.py").read_text(encoding="utf-8"))

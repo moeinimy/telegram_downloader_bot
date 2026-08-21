@@ -1796,7 +1796,15 @@ def download_track(meta: TrackMeta) -> Path:
         # remuxes with `-acodec copy` (instant, lossless); otherwise it encodes
         # at 320k. Forcing mp3 for everything used to burn seconds of CPU per
         # track and added a second lossy pass on an already-compressed source.
-        "format": "bestaudio/best",
+        # The uploader's ORIGINAL file first, when SoundCloud has one.
+        #
+        # yt-dlp exposes it as format_id "download" with quality 10 and - the
+        # part that mattered - no abr at all. Sorting by aext then abr reads a
+        # missing bitrate as zero, so the best file available was landing LAST
+        # and a 320kbps original lost to a 160kbps stream. Asking for it by
+        # name settles it before any sort runs; the fallback is the ordinary
+        # ladder, so tracks without a downloadable original are unaffected.
+        "format": "bestaudio[format_id=download]/bestaudio/best",
         # AAC first, THEN bitrate - and that order is not a preference, it is
         # the difference between copying the audio and re-encoding it.
         #
