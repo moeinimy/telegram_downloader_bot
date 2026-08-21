@@ -18,6 +18,7 @@ Callback formats:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from telegram import (
@@ -599,6 +600,19 @@ async def _upload_track(msg, meta, path, *, with_cover: bool = True, thumb=None)
         return False
 
 
+async def _enrich_later(meta) -> None:
+    """Fill in credits and artwork after delivery, for next time.
+
+    The result is kept by the track cache, so the lookups a cached send used
+    to block on still happen - just not between the user asking and the file
+    arriving.
+    """
+    try:
+        await sp.fill_details(meta)
+    except Exception as e:
+        log.info("late enrichment for %s failed: %s", meta.display, e)
+
+
 async def _send_cached(msg, meta, file_id: str, *, with_cover: bool = True) -> bool:
     from handlers.lyrics_handler import lyrics_button
 
@@ -676,8 +690,22 @@ async def _send_and_download_track(msg, meta, *, quiet: bool = False) -> bool:
     cached = file_cache.get(cache_key)
     if cached:
         try:
-            await sp.fill_details(meta)
-            return await _send_cached(msg, meta, cached)
+            # NO network lookups on this path.
+            #
+            # fill_details() is several requests to iTunes and Deezer to fill
+            # in credits and artwork, and it ran BEFORE the file was sent - so
+            # a delivery that is one api call was waiting on half a dozen, and
+            # a cached track took fifteen seconds instead of one.
+            #
+            # Whatever is already known goes out now. The cover is sent only
+            # if its url is already in hand, and the enrichment happens after
+            # the audio has landed, so it can improve the next request without
+            # delaying this one.
+            ok = await _send_cached(msg, meta, cached,
+                                    with_cover=bool(meta.cover_url))
+            if ok and not meta.cover_url:
+                asyncio.create_task(_enrich_later(meta))
+            return ok
         except Exception as e:
             # Only drop an id Telegram has actually disowned. The previous
             # rule dropped on ANY exception, so one flood-wait or dropped

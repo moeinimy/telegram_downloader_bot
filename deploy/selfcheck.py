@@ -1713,6 +1713,43 @@ def _picks(selector, formats):
 
 
 _SEL = "bestaudio[format_id=download]/bestaudio/best"
+# From the journal, once per restart:
+#
+#   android_vr refused audio after 7.4s (HTTP Error 403: Forbidden)
+#   default    served  audio in 11.2s
+#
+# The winner WAS remembered - in memory - so a restart threw it away and the
+# first download of every session re-bought the same 403 at full price.
+import json as _json2, tempfile as _tf2, pathlib as _pl2
+_yt._preferred.pop("selfcheck", None)
+_yt._preferred["selfcheck"] = ""
+_yt._save_preferred()
+_yt._preferred.clear()
+_yt._load_preferred()
+check("speed: the winning client survives a restart",
+      _yt._preferred.get("selfcheck") == "")
+_yt._preferred["selfcheck"] = "a-client-that-does-not-exist"
+_yt._save_preferred()
+_yt._preferred.clear()
+_yt._load_preferred()
+check("speed: a client no longer on the ladder is not resumed",
+      "selfcheck" not in _yt._preferred)
+_yt._preferred.pop("selfcheck", None)
+_yt._save_preferred()
+
+# A cached track took fifteen seconds because fill_details - several requests
+# to iTunes and Deezer - ran BEFORE the one api call that sends the file.
+_sph0 = Path("handlers/spotify_handler.py").read_text(encoding="utf-8")
+_cached_branch = _sph0[_sph0.index("    cached = file_cache.get(cache_key)"):]
+_cached_branch = _cached_branch[:_cached_branch.index("    # The cover goes out first")]
+check("speed: nothing is looked up before a cached file is sent",
+      "await sp.fill_details" not in _cached_branch
+      and "_send_cached(msg, meta, cached" in _cached_branch)
+check("speed: the cover is only sent when its url is already known",
+      "with_cover=bool(meta.cover_url)" in _sph0)
+check("speed: the enrichment still happens, just after delivery",
+      "asyncio.create_task(_enrich_later(meta))" in _sph0)
+
 check("audio: the uploader's original is preferred when there is one",
       _picks(_SEL, [_ORIG, _AAC]) == "download")
 check("audio: sorting alone would have missed it",

@@ -21,6 +21,7 @@ extraction in the bot gets the same retry ladder.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import dataclass, field
@@ -272,6 +273,45 @@ _preferred: dict[str, str] = {}
 # the next re-probe, and then the fast ones get another chance: whether
 # YouTube refuses this address changes with cookies, with a proxy, and on its
 # own.
+# Which client last worked, kept on disk.
+#
+# In the journal, every restart pays this again:
+#
+#   android_vr refused audio after 7.4s (HTTP Error 403: Forbidden)
+#   default    served  audio in 11.2s
+#
+# The winner was already remembered - in memory, so a restart threw it away
+# and the first download of every session bought the same 403 at full price.
+# Seven and a half seconds is most of a fast download, spent re-learning
+# something the process before it already knew.
+_PREFERRED_PATH = settings.download_dir / "yt_clients.json"
+
+
+def _load_preferred() -> None:
+    try:
+        stored = json.loads(_PREFERRED_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    for kind, client in (stored or {}).items():
+        if isinstance(kind, str) and isinstance(client, str) and client in _CLIENT_LADDER:
+            _preferred[kind] = client
+    if _preferred:
+        log.info("yt-dlp: resuming with %s", dict(_preferred))
+
+
+def _save_preferred() -> None:
+    try:
+        _PREFERRED_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _PREFERRED_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(_preferred), encoding="utf-8")
+        tmp.replace(_PREFERRED_PATH)
+    except Exception:
+        pass          # a cache that cannot be written is not a failure
+
+
+_load_preferred()
+
+
 _preferred_cost: dict[str, float] = {}
 _preferred_at: dict[str, float] = {}
 
@@ -419,6 +459,9 @@ def ytdlp_run(extra: dict, fn: Callable[[YoutubeDL], T], kind: str = "",
                     _preferred.pop(kind, None)
                 continue
 
+            if _preferred.get(kind) != client:
+                _preferred[kind] = client
+                _save_preferred()
             _preferred[kind] = client
             _preferred_cost[kind] = took
             _preferred_at[kind] = time.monotonic()
@@ -440,6 +483,7 @@ def ytdlp_run(extra: dict, fn: Callable[[YoutubeDL], T], kind: str = "",
             # every subsequent request.
             if _preferred.get(kind) == client:
                 _preferred.pop(kind, None)
+                _save_preferred()
             _note_refusal(kind, client)
             log.warning("yt-dlp client '%s' refused %s after %.1fs (%s) — trying next.",
                         client or "default", kind or "it",
