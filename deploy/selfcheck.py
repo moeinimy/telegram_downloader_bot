@@ -1467,6 +1467,13 @@ check("chat id: a plain message is not mistaken for a forward",
 check("chat id: the old attribute is still read, for older PTB",
       "forward_from_chat" in Path("handlers/admin.py").read_text(encoding="utf-8"))
 
+# botctl find greps with -iE, where | is alternation and \| is a literal
+# pipe - so the habitual grep spelling matched nothing and read as "the bot
+# never logged that".
+_mg0 = Path("deploy/manage.sh").read_text(encoding="utf-8")
+check("botctl find: the BRE spelling of alternation is accepted too",
+      "sed 's/" + chr(92) * 4 + "|/|/g'" in _mg0)
+
 # 282 files at three seconds each is fourteen minutes, and a backfill started
 # by accident has no way out without this.
 _arc0 = Path("utils/archive.py").read_text(encoding="utf-8")

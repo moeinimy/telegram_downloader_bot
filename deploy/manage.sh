@@ -512,6 +512,12 @@ do_find() {
         err "الگو لازمه. مثال:  botctl find 'yt-dlp client'"
         return 1
     fi
+    # grep -iE is an EXTENDED regex: | is already alternation there, and
+    # \| means a literal pipe. Anyone who has used grep writes \| out of
+    # habit, and it then silently matches nothing - which reads as "the bot
+    # never logged that" rather than "your pattern was wrong".
+    pattern=$(printf '%s' "$pattern" | sed 's/\\\\|/|/g')
+
     info "گشتن دنبال «$pattern» تو $lines خط آخر:"
     journalctl -u "$SERVICE_NAME" --no-pager -n "$lines" \
         | grep -iE "$pattern" || warn "چیزی پیدا نشد تو $lines خط آخر"
