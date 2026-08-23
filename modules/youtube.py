@@ -638,8 +638,80 @@ def _usable_probe(info) -> bool:
 #
 # Short on purpose. This is not a store, it is a way of not asking the same
 # question twice in the span of one conversation.
-_PROBE_TTL = 600.0
+# A probe costs a full yt-dlp extraction - measured at 4.5 to 4.9 seconds
+# against this server, and there is no way to make it cheaper. Checked: the
+# obvious candidate, player_skip=webpage, does not speed it up at all - it
+# makes YouTube demand a bot check and the extraction fails outright.
+#
+# So the only thing left is to do it less often. Ten minutes and in memory
+# meant every restart re-probed everything, and a popular link pasted by three
+# different people cost three extractions. Six hours and on disk: format
+# ladders do not change through the day, and if one does the worst case is a
+# size estimate that is slightly off on a menu that already says "approximate".
+_PROBE_TTL = 6 * 3600.0
+_PROBE_CACHE_PATH = settings.download_dir / "yt_probes.json"
 _probe_cache: dict[str, tuple[float, "VideoInfo"]] = {}
+
+
+def _probe_to_dict(info: "VideoInfo") -> dict:
+    return {
+        "id": info.id, "title": info.title, "duration": info.duration,
+        "thumbnail": info.thumbnail, "uploader": info.uploader,
+        "available_heights": sorted(info.available_heights or []),
+        "channel_url": info.channel_url,
+        "size_by_quality": info.size_by_quality,
+    }
+
+
+def _probe_from_dict(d: dict) -> "VideoInfo":
+    return VideoInfo(
+        id=d.get("id", ""), title=d.get("title", ""),
+        duration=int(d.get("duration") or 0), thumbnail=d.get("thumbnail", ""),
+        uploader=d.get("uploader", ""),
+        available_heights=set(d.get("available_heights") or []),
+        channel_url=d.get("channel_url", ""),
+        size_by_quality=d.get("size_by_quality") or {},
+    )
+
+
+def _load_probes() -> None:
+    try:
+        stored = json.loads(_PROBE_CACHE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    now = time.time()
+    kept = 0
+    for key, entry in (stored or {}).items():
+        try:
+            when = float(entry["at"])
+            if now - when >= _PROBE_TTL:
+                continue
+            # Stored as wall clock, compared as monotonic: an entry written
+            # before the last reboot has no meaningful monotonic age, so its
+            # remaining life is recomputed from how long ago it was written.
+            _probe_cache[key] = (time.monotonic() - (now - when),
+                                 _probe_from_dict(entry["info"]))
+            kept += 1
+        except Exception:
+            continue
+    if kept:
+        log.info("probe cache: %d entries still fresh", kept)
+
+
+def _save_probes() -> None:
+    try:
+        now_mono, now_wall = time.monotonic(), time.time()
+        data = {
+            key: {"at": now_wall - (now_mono - at), "info": _probe_to_dict(info)}
+            for key, (at, info) in _probe_cache.items()
+            if now_mono - at < _PROBE_TTL
+        }
+        _PROBE_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _PROBE_CACHE_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data), encoding="utf-8")
+        tmp.replace(_PROBE_CACHE_PATH)
+    except Exception:
+        pass
 
 
 def _probe_key(url: str) -> str:
@@ -649,6 +721,10 @@ def _probe_key(url: str) -> str:
 
     m = re.search(r"(?:v=|youtu\.be/|/shorts/|/embed/)([A-Za-z0-9_-]{11})", url)
     return m.group(1) if m else url.strip()
+
+
+# Everything it needs is defined by here: VideoInfo and both helpers.
+_load_probes()
 
 
 @run_in_thread
@@ -688,6 +764,7 @@ def probe_video(url: str) -> VideoInfo:
     # spelling of the same video shares one entry.
     _probe_cache[probed.id] = (time.monotonic(), probed)
     _probe_cache[key] = (time.monotonic(), probed)
+    _save_probes()
     if len(_probe_cache) > 200:
         cutoff = time.monotonic() - _PROBE_TTL
         for k, (seen, _) in list(_probe_cache.items()):

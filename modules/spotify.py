@@ -61,6 +61,11 @@ class TrackMeta:
 
     @property
     def display(self) -> str:
+        # No artist means no separator either. " — Правильный пароль" reads as
+        # something missing rather than something absent, and it is the first
+        # thing a user sees when a track goes wrong.
+        if not self.artists:
+            return self.name
         return f"{', '.join(self.artists)} — {self.name}"
 
     @property
@@ -69,7 +74,24 @@ class TrackMeta:
 
     @property
     def search_query(self) -> str:
-        return f"{self.artists[0]} {self.name}"
+        """What to search a source for.
+
+        The artist is not guaranteed. A Spotify track always has one, but a
+        SoundCloud upload, a YouTube entry parsed out of a raw title, or an
+        embed page that answered thinly can all arrive with an empty list -
+        and indexing it threw
+
+            IndexError: list index out of range
+
+        out of a property, which surfaced as "❌  — Правильный пароль — list
+        index out of range": no artist in the name either, because `display`
+        tolerates what this did not.
+
+        A title on its own is a worse query than artist-plus-title, and it is
+        a query. That is the whole fix.
+        """
+        artist = self.artists[0] if self.artists else ""
+        return f"{artist} {self.name}".strip()
 
 
 @dataclass

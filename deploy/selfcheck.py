@@ -1754,6 +1754,67 @@ check("speed: the enrichment still happens, just after delivery",
 # never a setting away - it had to come from a source that has it. Audius
 # serves the uploader's original: 9.0MB for 3:55, measured, which is 320.
 from modules import audius as _aud
+# "â  â ÐÑÐ°Ð²Ð¸Ð»ÑÐ½ÑÐ¹ Ð¿Ð°ÑÐ¾Ð»Ñ â list index out of range": a track with no artist
+# at all. Every other artists[0] in the codebase is guarded; search_query was
+# the one that was not, and it is a property, so it threw from inside an
+# f-string. display tolerated the same emptiness, which is why the message had
+# a dangling dash and no name in front of it.
+import ast as _ast2
+
+_unguarded = []
+for _f in sorted(Path("modules").glob("*.py")) + sorted(Path("handlers").glob("*.py")):
+    for _n in _ast2.walk(_ast2.parse(_f.read_text(encoding="utf-8"))):
+        if (isinstance(_n, _ast2.Subscript)
+                and isinstance(_n.slice, _ast2.Constant) and _n.slice.value == 0
+                and "artists" in _ast2.unparse(_n.value)):
+            _line = _f.read_text(encoding="utf-8").splitlines()[_n.lineno - 1]
+            if "if" not in _line and "or" not in _line:
+                _unguarded.append(f"{_f.name}:{_n.lineno} {_line.strip()[:60]}")
+
+check("artists: nothing indexes the first artist without checking there is one",
+      not _unguarded, "; ".join(_unguarded[:3]))
+check("artists: a track with none still has a usable search query",
+      _sp.TrackMeta("x", "T", [], "", 1000, "", "").search_query == "T")
+check("artists: and a name without a dangling separator",
+      _sp.TrackMeta("x", "T", [], "", 1000, "", "").display == "T")
+check("artists: the normal case is unchanged",
+      _sp.TrackMeta("x", "T", ["A"], "", 1000, "", "").display == "A — T")
+
+# A probe is a full yt-dlp extraction - 4.5 to 4.9 seconds against this
+# server, and there is no cheaper way to do it. Measured the obvious candidate
+# and it is worse than useless: player_skip=webpage makes YouTube demand a bot
+# check and the extraction fails outright. So the only lever is doing it less
+# often, and the cache was ten minutes and in memory.
+_pinfo = _yt.VideoInfo(id="abc12345678", title="T", duration=300,
+                       thumbnail="t", uploader="u",
+                       available_heights={360, 720}, channel_url="c",
+                       size_by_quality={"720p": 123})
+_yt._probe_cache.clear()
+_yt._probe_cache["abc12345678"] = (_yt.time.monotonic(), _pinfo)
+_yt._save_probes()
+_yt._probe_cache.clear()
+_yt._load_probes()
+_restored = _yt._probe_cache.get("abc12345678")
+check("probe cache: it survives a restart",
+      _restored is not None and _restored[1].title == "T")
+check("probe cache: the format ladder survives with it",
+      _restored and _restored[1].available_heights == {360, 720}
+      and _restored[1].size_by_quality == {"720p": 123})
+check("probe cache: a restored entry is not aged wrongly",
+      _restored and (_yt.time.monotonic() - _restored[0]) < 5)
+_yt._probe_cache["stale"] = (_yt.time.monotonic() - _yt._PROBE_TTL - 10, _pinfo)
+_yt._save_probes()
+_yt._probe_cache.clear()
+_yt._load_probes()
+check("probe cache: an expired entry does not come back",
+      "stale" not in _yt._probe_cache)
+check("probe cache: it lasts hours, not minutes",
+      _yt._PROBE_TTL >= 3600)
+check("probe: the webpage fetch is NOT skipped - it triggers the bot check",
+      "player_skip" not in str(_yt._base_opts("android_vr")))
+_yt._probe_cache.clear()
+_yt._save_probes()
+
 check("audius: entries are shaped like yt-dlp's, so the scoring can read them",
       all(k in _aud.search.__doc__ for k in ("Flat entries", "yt-dlp")))
 _ahits = _aud.search("hichkas", limit=3)
@@ -1873,8 +1934,12 @@ check("probe: youtu.be, /shorts and a watch url share one entry",
       == _yt._probe_key("https://www.youtube.com/shorts/cp-4X8hz9No"))
 check("probe: a url with no video id is still usable as a key",
       _yt._probe_key("https://soundcloud.com/a/b") == "https://soundcloud.com/a/b")
+# Was capped at an hour when the cache was in memory and a restart cleared it
+# anyway. It is on disk now, and a format ladder does not change through the
+# day - the worst case of a stale entry is a size estimate slightly off on a
+# menu that already says approximate.
 check("probe: the entry expires rather than being kept forever",
-      0 < _yt._PROBE_TTL <= 3600)
+      0 < _yt._PROBE_TTL <= 24 * 3600)
 check("probe: it is keyed on the id the response gave, not just the url",
       "_probe_cache[probed.id]" in _yts)
 
