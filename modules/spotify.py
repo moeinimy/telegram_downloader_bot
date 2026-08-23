@@ -1843,20 +1843,24 @@ def download_track(meta: TrackMeta) -> Path:
         # name settles it before any sort runs; the fallback is the ordinary
         # ladder, so tracks without a downloadable original are unaffected.
         "format": "bestaudio[format_id=download]/bestaudio/best",
-        # AAC first, THEN bitrate - and that order is not a preference, it is
-        # the difference between copying the audio and re-encoding it.
+        # Bitrate first. The aac-first rule that was here is reverted, and
+        # the reasoning it rested on was wrong in a specific way worth
+        # recording.
         #
-        # FFmpegExtractAudio copies losslessly when the source is already aac
-        # and the target is m4a, and re-encodes otherwise. Sorting on bitrate
-        # alone picked YouTube's opus 251 at 146kbps over its aac 140 at
-        # 129kbps, and then transcoded opus -> aac at 320k: a second lossy
-        # generation, a bigger file than the source, and seconds of CPU per
-        # track. The 129kbps aac copied bit-for-bit is the better file, and it
-        # arrives sooner.
+        # It preferred YouTube's aac 140 at 129kbps over its opus 251 at
+        # 146kbps, so ExtractAudio could COPY instead of transcoding - "a
+        # re-encode always loses" is true, and it was the wrong comparison.
+        # The real one is between two SOURCES: opus at 146kbps is perceptually
+        # well ahead of aac at 129, enough that one transcode still lands
+        # ahead of the lower source. What the user actually received:
         #
-        # On SoundCloud the same rule lands on hls_aac_160k - so this is not a
-        # trade of quality for speed there at all, it is 160kbps copied.
-        "format_sort": ["aext:m4a", "abr"],
+        #     [abr]              opus 146 -> m4a 320   5.4MB for 2:22
+        #     [aext:m4a, abr]    aac  129 -> copied    2.2MB for 2:22
+        #
+        # Reported as "the quality has dropped recently", which it had, by
+        # more than half the file. Speed and CPU were the wrong things to buy
+        # with it.
+        "format_sort": ["abr"],
         "outtmpl": str(base) + ".%(ext)s",
         # Same throttle, same answer - see modules/youtube.py. A track is
         # smaller than a video, so the win is smaller, but it is the same win.

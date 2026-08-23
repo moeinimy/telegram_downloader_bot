@@ -1837,15 +1837,42 @@ check("audio: the uploader's original is preferred when there is one",
       _picks(_SEL, [_ORIG, _AAC]) == "download")
 check("audio: sorting alone would have missed it",
       _picks("bestaudio/best", [_ORIG, _AAC]) == "hls_aac_160k")
+_OPUS = {"format_id": "251", "ext": "webm", "abr": 146, "vcodec": "none",
+         "acodec": "opus", "url": "https://x/c.webm"}
+_Y140 = {"format_id": "140", "ext": "m4a", "abr": 129, "vcodec": "none",
+         "acodec": "mp4a.40.2", "url": "https://x/b.m4a"}
+
+
+def _picks_abr(formats):
+    with _YDL({"format": _SEL, "format_sort": ["abr"], "quiet": True,
+               "no_warnings": True, "simulate": True}) as _y:
+        _y.sort_formats({"formats": formats})
+        _got = list(_y.build_format_selector(_SEL)(
+            {"formats": formats, "incomplete_formats": False}))
+    return _got[0]["format_id"] if _got else None
+
+
+check("audio: on youtube the higher-bitrate opus is taken, not the aac",
+      _picks_abr([_Y140, _OPUS]) == "251")
+check("audio: and an original still beats both",
+      _picks_abr([_ORIG, _Y140, _OPUS]) == "download")
 check("audio: a track without an original is unaffected",
       _picks(_SEL, [_AAC]) == "hls_aac_160k")
 check("audio: the download path actually asks for it",
       "bestaudio[format_id=download]" in
       Path("modules/spotify.py").read_text(encoding="utf-8"))
 
-check("audio: aac is preferred so the file is copied, not transcoded",
-      '"format_sort": ["aext:m4a", "abr"]' in
-      Path("modules/spotify.py").read_text(encoding="utf-8"))
+# This asserted the wrong rule. Preferring aac so ExtractAudio could copy
+# traded YouTube's opus 251 at 146kbps for its aac 140 at 129 - and what
+# reached the user was 2.2MB where it had been 5.4MB, because the copy keeps
+# the source bitrate and the transcode targets 320. "A re-encode always loses"
+# was true and beside the point: the comparison that matters is between the
+# two SOURCES, and opus at 146 is well ahead of aac at 129.
+_spsrc = Path("modules/spotify.py").read_text(encoding="utf-8")
+check("audio: the highest-bitrate source wins, transcode or not",
+      '"format_sort": ["abr"]' in _spsrc)
+check("audio: the aac-first rule is gone from the setting, not just unused",
+      '"format_sort": ["aext:m4a"' not in _spsrc)
 
 # The quality menu offered 360p, 480p, 720p, 1080p and best as five buttons
 # reading 516MB each. When a client serves one video stream every label picks
