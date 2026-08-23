@@ -705,7 +705,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             await query.message.reply_text(
                 "👆 دقیقا همین برای همه می‌ره. اگه درسته «✅ بفرست» رو بزن.")
         except Exception as e:
-            await query.message.reply_text(f"❌ همین الان هم نرفت: {str(e)[:200]}")
+            await query.message.reply_text(
+            f"❌ همین الان هم نرفت: {scrub(e)[:200]}")
         return
     if data == "adm:bccancel":
         await query.edit_message_text("لغو شد.")

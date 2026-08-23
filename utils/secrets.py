@@ -41,6 +41,18 @@ _HEADER_RE = re.compile(r"(?i)\b(bearer|basic)\s+([A-Za-z0-9._\-+/=]{8,})")
 # Instagram's own token shape, in case it appears without a parameter name.
 _IG_TOKEN_RE = re.compile(r"\bEAA[A-Za-z0-9]{20,}")
 
+# The bot token, where an HTTP error actually puts it: in the PATH, not a
+# query parameter. httpx renders a failed Telegram call as
+#
+#     Client error '400 Bad Request' for url
+#     'https://api.telegram.org/bot123456:AAH.../sendMessage'
+#
+# and several handlers show the exception text to the user. The param and
+# header rules above both missed it, because it is neither.
+#
+# Anyone holding this can read and send as the bot until it is revoked.
+_BOT_TOKEN_RE = re.compile(r"(?i)/bot(\d{6,}:[A-Za-z0-9_\-]{20,})")
+
 _MASK = "***"
 
 
@@ -55,6 +67,7 @@ def scrub(text) -> str:
         out = _PARAM_RE.sub(lambda m: f"{m.group(1)}={_MASK}", out)
         out = _HEADER_RE.sub(lambda m: f"{m.group(1)} {_MASK}", out)
         out = _IG_TOKEN_RE.sub(_MASK, out)
+        out = _BOT_TOKEN_RE.sub(f"/bot{_MASK}", out)
         return out
     except Exception:
         return "<unprintable>"

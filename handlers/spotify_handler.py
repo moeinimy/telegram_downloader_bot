@@ -759,9 +759,9 @@ async def _send_and_download_track(msg, meta, *, quiet: bool = False) -> bool:
             thumb.cancel()
         err = t(msg.chat_id, str(e))
         if status:
-            await status.edit_text(f"❌ {err}")
+            await status.edit_text(f"❌ {scrub(err)}")
         else:
-            await msg.reply_text(f"❌ {meta.display} — {err}")
+            await msg.reply_text(f"❌ {meta.display} — {scrub(err)}")
         return False
 
     ok = await _upload_track(msg, meta, path, with_cover=False, thumb=thumb)

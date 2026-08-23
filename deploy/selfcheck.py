@@ -1601,6 +1601,47 @@ check("archive: /archive is registered",
 check("archive: the cache can be enumerated without holding its lock",
       "def snapshot(" in Path("utils/file_cache.py").read_text(encoding="utf-8"))
 
+# Security audit, the findings worth a permanent guard.
+#
+# httpx renders a failed Telegram call as
+#     Client error '400' for url 'https://api.telegram.org/bot<TOKEN>/sendMessage'
+# and several handlers show the exception text straight to the user. scrub()
+# masked query parameters and Authorization headers - the token is in neither,
+# it is in the PATH - so the bot's own credential could be handed to whoever
+# triggered the error. Anyone holding it can read and send as the bot.
+from utils.secrets import scrub as _scrub
+_TOKENISH = "7123456789:AAHrealsecrettokenhere12345"
+check("secrets: the bot token is masked where an http error puts it",
+      _TOKENISH not in _scrub(
+          f"Client error for url 'https://api.telegram.org/bot{_TOKENISH}/sendMessage'"))
+check("secrets: a session cookie is still masked",
+      "abcdef123456" not in _scrub("sessionid=abcdef123456"))
+check("secrets: an ordinary message is left readable",
+      _scrub("no secrets here") == "no secrets here")
+check("secrets: scrub never raises, whatever it is handed",
+      _scrub(object()) and _scrub(None))
+
+import re as _re2
+_unscrubbed = []
+for _f in sorted(Path("handlers").glob("*.py")):
+    for _i, _line in enumerate(_f.read_text(encoding="utf-8").splitlines(), 1):
+        if (_re2.search(r"(reply_text|edit_text|send_message)\(", _line)
+                and _re2.search(r"\{(err|e)\}|\{str\(e\)", _line)
+                and "scrub" not in _line):
+            _unscrubbed.append(f"{_f.name}:{_i}")
+check("secrets: no handler shows a raw exception to a user",
+      not _unscrubbed, ", ".join(_unscrubbed[:4]))
+
+# A pasted url reaches yt-dlp, so the router is the boundary. Checked against
+# the shapes that matter rather than trusting the pattern by eye.
+from utils.url_router import route as _route
+for _bad in ("file:///etc/passwd", "http://127.0.0.1:8081/x",
+             "http://169.254.169.254/latest/meta-data/",
+             "https://youtube.com.evil.com/watch?v=x", "http://[::1]:22/"):
+    check(f"router: refuses {_bad[:34]}", _route(_bad) is None)
+check("router: still accepts a real youtube url",
+      _route("https://www.youtube.com/watch?v=abc") is not None)
+
 # Inline mode. Every other way into this bot needs somebody to already know
 # it exists; an inline result is used in front of an audience, with the bot's
 # name under the message.

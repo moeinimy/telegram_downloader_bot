@@ -21,6 +21,8 @@ from utils.url_router import Platform, route
 
 from . import instagram_handler, soundcloud_handler, spotify_handler, youtube_handler
 
+from utils.secrets import scrub
+
 log = logging.getLogger(__name__)
 
 
@@ -64,7 +66,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         # Module errors are already user-facing sentences, so run them through
         # t() as well - otherwise an English user gets a Persian error body.
         await msg.reply_text(
-            t(msg.chat_id, "❌ خطا: {err}").format(err=t(msg.chat_id, str(e)))
+            t(msg.chat_id, "❌ خطا: {err}").format(err=t(msg.chat_id, scrub(e)))
         )
         return
 
@@ -91,5 +93,5 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         # Module errors are already user-facing sentences, so run them through
         # t() as well - otherwise an English user gets a Persian error body.
         await msg.reply_text(
-            t(msg.chat_id, "❌ خطا: {err}").format(err=t(msg.chat_id, str(e)))
+            t(msg.chat_id, "❌ خطا: {err}").format(err=t(msg.chat_id, scrub(e)))
         )
