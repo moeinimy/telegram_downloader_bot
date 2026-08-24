@@ -1856,6 +1856,24 @@ check("probe: the webpage fetch is NOT skipped - it triggers the bot check",
 _yt._probe_cache.clear()
 _yt._save_probes()
 
+# Audius serves a 320kbps mp3. Converting that to m4a spends a lossy
+# generation to change the container - the one place on this path where a
+# transcode buys nothing. Everywhere else it earns its keep: YouTube's best is
+# opus, which Telegram shows as a voice note rather than a track.
+_spsrc2 = Path("modules/spotify.py").read_text(encoding="utf-8")
+check("quality: the postprocessor is chosen per source",
+      "def _opts_for(target: str)" in _spsrc2)
+check("quality: an audius original is copied, not re-encoded",
+      '"preferredcodec": "best"' in _spsrc2)
+check("quality: everything else still gets the m4a transcode",
+      '"preferredquality": "320"' in _spsrc2)
+check("quality: the per-source choice is actually used by the download",
+      "_opts_for(target)" in _spsrc2)
+# YouTube's anonymous ceiling, measured across every client on a music video:
+# only 139/140/249/251 exist - the 256kbps tiers are Premium-gated.
+check("quality: no client is asked for a format YouTube will not serve",
+      "player_skip" not in str(_yt._base_opts("android_vr")))
+
 check("audius: entries are shaped like yt-dlp's, so the scoring can read them",
       all(k in _aud.search.__doc__ for k in ("Flat entries", "yt-dlp")))
 _ahits = _aud.search("hichkas", limit=3)

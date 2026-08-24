@@ -1875,6 +1875,28 @@ def download_track(meta: TrackMeta) -> Path:
         ],
     }
 
+    # A source that already IS high quality must not be re-encoded.
+    #
+    # Audius serves the uploader's original as a 320kbps mp3. Converting that
+    # to m4a spends a whole lossy generation to change the container and makes
+    # the audio strictly worse - it is the one place on this path where a
+    # transcode buys nothing at all.
+    #
+    # Everywhere else it earns its keep. YouTube's best is opus, which
+    # Telegram shows as a voice note rather than a track, and converting it at
+    # 320 keeps effectively all of a 137kbps source.
+    def _opts_for(target: str) -> dict:
+        if "audius.co" not in target:
+            return extra
+        keep = dict(extra)
+        keep["postprocessors"] = [
+            # "best" copies a file that is already a common audio format, so
+            # for an mp3 this is a container check rather than an encode.
+            {"key": "FFmpegExtractAudio", "preferredcodec": "best"},
+            {"key": "FFmpegMetadata"},
+        ]
+        return keep
+
     # Matching a track and being able to fetch it are different questions.
     # SoundCloud DRM-protects some label uploads, YouTube geo-blocks and
     # deletes others - and the best match is exactly as likely to be the one
@@ -1886,7 +1908,8 @@ def download_track(meta: TrackMeta) -> Path:
     best_thin: tuple | None = None
     for i, target in enumerate(targets):
         try:
-            ytdlp_run(extra, lambda ydl: ydl.download([target]), kind="audio")
+            ytdlp_run(_opts_for(target),
+                      lambda ydl: ydl.download([target]), kind="audio")
         except Exception as e:
             last = e
             reasons.append(str(e).lower())
