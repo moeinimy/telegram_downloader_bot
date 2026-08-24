@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import glob
 import logging
+import time
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1630,6 +1631,16 @@ def _download_failed(
         )
 
     blob = " ".join(reasons)
+
+    # The budget case says what happened rather than blaming the track: the
+    # sources were reachable, there was simply no time left to keep trying
+    # them. Silence here is what "downloading..." forever looks like.
+    if "time budget exhausted" in blob:
+        return RuntimeError(
+            f"«{meta.display}» خیلی طول کشید و نیمه‌کاره موند. "
+            "دوباره بفرست — معمولا بار دوم سریع‌تره."
+        )
+
     if any(m in blob for m in _REFUSED_MARKERS):
         log.error("all %d candidates for %r were refused - youtube is turning "
                   "this server away, not missing the track", len(targets), meta.display)
@@ -1906,7 +1917,26 @@ def download_track(meta: TrackMeta) -> Path:
     reasons: list[str] = []
     out_path = None
     best_thin: tuple | None = None
+
+    # A ceiling on the whole attempt, not on any one request.
+    #
+    # Every individual step already has a timeout - socket_timeout on the
+    # fetch, 30s on ffprobe. What had no limit was their SUM: six candidates,
+    # each walking a client ladder, each possibly transcoding a six-minute
+    # track, and the user watching "downloading..." with no file and no error
+    # for over three minutes. Nothing was hung; it was just still going.
+    #
+    # So the budget is checked between candidates, where stopping is clean.
+    # Whatever has been produced by then is used - a thin file beats the
+    # nothing that a silent overrun delivers.
+    started_at = time.monotonic()
     for i, target in enumerate(targets):
+        if i and time.monotonic() - started_at > _DOWNLOAD_BUDGET:
+            log.warning("download of %r hit the %.0fs budget after %d/%d "
+                        "candidates - stopping rather than running on",
+                        meta.display, _DOWNLOAD_BUDGET, i, len(targets))
+            reasons.append("time budget exhausted")
+            break
         try:
             ytdlp_run(_opts_for(target),
                       lambda ydl: ydl.download([target]), kind="audio")
@@ -1974,6 +2004,13 @@ def download_track(meta: TrackMeta) -> Path:
 # Below this a file is not a copy of the track, it is a sketch of one. The
 # 48kbps rungs YouTube keeps for slow connections land here; every real music
 # upload is 128 and up.
+# How long the whole of download_track may take before it gives up and says
+# so. Generous: a long track over a slow link legitimately takes a minute or
+# two, and cutting a download that was about to succeed is worse than waiting.
+# What this prevents is the open-ended case - candidate after candidate, with
+# nothing on screen but "downloading...".
+_DOWNLOAD_BUDGET = 150.0
+
 _THIN_KBPS = 96.0
 
 # Below this fraction of the expected runtime the file is a different thing

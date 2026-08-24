@@ -1861,6 +1861,25 @@ _yt._save_probes()
 # transcode buys nothing. Everywhere else it earns its keep: YouTube's best is
 # opus, which Telegram shows as a voice note rather than a track.
 _spsrc2 = Path("modules/spotify.py").read_text(encoding="utf-8")
+# Three minutes of "downloading..." with no file and no error. Nothing was
+# hung - it was still going, and the track did arrive. Every individual step
+# had a timeout; their SUM had none.
+check("budget: the whole attempt has a ceiling, not just each request",
+      "_DOWNLOAD_BUDGET" in _spsrc2)
+check("budget: it is generous enough not to cut off a slow success",
+      _sp._DOWNLOAD_BUDGET >= 120)
+check("budget: the FIRST candidate is never interrupted by it",
+      "if i and time.monotonic() - started_at" in _spsrc2)
+check("budget: running out says so, rather than blaming the track",
+      "خیلی طول کشید" in _spsrc2)
+check("budget: and it is a distinct outcome from a refusal",
+      _sp._download_failed(
+          _sp.TrackMeta("x", "T", ["A"], "", 300000, "", ""),
+          ["a", "b"], ["time budget exhausted"], None
+      ).args[0] != _sp._download_failed(
+          _sp.TrackMeta("x", "T", ["A"], "", 300000, "", ""),
+          ["a", "b"], ["something went wrong"], None).args[0])
+
 check("quality: the postprocessor is chosen per source",
       "def _opts_for(target: str)" in _spsrc2)
 check("quality: an audius original is copied, not re-encoded",
