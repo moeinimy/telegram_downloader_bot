@@ -2064,6 +2064,27 @@ _yt._aria2c = _saved_a2b
 _yt._refusals.clear()
 for _ in range(_yt._REFUSALS_BEFORE_SKIP):
     _yt._note_refusal("selfcheck", "android_vr")
+# From the journal, on every single download:
+#     android_vr refused audio after 7.2s (HTTP Error 403: Forbidden)
+#     default    served  audio in 18.9s
+# A 403 is this address being told no by that client - not transient, not
+# per-track. Waiting for three of them spends 21 seconds learning what the
+# first one said plainly.
+# A separate kind, so this leaves the state the later restart check reads.
+_yt._note_refusal("decisive", "android_vr",
+                  Exception("unable to download video data: HTTP Error 403: Forbidden"))
+check("ladder: one 403 is enough to stop asking that client",
+      _yt._is_cold("decisive", "android_vr"))
+_yt._note_refusal("decisive", "ios", Exception("Unable to extract player response"))
+check("ladder: an ordinary hiccup still gets its three chances",
+      not _yt._is_cold("decisive", "ios"))
+for _ in range(2):
+    _yt._note_refusal("decisive", "ios", Exception("Unable to extract player response"))
+check("ladder: and goes cold on the third",
+      _yt._is_cold("decisive", "ios"))
+for _c in ("android_vr", "ios"):
+    _yt._refusals.pop(("decisive", _c), None)
+
 check("ladder: a refusing client is written down, not just remembered",
       _yt._PREFERRED_PATH.exists())
 _yt._refusals.clear()

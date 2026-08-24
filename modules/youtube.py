@@ -403,8 +403,29 @@ _refusals: dict[tuple[str, str], tuple[int, float]] = {}
 _MIN_RUNGS = 2
 
 
-def _note_refusal(kind: str, client: str) -> None:
+# Some refusals are a verdict, not a data point.
+#
+# From the journal, on every single download:
+#
+#     android_vr refused audio after 7.2s (HTTP Error 403: Forbidden)
+#     default    served  audio in 18.9s
+#
+# That 403 is this address being told no for media by that client. It is not
+# transient and it does not vary by track, so waiting for three of them spends
+# 21 seconds learning something the first one said plainly. A "sign in to
+# confirm you are not a bot" is the same kind of answer.
+#
+# Everything else - a missing format, a timeout, an extraction hiccup - can
+# genuinely be about one video, so those still need the three.
+_DECISIVE_REFUSALS = ("http error 403", "sign in to confirm",
+                      "confirm you're not a bot")
+
+
+def _note_refusal(kind: str, client: str, error: Exception | None = None) -> None:
     count, _ = _refusals.get((kind, client), (0, 0.0))
+    text = str(error or "").lower()
+    if any(marker in text for marker in _DECISIVE_REFUSALS):
+        count = max(count, _REFUSALS_BEFORE_SKIP - 1)
     _refusals[(kind, client)] = (count + 1, time.monotonic())
     if count + 1 >= _REFUSALS_BEFORE_SKIP:
         _save_preferred()      # worth surviving a restart at this point
@@ -586,7 +607,7 @@ def ytdlp_run(extra: dict, fn: Callable[[YoutubeDL], T], kind: str = "",
             if _preferred.get(kind) == client:
                 _preferred.pop(kind, None)
                 _save_preferred()
-            _note_refusal(kind, client)
+            _note_refusal(kind, client, e)
             log.warning("yt-dlp client '%s' refused %s after %.1fs (%s) — trying next.",
                         client or "default", kind or "it",
                         time.monotonic() - started, e)
