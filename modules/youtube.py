@@ -241,7 +241,7 @@ def _fast_download_opts() -> dict:
 
 # ---------- yt-dlp plumbing ----------
 
-def _base_opts(client: str = "") -> dict:
+def _base_opts(client: str = "", use_proxy: bool = False) -> dict:
     """Common yt-dlp options. `client` selects an alternative player client."""
     opts: dict = {
         "quiet": True,
@@ -277,10 +277,25 @@ def _base_opts(client: str = "") -> dict:
     # The bot check is decided by where the request comes from, so a different
     # exit is the alternative to handing YouTube an account. yt-dlp rejects the
     # socks5h spelling exactly like every other library here.
-    proxy = proxies.normalize(settings.yt_proxy)
-    if proxy:
-        opts["proxy"] = proxy
+    #
+    # But only when asked. This used to be unconditional, and that made the
+    # cure cost more than the disease: with YT_PROXY set, every request went
+    # through the tunnel - the searches that were never refused, the probe,
+    # and above all the media transfer itself. A WARP hop is a fine way to
+    # ask YouTube a question from somewhere else and a poor way to move nine
+    # megabytes, so the bot worked and crawled.
+    #
+    # The exit is a fallback rung now: direct first at the server's own
+    # speed, and the tunnel only for what direct would not serve.
+    if use_proxy:
+        proxy = proxies.normalize(settings.yt_proxy)
+        if proxy:
+            opts["proxy"] = proxy
     return opts
+
+
+def _proxy_available() -> bool:
+    return bool(proxies.normalize(settings.yt_proxy))
 
 
 # Which client last served each kind of request. Measured, from one download:
@@ -552,6 +567,30 @@ def _friendly(e: Exception | None) -> RuntimeError:
     return RuntimeError(f"YouTube: {e}")
 
 
+# How many clients to re-ask through the proxy. The exit answers the bot
+# check or it does not; a third opinion from the same address costs a tunnel
+# round trip to learn nothing.
+_PROXY_RUNGS = 2
+
+
+def _rungs(kind: str) -> list[tuple[str, bool]]:
+    """The ladder as (client, via_proxy) pairs - direct first, tunnel after.
+
+    The proxy used to be applied to every request the moment YT_PROXY was
+    set, and that made the cure cost more than the disease. Searches were
+    never the thing being refused; the media transfer is the largest thing
+    the bot moves; and both were sent down a WARP hop that exists only to
+    change which address YouTube sees. Downloads worked and crawled.
+
+    Direct is the server at its own speed. The tunnel is what direct could
+    not get, and nothing else.
+    """
+    direct = [(c, False) for c in _ladder(kind)]
+    if not _proxy_available():
+        return direct
+    return direct + [(c, True) for c in _ladder(kind)[:_PROXY_RUNGS]]
+
+
 def ytdlp_run(extra: dict, fn: Callable[[YoutubeDL], T], kind: str = "",
               accept: Callable[[T], bool] | None = None) -> T:
     """Run `fn` against a YoutubeDL instance, retrying down the client ladder.
@@ -577,8 +616,13 @@ def ytdlp_run(extra: dict, fn: Callable[[YoutubeDL], T], kind: str = "",
     thin_seen = False
     last: Exception | None = None
     bot_checks = 0
-    for client in _ladder(kind):
-        opts = _base_opts(client) | extra
+    skip_direct = False
+    for client, via_proxy in _rungs(kind):
+        # Once this address has been named, the rest of the direct rungs are
+        # only there to be refused - and each refusal deepens the block.
+        if skip_direct and not via_proxy:
+            continue
+        opts = _base_opts(client, via_proxy) | extra
         started = time.monotonic()
         try:
             try:
@@ -614,7 +658,8 @@ def ytdlp_run(extra: dict, fn: Callable[[YoutubeDL], T], kind: str = "",
             _preferred_cost[kind] = took
             _preferred_at[kind] = time.monotonic()
             _note_success(kind, client)
-            log.info("yt-dlp client '%s' served %s in %.1fs", client or "default",
+            log.info("yt-dlp client '%s'%s served %s in %.1fs",
+                     client or "default", " via the proxy" if via_proxy else "",
                      kind or "it", took)
             return result
         except Exception as e:
@@ -638,14 +683,25 @@ def ytdlp_run(extra: dict, fn: Callable[[YoutubeDL], T], kind: str = "",
             # names the client that refused before it says why nobody else
             # was asked.
             if bot_checks >= _BOT_CHECKS_BEFORE_GIVING_UP:
-                log.warning("yt-dlp client '%s' refused %s after %.1fs (%s)",
-                            client or "default", kind or "it",
-                            time.monotonic() - started, e)
+                log.warning("yt-dlp client '%s'%s refused %s after %.1fs (%s)",
+                            client or "default",
+                            " via the proxy" if via_proxy else "",
+                            kind or "it", time.monotonic() - started, e)
+                # Skipping the rest of the rungs on THIS exit is the saving.
+                # Skipping the proxy would throw away the one exit that
+                # answers a bot check, so the walk stops asking here and
+                # carries on from the other side.
+                if not via_proxy and _proxy_available():
+                    log.warning(
+                        "yt-dlp: %d clients were told to sign in from this "
+                        "address - going straight to the proxy.", bot_checks)
+                    skip_direct = True
+                    bot_checks = 0
+                    continue
                 log.warning(
                     "yt-dlp: %d clients were told to sign in - that is this "
-                    "address, not the client. Skipping the remaining %d rung(s) "
-                    "for %s.", bot_checks,
-                    max(0, len(_ladder(kind)) - bot_checks), kind or "it")
+                    "address, not the client. Nothing left to try for %s.",
+                    bot_checks, kind or "it")
                 break
 
             log.warning("yt-dlp client '%s' refused %s after %.1fs (%s) — trying next.",

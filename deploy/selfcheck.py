@@ -2243,6 +2243,81 @@ finally:
     _yt.ytdlp_run = _real_run
     _yt._last_bot_check = _saved_check2
 
+# The exit is a fallback rung, not a toll booth.
+#
+# YT_PROXY used to apply to every request the moment it was set: the searches
+# that were never refused, the probe, and the media transfer itself. A WARP
+# hop is a fine way to ask YouTube a question from somewhere else and a poor
+# way to move nine megabytes, so with the proxy on the bot worked and crawled.
+_px_asked = []
+
+
+class _ExitRecordingYDL:
+    def __init__(self, opts):
+        _px_asked.append(
+            ((opts.get("extractor_args", {})
+              .get("youtube", {}).get("player_client", ["default"]))[0]
+             or "default",
+             "proxy" if opts.get("proxy") else "direct"))
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+_px_real_ydl = _yt.YoutubeDL
+_px_real_proxy = _yt.settings.yt_proxy
+_px_saved_ref = dict(_yt._refusals)
+_px_saved_pref = dict(_yt._preferred)
+_px_saved_check = _yt._last_bot_check
+try:
+    _yt.YoutubeDL = _ExitRecordingYDL
+    object.__setattr__(_yt.settings, "yt_proxy", "socks5h://127.0.0.1:40000")
+    check("proxy: a configured exit is recognised", _yt._proxy_available())
+
+    _yt._refusals.clear()
+    _yt._preferred.clear()
+    _yt._last_bot_check = 0.0
+    _px_asked.clear()
+    _yt.ytdlp_run({}, lambda _ydl: "served", kind="pxok")
+    check("proxy: a download that works never touches the tunnel",
+          all(e == "direct" for _, e in _px_asked), str(_px_asked))
+
+    # Refused direct, served through the exit - and the direct rungs in
+    # between are not paid for, because each refusal deepens the block.
+    _yt._refusals.clear()
+    _yt._preferred.clear()
+    _yt._last_bot_check = 0.0
+    _px_asked.clear()
+
+    def _proxy_only(_ydl):
+        if _px_asked[-1][1] == "direct":
+            raise RuntimeError(
+                "ERROR: [youtube] x: Sign in to confirm you’re not a bot.")
+        return "served"
+
+    check("proxy: a bot check falls through to the exit and is served",
+          _yt.ytdlp_run({}, _proxy_only, kind="pxok") == "served", str(_px_asked))
+    check("proxy: and the rest of the direct ladder is not paid for",
+          sum(1 for _, e in _px_asked if e == "direct")
+          == _yt._BOT_CHECKS_BEFORE_GIVING_UP,
+          f"{_px_asked} of {len(_yt._CLIENT_LADDER)} rungs")
+
+    object.__setattr__(_yt.settings, "yt_proxy", "")
+    check("proxy: with no exit configured the ladder is direct only",
+          all(not viap for _, viap in _yt._rungs("pxok")))
+finally:
+    _yt.YoutubeDL = _px_real_ydl
+    object.__setattr__(_yt.settings, "yt_proxy", _px_real_proxy)
+    _yt._refusals.clear()
+    _yt._refusals.update(_px_saved_ref)
+    _yt._preferred.clear()
+    _yt._preferred.update(_px_saved_pref)
+    _yt._last_bot_check = _px_saved_check
+    _yt._save_preferred()
+
 check("ladder: a refusing client is written down, not just remembered",
       _yt._PREFERRED_PATH.exists())
 _yt._refusals.clear()
