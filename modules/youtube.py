@@ -513,6 +513,28 @@ _BOT_CHECK = ("sign in to confirm", "confirm you're not a bot", "not a bot",
               "use --cookies")
 _last_bot_check = 0.0
 
+# How many clients may say "not a bot" before the ladder stops asking.
+#
+# From the journal, one track, every rung:
+#
+#     android_vr   refused after  7.4s   Sign in to confirm you're not a bot
+#     default      refused after  7.4s   Sign in to confirm you're not a bot
+#     ios          refused after  7.1s   Sign in to confirm you're not a bot
+#     mweb         refused after 10.3s   Sign in to confirm you're not a bot
+#     web_embedded refused after 37.5s   Sign in to confirm you're not a bot
+#     web_safari   refused after  7.6s   Sign in to confirm you're not a bot
+#     tv_simply    refused after  7.1s   Sign in to confirm you're not a bot
+#
+# Eighty-four seconds to hear the same sentence seven times, and then again
+# for the next candidate, and the next. The bot check is a verdict about THIS
+# ADDRESS - not about a client, not about a video - so once two independent
+# clients have said it there is nothing left for the other five to add.
+#
+# Two rather than one because a single client CAN be gated while others are
+# not: android_vr has 403'd on media while default served it. Two different
+# API surfaces agreeing is the address speaking.
+_BOT_CHECKS_BEFORE_GIVING_UP = 2
+
 
 def bot_checked_recently(within: float = 600.0) -> bool:
     return bool(_last_bot_check and time.monotonic() - _last_bot_check < within)
@@ -549,9 +571,12 @@ def ytdlp_run(extra: dict, fn: Callable[[YoutubeDL], T], kind: str = "",
     rejected result is kept - if no client does better, a thin answer still
     beats no answer.
     """
+    global _last_bot_check
+
     thin: T | None = None
     thin_seen = False
     last: Exception | None = None
+    bot_checks = 0
     for client in _ladder(kind):
         opts = _base_opts(client) | extra
         started = time.monotonic()
@@ -597,9 +622,8 @@ def ytdlp_run(extra: dict, fn: Callable[[YoutubeDL], T], kind: str = "",
                 raise
 
             if any(marker in str(e).lower() for marker in _BOT_CHECK):
-                global _last_bot_check
-
                 _last_bot_check = time.monotonic()
+                bot_checks += 1
 
             # It led the ladder because it worked last time and it has just
             # stopped, so drop it rather than paying for the same refusal on
@@ -608,10 +632,25 @@ def ytdlp_run(extra: dict, fn: Callable[[YoutubeDL], T], kind: str = "",
                 _preferred.pop(kind, None)
                 _save_preferred()
             _note_refusal(kind, client, e)
+            last = e
+
+            # Stop here rather than at the next rung, so the journal still
+            # names the client that refused before it says why nobody else
+            # was asked.
+            if bot_checks >= _BOT_CHECKS_BEFORE_GIVING_UP:
+                log.warning("yt-dlp client '%s' refused %s after %.1fs (%s)",
+                            client or "default", kind or "it",
+                            time.monotonic() - started, e)
+                log.warning(
+                    "yt-dlp: %d clients were told to sign in - that is this "
+                    "address, not the client. Skipping the remaining %d rung(s) "
+                    "for %s.", bot_checks,
+                    max(0, len(_ladder(kind)) - bot_checks), kind or "it")
+                break
+
             log.warning("yt-dlp client '%s' refused %s after %.1fs (%s) — trying next.",
                         client or "default", kind or "it",
                         time.monotonic() - started, e)
-            last = e
 
     # Every client either refused or answered thinly. A thin answer is still
     # an answer - a video that genuinely has one resolution looks exactly like

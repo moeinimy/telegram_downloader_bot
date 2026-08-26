@@ -2085,6 +2085,164 @@ check("ladder: and goes cold on the third",
 for _c in ("android_vr", "ios"):
     _yt._refusals.pop(("decisive", _c), None)
 
+# "Sign in to confirm you're not a bot" is a verdict about the ADDRESS.
+#
+# From the journal, one track, every rung of the ladder, the identical
+# sentence - android_vr, default, ios, mweb, web_embedded, web_safari,
+# tv_simply - eighty-four seconds to be told the same thing seven times, and
+# then the whole thing again for the next candidate. Two clients agreeing is
+# the address speaking; the other five have nothing to add.
+_BOT_ERR = Exception(
+    "ERROR: [youtube] aBcD: Sign in to confirm you’re not a bot. "
+    "Use --cookies-from-browser or --cookies for the authentication.")
+
+_asked = []
+
+
+class _CountingYDL:
+    def __init__(self, opts):
+        _asked.append((opts.get("extractor_args", {})
+                       .get("youtube", {}).get("player_client", ["default"]))[0]
+                      or "default")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _refuse(_ydl):
+    raise _BOT_ERR
+
+
+_real_ydl = _yt.YoutubeDL
+_yt.YoutubeDL = _CountingYDL
+_saved_refusals = dict(_yt._refusals)
+_saved_preferred = dict(_yt._preferred)
+_saved_check = _yt._last_bot_check
+try:
+    _yt._refusals.clear()
+    _yt._preferred.clear()
+    _yt._last_bot_check = 0.0
+    _asked.clear()
+    try:
+        _yt.ytdlp_run({}, _refuse, kind="botwall")
+    except Exception:
+        pass
+    check("ladder: two bot checks end it, the other rungs are not paid for",
+          len(_asked) == _yt._BOT_CHECKS_BEFORE_GIVING_UP,
+          f"asked {_asked} of {len(_yt._CLIENT_LADDER)} rungs")
+    check("ladder: and the block is remembered for the callers who need it",
+          _yt.bot_checked_recently())
+
+    # One gated client is still just a client: android_vr has been refused
+    # media while the default client served the very same request. Stopping on
+    # the first bot check would throw that away.
+    _yt._refusals.clear()
+    _yt._preferred.clear()
+    _asked.clear()
+    _seen = []
+
+    def _once_then_fine(_ydl):
+        _seen.append(1)
+        if len(_seen) == 1:
+            raise _BOT_ERR
+        return "served"
+
+    check("ladder: a single gated client does not end the ladder",
+          _yt.ytdlp_run({}, _once_then_fine, kind="botwall") == "served",
+          f"asked {_asked}")
+finally:
+    _yt.YoutubeDL = _real_ydl
+    _yt._refusals.clear()
+    _yt._refusals.update(_saved_refusals)
+    _yt._preferred.clear()
+    _yt._preferred.update(_saved_preferred)
+    # And put the FILE back too. _note_refusal persists, so walking a fake
+    # ladder here rewrote the on-disk state that the restart check below
+    # reads - restoring only the dict left that check reading the wipe.
+    _yt._save_preferred()
+
+# With playback refused, the candidate order is right about which recording is
+# best and wrong about which one can be had. Search and playback are separate
+# doors: YouTube answered searches in 0.7s while refusing every download, so
+# the list came back led by three URLs that could not be fetched - and the
+# SoundCloud copy behind them was never reached before the time budget hit.
+_sp_meta = _sp.TrackMeta("sp_bw", "Berim Baham", ["Alireza JJ"], "", 200000, "", "")
+_cands = [
+    "https://www.youtube.com/watch?v=lSuH6XsodZI",
+    "https://www.youtube.com/watch?v=Tf6tRfDjHqg",
+    "https://soundcloud.com/x/berim-baham",
+    "https://audius.co/x/berim-baham",
+]
+_yt._last_bot_check = _yt.time.monotonic()
+_reordered = _sp._demote_blocked(_cands, _sp_meta)
+check("targets: a bot-checked youtube is tried last, not first",
+      not _reordered[0].startswith("https://www.youtube.com"),
+      _reordered[0])
+check("targets: and none of them are thrown away",
+      sorted(_reordered) == sorted(_cands))
+_yt._last_bot_check = 0.0
+check("targets: while youtube answers, the scoring order stands",
+      _sp._demote_blocked(_cands, _sp_meta) == _cands)
+
+# The budget is a symptom. It used to be reported as the cause, which told the
+# user "this took too long, send it again" - advice to repeat an attempt that
+# could not succeed.
+_yt._last_bot_check = _yt.time.monotonic()
+_msg = str(_sp._download_failed(
+    _sp_meta, _cands,
+    ["Sign in to confirm you’re not a bot", "time budget exhausted"], None))
+check("failure: a bot check is named, not hidden behind 'it took too long'",
+      "botctl" in _msg and "دوباره بفرست" not in _msg,
+      _msg[:70])
+_yt._last_bot_check = _saved_check
+
+# Hammering a flagged address is what keeps it flagged.
+#
+# Measured against YouTube directly, not assumed: one video id answered OK,
+# then BOT-CHECK once a burst of requests had gone out, then OK again after
+# ninety seconds of quiet. The check is largely about request RATE, and this
+# bot was its own worst source of it - seven ladder rungs across three
+# candidates is twenty-one player requests for a single song.
+_sp_calls = []
+
+
+def _always_bot_check(_opts, _fn, kind="", accept=None):
+    _sp_calls.append(1)
+    _yt._last_bot_check = _yt.time.monotonic()
+    raise RuntimeError("یوتیوب این ویدیو رو نداد.")
+
+
+# spotify imports ytdlp_run from youtube at call time, so the
+# attribute to swap lives on youtube.
+_real_run = _yt.ytdlp_run
+_yt.ytdlp_run = _always_bot_check
+_saved_check2 = _yt._last_bot_check
+try:
+    _yt._last_bot_check = 0.0
+    _sp_calls.clear()
+    _sp_targets = [f"https://www.youtube.com/watch?v=vid{n}" for n in range(4)]
+    try:
+        _sp.download_track.__wrapped__(
+            _sp.TrackMeta("yt_vid0", "T", ["A"], "", 0,
+                          "https://www.youtube.com/watch?v=vid0", ""))
+    except Exception as _e:
+        _sp_err = str(_e)
+    check("download: a bot check mid-attempt stops the other youtube tries",
+          len(_sp_calls) == 1, f"{len(_sp_calls)} attempt(s)")
+
+    # ytdlp_run raises through _friendly(), which turns the bot check into
+    # Persian prose. reasons held only the prose, so _download_failed matched
+    # none of its English markers and the one failure the bot can explain
+    # precisely came out as the generic "all N candidates failed".
+    check("download: the cause survives the translation shown to the user",
+          "botctl" in _sp_err, _sp_err[:70])
+finally:
+    _yt.ytdlp_run = _real_run
+    _yt._last_bot_check = _saved_check2
+
 check("ladder: a refusing client is written down, not just remembered",
       _yt._PREFERRED_PATH.exists())
 _yt._refusals.clear()

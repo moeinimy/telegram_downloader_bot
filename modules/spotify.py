@@ -1632,15 +1632,6 @@ def _download_failed(
 
     blob = " ".join(reasons)
 
-    # The budget case says what happened rather than blaming the track: the
-    # sources were reachable, there was simply no time left to keep trying
-    # them. Silence here is what "downloading..." forever looks like.
-    if "time budget exhausted" in blob:
-        return RuntimeError(
-            f"«{meta.display}» خیلی طول کشید و نیمه‌کاره موند. "
-            "دوباره بفرست — معمولا بار دوم سریع‌تره."
-        )
-
     if any(m in blob for m in _REFUSED_MARKERS):
         log.error("all %d candidates for %r were refused - youtube is turning "
                   "this server away, not missing the track", len(targets), meta.display)
@@ -1658,6 +1649,29 @@ def _download_failed(
             f"«{meta.display}» پیدا شد ولی هیچ‌کدوم از {len(targets)} گزینه فرمت قابل "
             f"دانلود نداشت. معمولا یعنی deno یا yt-dlp لنگه. "
             f"راه‌حل: botctl ytdlp"
+        )
+
+    # The budget is the last explanation offered, not the first.
+    #
+    # It used to be the first, and that was backwards. A bot check makes every
+    # candidate cost a full ladder, the candidates run out of time, and the
+    # user was told "this took too long - send it again", which is advice to
+    # repeat an attempt that cannot succeed. Running out of time was true; it
+    # was not the reason. The reason is above this line, and only when nothing
+    # up there recognised the failure is "it stalled" the most honest thing
+    # left to say.
+    if "time budget exhausted" in blob:
+        if _yt_blocked():
+            return RuntimeError(
+                f"«{meta.display}» نصفه موند چون یوتیوب داره این سرور رو رد "
+                "می‌کنه («Sign in to confirm you\u2019re not a bot») و هر گزینه "
+                "وقت زیادی گرفت.\n"
+                "دوباره فرستادن فایده نداره تا وقتی این باز نشه.\n"
+                "راه‌حل روی سرور:  botctl ytcookies  یا  botctl proxy"
+            )
+        return RuntimeError(
+            f"«{meta.display}» خیلی طول کشید و نیمه‌کاره موند. "
+            "دوباره بفرست — معمولا بار دوم سریع‌تره."
         )
 
     return RuntimeError(
@@ -1802,6 +1816,35 @@ def _locate_audio(meta: TrackMeta) -> list[str]:
 
 # ---------------- downloading ----------------
 
+def _demote_blocked(targets: list[str], meta) -> list[str]:
+    """Try the sources that are answering before the one that is not.
+
+    Search and playback are separate doors. YouTube kept answering searches
+    from this server in 0.7s while refusing every single media request with
+    "Sign in to confirm you're not a bot" - so the candidate list came back
+    full, correctly scored, and led by three URLs that could not be fetched.
+
+    Each of those cost a full client ladder before the next was tried, and the
+    track that SoundCloud was holding all along was never reached: the attempt
+    hit its time budget first and the user was told it took too long. The
+    ordering was right about which recording is best and wrong about which one
+    can be had, and only the second question was blocking.
+
+    So while a bot check is fresh, YouTube goes last instead of first. Not
+    dropped - the block lifts on its own, and a track nobody else has is still
+    worth the attempt once everything else has been ruled out.
+    """
+    if len(targets) < 2 or not _yt_blocked():
+        return targets
+    yt = [t for t in targets if "youtube.com" in t or "youtu.be" in t]
+    if not yt or len(yt) == len(targets):
+        return targets
+    rest = [t for t in targets if t not in yt]
+    log.info("youtube is bot-checking this server - trying %d other source(s) "
+             "for %s first", len(rest), meta.display)
+    return rest + yt
+
+
 @run_in_thread(heavy=True)
 def download_track(meta: TrackMeta) -> Path:
     """
@@ -1839,6 +1882,8 @@ def download_track(meta: TrackMeta) -> Path:
         # Spotify / iTunes / Deezer entries carry metadata only - the audio
         # itself still has to be located, and verified.
         targets = _locate_audio(meta)
+
+    targets = _demote_blocked(targets, meta)
 
     extra = {
         # Highest-bitrate audio available. When it is already AAC, ExtractAudio
@@ -1930,7 +1975,34 @@ def download_track(meta: TrackMeta) -> Path:
     # Whatever has been produced by then is used - a thin file beats the
     # nothing that a silent overrun delivers.
     started_at = time.monotonic()
+
+    # Whether YouTube was ALREADY refusing this address before this download
+    # started. What follows only reacts to a block this attempt ran into.
+    yt_was_blocked = _yt_blocked()
+
     for i, target in enumerate(targets):
+        # Do not keep knocking on a door that just got shut.
+        #
+        # Measured here, not guessed: the same video id came back OK, then
+        # BOT-CHECK after a burst of requests, then OK again after ninety
+        # seconds of quiet - and a video that was refused mid-burst was served
+        # on the next cold try. The bot check is largely about REQUEST RATE
+        # from an address, and this bot was its own worst source of that: a
+        # seven-rung ladder across three candidates is twenty-one player
+        # requests for one song.
+        #
+        # So once YouTube has said it during THIS download, the remaining
+        # YouTube candidates are not attempted. They would fail for the same
+        # reason, they would each cost a ladder, and every one of them digs
+        # the address in deeper - the block outlasts the song it was spent on.
+        if (not yt_was_blocked and _yt_blocked()
+                and ("youtube.com" in target or "youtu.be" in target)):
+            log.warning("skipping the remaining youtube candidate %d/%d for %s "
+                        "- the bot check has already started and asking again "
+                        "only prolongs it", i + 1, len(targets), meta.display)
+            reasons.append("sign in to confirm")
+            continue
+
         if i and time.monotonic() - started_at > _DOWNLOAD_BUDGET:
             log.warning("download of %r hit the %.0fs budget after %d/%d "
                         "candidates - stopping rather than running on",
@@ -1943,6 +2015,18 @@ def download_track(meta: TrackMeta) -> Path:
         except Exception as e:
             last = e
             reasons.append(str(e).lower())
+
+            # Record the CAUSE, not just the sentence shown to the user.
+            #
+            # ytdlp_run raises through _friendly(), which turns "Sign in to
+            # confirm you're not a bot" into Persian prose. reasons then held
+            # only that prose, _download_failed matched none of its English
+            # markers, and the one failure the bot knows exactly how to
+            # explain came out as the generic "all N candidates failed".
+            # The translation is for the user; the classifier needs the
+            # original.
+            if _yt_blocked():
+                reasons.append("sign in to confirm")
             log.info("candidate %d/%d unusable (%s) - trying the next",
                      i + 1, len(targets), str(e)[:120])
             continue
