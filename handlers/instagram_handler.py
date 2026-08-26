@@ -107,7 +107,10 @@ async def _profile_menu(msg, username: str, context: ContextTypes.DEFAULT_TYPE) 
             [
                 InlineKeyboardButton(t(msg.chat_id, "📸 عکس پروفایل"), callback_data=f"ig:pp:{username}"),
                 InlineKeyboardButton(t(msg.chat_id, "📖 استوری‌ها"), callback_data=f"ig:story:{username}"),
-            ]
+            ],
+            [
+                InlineKeyboardButton(t(msg.chat_id, "✨ هایلایت‌ها"), callback_data=f"ig:hl:{username}"),
+            ],
         ]
     )
     await msg.reply_text(f"چی از پروفایل *{username}* میخوای؟", parse_mode="Markdown", reply_markup=kb)
@@ -116,7 +119,12 @@ async def _profile_menu(msg, username: str, context: ContextTypes.DEFAULT_TYPE) 
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
-    _, action, username = query.data.split(":", 2)
+    # Four segments at most: ig:<action>:<username>[:<index>]. Neither a
+    # username nor a shortcode can contain a colon, so the split is
+    # unambiguous and the older three-segment callbacks are unaffected.
+    parts = query.data.split(":", 3)
+    _, action, username = parts[0], parts[1], parts[2]
+    arg = parts[3] if len(parts) > 3 else ""
 
     # Music recognition on a previously downloaded reel/video.
     if action == "rec":
@@ -137,6 +145,12 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await recognize_from_file(query.message, Path(path_str))
         return
 
+    # Listing the highlights is a menu, not a download - it gets its own
+    # path so it does not sit under a "downloading..." status it never earns.
+    if action == "hl":
+        await _highlight_menu(query, context, username)
+        return
+
     status = await query.message.reply_text(t(query.message.chat_id, "⬇️ گرفتن از اینستا…"))
     try:
         if action == "pp":
@@ -145,6 +159,16 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         elif action == "story":
             files = await ig.fetch_story(username)
             await _send_media(query.message, files)
+        elif action == "hli":
+            trays = context.chat_data.get("ig_hl", {}).get(username) or []
+            try:
+                tray = trays[int(arg)]
+            except (ValueError, IndexError):
+                await status.edit_text(t(query.message.chat_id,
+                                         "این منو قدیمیه — دوباره لینک پیج رو بفرست."))
+                return
+            files = await ig.fetch_highlight(username, tray["id"])
+            await _send_media(query.message, files)
         else:
             await status.edit_text(t(query.message.chat_id, "اکشن نامعتبر."))
             return
@@ -152,6 +176,45 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await status.edit_text(f"❌ {scrub(e)}")
         return
     await status.delete()
+
+
+async def _highlight_menu(query, context: ContextTypes.DEFAULT_TYPE,
+                          username: str) -> None:
+    """Offer the highlights on a profile, one button each.
+
+    The tray is held in chat_data and the buttons carry an INDEX rather than
+    a highlight id. Telegram caps callback_data at 64 bytes, and
+    "ig:hli:<username>:highlight:17xxxxxxxxxxxxxxxx" passes that on any
+    ordinary username - the button would simply not work, with nothing in
+    the logs to say why.
+    """
+    status = await query.message.reply_text(
+        t(query.message.chat_id, "🔎 دیدن هایلایت‌ها…"))
+    try:
+        trays = await ig.list_highlights(username)
+    except Exception as e:
+        await status.edit_text(f"❌ {scrub(e)}")
+        return
+
+    context.chat_data.setdefault("ig_hl", {})[username] = trays
+    rows, row = [], []
+    for i, tray in enumerate(trays):
+        label = tray["title"]
+        if tray["count"]:
+            label = f"{label} ({tray['count']})"
+        row.append(InlineKeyboardButton(label[:30],
+                                        callback_data=f"ig:hli:{username}:{i}"))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+
+    await status.edit_text(
+        f"✨ هایلایت‌های *{username}* — کدوم رو می‌خوای؟",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
 
 
 # ---------- media sending ----------

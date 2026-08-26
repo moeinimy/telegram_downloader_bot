@@ -236,6 +236,9 @@ _EN: dict[str, str] = {
     "آهنگ این ویدیو رو برات پیدا کنم؟": "Want me to identify the music in this video?",
     "📸 عکس پروفایل": "📸 Profile picture",
     "📖 استوری‌ها": "📖 Stories",
+    "✨ هایلایت‌ها": "✨ Highlights",
+    "🔎 دیدن هایلایت‌ها…": "🔎 Looking up highlights…",
+    "این منو قدیمیه — دوباره لینک پیج رو بفرست.": "That menu is stale — send the profile link again.",
     "⌛ فایل ویدیو دیگه موجود نیست. دوباره لینک رو بفرست.":
         "⌛ That video is no longer available. Send the link again.",
     "اکشن نامعتبر.": "Invalid action.",

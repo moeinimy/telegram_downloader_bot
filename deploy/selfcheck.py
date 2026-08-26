@@ -3396,6 +3396,118 @@ check("recognize: the last error is recorded for /recstatus",
       _rec.last_error)
 
 
+# --------------------------------------------------------------------------
+# Instagram: stories, highlights, profile pictures
+# --------------------------------------------------------------------------
+import asyncio as _ig_aio  # noqa: E402
+import inspect as _ig_inspect  # noqa: E402
+
+from handlers import instagram_handler as _ih  # noqa: E402
+from modules import instagram as _igm  # noqa: E402
+
+_ig_src = _ig_inspect.getsource(_igm)
+
+# Instagram has two APIs and they do not accept the same credential. A
+# sessionid copied out of a browser is issued to the WEB api and is refused by
+# the mobile one permanently. Stories used to be wired only to the mobile side
+# (instagrapi, instaloader), so the one credential an operator can actually
+# obtain could never reach them - both "options" the failure message offered
+# led to the same wall.
+check("ig: stories try the web session before the mobile api",
+      _ig_src.index("_story_urls_web(username)")
+      < _ig_src.index("urls = _story_urls_private(username)"))
+check("ig: the profile picture tries the web session too",
+      "ig_stories.profile_pic_url" in _ig_src)
+
+# unavatar.io moved its Instagram provider behind a paid plan, so the
+# anonymous route now answers 403 EPRO. picuki and imginn 403 this server as
+# well, and web_profile_info answers 429 logged out - there is no dependable
+# logged-out route left, which is why the session is tried FIRST now rather
+# than as a fallback.
+check("ig: the retired free mirror is reported as retired, not as a bug",
+      "EPRO" in _ig_src)
+
+# Telegram caps callback_data at 64 bytes. A highlight id is "highlight:"
+# plus eighteen digits, so a button carrying one would overflow on any
+# ordinary username - and fail silently, with nothing in the logs to say why.
+# The buttons carry an index into chat_data instead.
+_ig_tray = [{"id": f"highlight:1785123456789012{n}", "title": "t" * 40,
+             "count": n} for n in range(4)]
+_ig_sent = []
+
+
+class _IgStatus:
+    chat_id = 1
+
+    async def edit_text(self, text, **kw):
+        _ig_sent.append((text, kw))
+
+    async def delete(self):
+        pass
+
+
+class _IgMsg:
+    chat_id = 1
+
+    async def reply_text(self, text, **kw):
+        _ig_sent.append((text, kw))
+        return _IgStatus()
+
+
+class _IgQuery:
+    def __init__(self, data):
+        self.data = data
+        self.message = _IgMsg()
+
+    async def answer(self):
+        pass
+
+
+def _ig_fire(data, ctx):
+    _ig_aio.run(_ih.on_callback(
+        type("U", (), {"callback_query": _IgQuery(data)})(), ctx))
+
+
+_ig_real_list = _igm.list_highlights
+_ig_real_fetch = _igm.fetch_highlight
+_ig_real_send = _ih._send_media
+try:
+    _igm.list_highlights = lambda u: _ig_aio.sleep(0, result=_ig_tray)
+    _ig_ctx = type("C", (), {"chat_data": {}})()
+    _ig_sent.clear()
+    _ig_fire("ig:hl:" + "u" * 30, _ig_ctx)
+    _ig_kb = _ig_sent[-1][1]["reply_markup"].inline_keyboard
+    _ig_worst = max(len(b.callback_data.encode()) for row in _ig_kb for b in row)
+    check("ig: highlight buttons fit inside Telegram's 64-byte callback_data",
+          _ig_worst <= 64, f"longest {_ig_worst} bytes")
+
+    # The button carries an index, so it has to resolve back to the right
+    # highlight - an off-by-one here downloads somebody else's album.
+    _ig_picked = {}
+
+    async def _ig_fake_fetch(username, hid):
+        _ig_picked["id"] = hid
+        return []
+
+    _igm.fetch_highlight = _ig_fake_fetch
+    _ih._send_media = lambda msg, files: _ig_aio.sleep(0)
+    _ig_fire("ig:hli:" + "u" * 30 + ":2", _ig_ctx)
+    check("ig: the index on the button resolves to that highlight",
+          _ig_picked.get("id") == _ig_tray[2]["id"], str(_ig_picked))
+
+    # chat_data does not survive a restart, and the buttons do.
+    _ig_ctx.chat_data.clear()
+    _ig_sent.clear()
+    _ig_fire("ig:hli:" + "u" * 30 + ":2", _ig_ctx)
+    check("ig: a highlight button from before a restart says so",
+          "\u0642\u062f\u06cc\u0645\u06cc" in _ig_sent[-1][0],
+          _ig_sent[-1][0][:50])
+finally:
+    _igm.list_highlights = _ig_real_list
+    _igm.fetch_highlight = _ig_real_fetch
+    _ih._send_media = _ig_real_send
+
+
 print()
 if failures:
     print(f"=== {len(failures)} CHECK(S) FAILED: {failures} ===")

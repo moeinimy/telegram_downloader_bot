@@ -129,7 +129,7 @@ def _cookies() -> dict:
     return jar
 
 
-def _headers() -> dict:
+def _headers(referer: str = "") -> dict:
     # csrftoken comes from the live jar when Instagram has rotated it; the
     # configured value is only the seed.
     csrf = settings.ig_dm_csrftoken
@@ -144,7 +144,10 @@ def _headers() -> dict:
         "X-IG-WWW-Claim": _www_claim,
         "X-CSRFToken": csrf or "missing",
         "X-Requested-With": "XMLHttpRequest",
-        "Referer": "https://www.instagram.com/direct/inbox/",
+        # Coherent with the endpoint being called. Instagram compares the
+        # two, and a profile lookup that claims to come from the inbox page
+        # is a mismatch a browser would never produce.
+        "Referer": referer or "https://www.instagram.com/direct/inbox/",
         "Accept": "*/*",
         "Accept-Language": "en-US,en;q=0.9",
         "Sec-Fetch-Site": "same-origin",
@@ -362,12 +365,23 @@ def reset_client() -> None:
         _session = None
 
 
-def _get(url: str, params: dict) -> dict:
+def get(url: str, params: dict, referer: str = "") -> dict:
+    """The authenticated web GET, for the modules that are not Direct.
+
+    Public because stories, highlights and profile pictures need exactly
+    this - the rotated claim, the rotated sessionid written back, checkpoint
+    detection and the request counter - and re-implementing any of it beside
+    this file is how two sessions start disagreeing about the same account.
+    """
+    return _get(url, params, referer)
+
+
+def _get(url: str, params: dict, referer: str = "") -> dict:
     global _www_claim
 
     client = _client()
     _count_request()
-    response = client.get(url, params=params, headers=_headers())
+    response = client.get(url, params=params, headers=_headers(referer))
 
     # Instagram hands back a rotated claim and, periodically, a rotated
     # sessionid. Both have to be kept or the session dies a few calls later.

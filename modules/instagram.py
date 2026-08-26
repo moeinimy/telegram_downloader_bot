@@ -303,6 +303,20 @@ def fetch_profile_pic(username: str) -> Path:
     target.mkdir(parents=True, exist_ok=True)
     out = target / f"{safe_filename(username)}_pp.jpg"
 
+    # The web session first. It is the one credential an operator can
+    # actually obtain - a sessionid copied out of a browser - and it is the
+    # only route left: the anonymous mirror this used to fall back on now
+    # requires a paid plan, and Instagram answers a logged-out profile
+    # lookup with 429.
+    from modules import ig_stories
+
+    if ig_stories.usable():
+        try:
+            return _download_urls([ig_stories.profile_pic_url(username)], target)[0]
+        except Exception as e:
+            log.warning("web-session profile pic failed for %s (%s) - "
+                        "trying the other routes.", username, e)
+
     if settings.has_instagram_session:
         _throttle()
         try:
@@ -319,6 +333,34 @@ def fetch_profile_pic(username: str) -> Path:
         return _anonymous_profile_pic(username, out)
     except Exception as e:
         raise _friendly_error(e) from e
+
+
+def _story_urls_web(username: str) -> list[str]:
+    """Active stories over the browser session.
+
+    Tried before instagrapi because of which credential each one accepts. A
+    sessionid copied out of a browser is issued to the WEB api; the mobile
+    api refuses it permanently. Stories used to be wired only to the mobile
+    side, so the cookie the operator had could never reach them - both
+    "options" the failure message offered led to the same wall.
+    """
+    from modules import ig_stories
+
+    if not ig_stories.usable():
+        return []
+    try:
+        urls, user = ig_stories.story_urls(username)
+        if not urls and user.get("is_private"):
+            raise RuntimeError(
+                f"«{username}» پیجش خصوصیه و اکانت بات فالوش نمی‌کنه، "
+                "برای همین استوری‌هاش دیده نمی‌شن."
+            )
+        return urls
+    except RuntimeError:
+        raise
+    except Exception as e:
+        log.info("instagram: web story fetch failed for %s: %s", username, e)
+        return []
 
 
 def _story_urls_private(username: str) -> list[str]:
@@ -354,6 +396,12 @@ def fetch_story(username: str) -> list[Path]:
     """
     target = settings.download_dir / "instagram" / f"stories_{safe_filename(username)}"
 
+    urls = _story_urls_web(username)
+    if urls:
+        log.info("instagram: %d story item(s) for %s via the web session",
+                 len(urls), username)
+        return _download_urls(urls, target)
+
     urls = _story_urls_private(username)
     if urls:
         log.info("instagram: %d story item(s) for %s via the logged-in account", len(urls), username)
@@ -379,6 +427,42 @@ def fetch_story(username: str) -> list[Path]:
         raise RuntimeError("این کاربر الان استوری فعالی نداره.")
     except Exception as e:
         raise _friendly_error(e) from e
+
+
+@run_in_thread(heavy=True)
+def list_highlights(username: str) -> list[dict]:
+    """The highlight covers on a profile, for the menu to offer.
+
+    Separate from fetching one because a profile can hold dozens and nobody
+    asked for all of them - the menu is the point.
+    """
+    from modules import ig_stories
+
+    if not ig_stories.usable():
+        raise RuntimeError(_NO_SESSION_MSG)
+    trays, user = ig_stories.highlights(username)
+    if not trays:
+        if user.get("is_private"):
+            raise RuntimeError(
+                f"«{username}» پیجش خصوصیه و اکانت بات فالوش نمی‌کنه."
+            )
+        raise RuntimeError(f"«{username}» هایلایتی نداره.")
+    return trays
+
+
+@run_in_thread(heavy=True)
+def fetch_highlight(username: str, highlight_id: str) -> list[Path]:
+    """Every item inside one highlight."""
+    from modules import ig_stories
+
+    if not ig_stories.usable():
+        raise RuntimeError(_NO_SESSION_MSG)
+    urls = ig_stories.highlight_urls(highlight_id, username)
+    if not urls:
+        raise RuntimeError("این هایلایت خالیه یا دیگه در دسترس نیست.")
+    target = (settings.download_dir / "instagram" /
+              f"hl_{safe_filename(username)}_{safe_filename(highlight_id)}")
+    return _download_urls(urls, target)
 
 
 # ---------------- anonymous (yt-dlp) path ----------------
@@ -1246,12 +1330,30 @@ def _ytdlp_fetch(shortcode: str, target: Path) -> list[Path]:
 
 
 def _anonymous_profile_pic(username: str, out: Path) -> Path:
-    """Profile pictures are available from unauthenticated mirrors."""
+    """The last resort, and it no longer works for most accounts.
+
+    Kept because it costs one request and occasionally still answers, but it
+    is not a route to rely on: unavatar.io moved its Instagram provider
+    behind a paid plan and now returns
+
+        403  {"code":"EPRO","message":"This provider requires a pro plan"}
+
+    Checked at the same time: picuki and imginn both 403 this server, and
+    Instagram's own web_profile_info answers 429 without a session. There is
+    no dependable logged-out way to fetch a profile picture any more, which
+    is why the web session is tried first rather than last.
+    """
     import httpx
 
     url = f"https://unavatar.io/instagram/{username}?fallback=false"
     with httpx.Client(timeout=20, follow_redirects=True) as client:
         r = client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code == 403 and "EPRO" in r.text:
+            raise RuntimeError(
+                "عکس پروفایل بدون لاگین دیگه در دسترس نیست — سرویس رایگانی "
+                "که استفاده می‌کردیم پولی شد.\n"
+                "روی سرور:  botctl igdirect"
+            )
         r.raise_for_status()
         if not r.headers.get("content-type", "").startswith("image"):
             raise RuntimeError("عکس پروفایل رو پیدا نکردم.")
