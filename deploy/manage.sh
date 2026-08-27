@@ -1676,6 +1676,16 @@ do_igtest() {
     run_py "$PROJECT_DIR/deploy/igtest.py"
 }
 
+do_igprobe() {
+    echo; info "=== تست اندپوینت‌های پروفایل / استوری / هایلایت ==="
+    # do_igtest covers the DIRECT side - can this session read the inbox.
+    # This covers the other three buttons, which use different endpoints and
+    # fail for different reasons. "None of the three options work" and "the
+    # session is fine but Instagram retired one endpoint" look identical from
+    # the chat, and only asking each endpoint separately tells them apart.
+    run_py "$PROJECT_DIR/deploy/igprobe.py" "${1:-instagram}"
+}
+
 do_shazamtest() {
     echo; info "=== تست زنده‌ی شزم ==="
     # "FailedDecodeJson" only says the body was not json. Whether that body
@@ -2219,6 +2229,7 @@ case "${1:-}" in
     deps)    do_deps;    exit 0 ;;
     shazamtest) do_shazamtest "${2:-}"; exit $? ;;
     igtest2) do_igtest; exit $? ;;
+    igprobe) do_igprobe "$2"; exit $? ;;
     igwatch) do_igwatch "${2:-}"; exit $? ;;
     igmqtt)  do_igmqtt;  exit $? ;;
     igreset) do_igreset; exit $? ;;

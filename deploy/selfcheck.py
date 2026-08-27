@@ -3508,6 +3508,99 @@ finally:
     _ih._send_media = _ig_real_send
 
 
+# A retired endpoint is not a missing account.
+#
+# web_profile_info answers, from the server, with
+#
+#     HTTP 400 {"message":"Asset asset://laser.provider/
+#               ig_business_category_subvertical has been deleted.
+#               You cannot use this schema"}
+#
+# Instagram failing to serialise its own response: a field was removed from
+# the schema that endpoint still declares. Nothing about the request is
+# wrong and no header fixes it - other Instagram tools hit the same wall at
+# the same time.
+from modules import ig_stories as _igs  # noqa: E402
+from modules import ig_web as _igw  # noqa: E402
+
+_igs_calls = []
+_IGS_400 = ('HTTP 400: {"message":"Asset asset://laser.provider/'
+            'ig_business_category_subvertical has been deleted. '
+            'You cannot use this schema",')
+# Two accounts whose names share a prefix. Picking the first search hit
+# instead of the exact match downloads a different person's stories.
+_IGS_TOP = {"users": [
+    {"user": {"pk": "999", "username": "someone_fan",
+              "profile_pic_url": "https://cdn/wrong.jpg"}},
+    {"user": {"pk": "12345", "username": "SomeOne", "is_private": False,
+              "profile_pic_url": "https://cdn/small.jpg"}},
+]}
+
+
+def _igs_fake_get(url, params, referer=""):
+    _igs_calls.append(url)
+    if "web_profile_info" in url:
+        raise RuntimeError(_IGS_400)
+    if "topsearch" in url:
+        return _IGS_TOP
+    if "/info/" in url:
+        return {"user": {"hd_profile_pic_url_info": {"url": "https://cdn/HD.jpg"}}}
+    if "reels_media" in url:
+        return {"reels_media": [{"items": [
+            {"video_versions": [{"url": "https://cdn/clip.mp4"}],
+             "image_versions2": {"candidates": [{"url": "https://cdn/cover.jpg"}]}},
+        ]}]}
+    return {}
+
+
+_igs_real_get = _igw.get
+_igs_real_usable = _igw.usable
+try:
+    _igw.get = _igs_fake_get
+    _igw.usable = lambda: True
+    _igs._retired.clear()
+
+    _igs_user = _igs.profile("someone")
+    check("ig: a retired endpoint falls through to the search route",
+          _igs_user["id"] == "12345", str(_igs_user))
+    check("ig: and the exact username wins over a lookalike",
+          _igs_user["username"] == "SomeOne", _igs_user["username"])
+
+    _igs_calls.clear()
+    _igs.profile("someone")
+    check("ig: the retired endpoint is not paid for on every button press",
+          not any("web_profile_info" in c for c in _igs_calls),
+          str([c.rsplit("/", 2)[-2] for c in _igs_calls]))
+
+    # A story that has both is a video; the image is only its cover frame,
+    # and sending that looks like success while losing what was asked for.
+    check("ig: a story sends the clip, not its cover frame",
+          _igs.story_urls("someone")[0] == ["https://cdn/clip.mp4"])
+    check("ig: the avatar is upgraded to the hd rendition",
+          _igs.profile_pic_url("someone") == "https://cdn/HD.jpg")
+
+    # "Could not find that account" is the wrong thing to say when the
+    # account is fine and every route was refused.
+    _igs._retired.clear()
+
+    def _igs_all_fail(url, params, referer=""):
+        raise RuntimeError("HTTP 401: sessionid rejected")
+
+    _igw.get = _igs_all_fail
+    try:
+        _igs.profile("someone")
+        _igs_msg = ""
+    except Exception as _igs_e:
+        _igs_msg = str(_igs_e)
+    check("ig: a total failure reports what each route said",
+          "401" in _igs_msg and "topsearch" in _igs_msg,
+          _igs_msg.replace("\n", " | ")[:80])
+finally:
+    _igw.get = _igs_real_get
+    _igw.usable = _igs_real_usable
+    _igs._retired.clear()
+
+
 print()
 if failures:
     print(f"=== {len(failures)} CHECK(S) FAILED: {failures} ===")
