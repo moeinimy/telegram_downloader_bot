@@ -526,6 +526,28 @@ def _is_retryable(e: Exception) -> bool:
 # reporting it as the latter told users a song did not exist.
 _BOT_CHECK = ("sign in to confirm", "confirm you're not a bot", "not a bot",
               "use --cookies")
+
+# An age gate wears the bot check's clothes and is nothing like it.
+#
+# YouTube says "Sign in to confirm your AGE", and _BOT_CHECK matches on
+# "sign in to confirm" - so one age-restricted link was being read as this
+# address being refused. The consequences went well past the wrong error
+# message: it set the bot-check clock, which routes EVERY subsequent request
+# through the proxy for ten minutes, and made the bot report a perfectly
+# ordinary restricted video as "YouTube may be refusing this server".
+#
+# Checked against all seven clients on one such video: android_vr, default,
+# ios, mweb, web_safari all say "confirm your age", web_embedded says
+# "content is age-restricted", tv_simply says "age-restricted and only
+# available to". Every one of them refuses, which is what makes two of them
+# agreeing enough to stop - and none of it is about the address, which is
+# what makes switching exits pointless.
+_AGE_GATE = ("confirm your age", "age-restricted", "age restricted",
+             "inappropriate for some users")
+
+
+def _is_age_gate(text: str) -> bool:
+    return any(marker in text for marker in _AGE_GATE)
 _last_bot_check = 0.0
 
 # How many clients may say "not a bot" before the ladder stops asking.
@@ -557,6 +579,15 @@ def bot_checked_recently(within: float = 600.0) -> bool:
 
 def _friendly(e: Exception | None) -> RuntimeError:
     s = str(e or "").lower()
+    # Before the "sign in" branch below, which would otherwise swallow
+    # "Sign in to confirm your age" and report a restricted video as a
+    # server problem.
+    if _is_age_gate(s):
+        return RuntimeError(
+            "این ویدیو محدودیت سنی داره و یوتیوب بدون اکانت نمی‌دش.\n"
+            "ربطی به سرور یا این ویدیو نداره — خود یوتیوب لاگین می‌خواد.\n"
+            "راه‌حل روی سرور:  botctl ytcookies"
+        )
     if "private" in s or "members-only" in s:
         return RuntimeError("این ویدیو خصوصیه و قابل دانلود نیست.")
     if "removed" in s or "unavailable" in s or "not a bot" in s or "sign in" in s:
@@ -640,6 +671,11 @@ def ytdlp_run(extra: dict, fn: Callable[[YoutubeDL], T], kind: str = "",
     thin_seen = False
     last: Exception | None = None
     bot_checks = 0
+    # Refusals that are a verdict rather than a data point - a bot check or
+    # an age gate. Counted together because the stopping rule is the same
+    # (two clients agreeing settles it) and kept apart from bot_checks
+    # because only one of them is about the address.
+    verdicts = 0
     # Which exit has already been told to sign in on this walk, if any.
     skip_direct: bool | None = None
     for client, via_proxy in _rungs(kind):
@@ -691,11 +727,18 @@ def ytdlp_run(extra: dict, fn: Callable[[YoutubeDL], T], kind: str = "",
             if not _is_retryable(e):
                 raise
 
-            if any(marker in str(e).lower() for marker in _BOT_CHECK):
+            _text = str(e).lower()
+            if _is_age_gate(_text):
+                # A verdict about the video, so two clients agreeing is
+                # enough - but not a verdict about the address, so none of
+                # the exit machinery below applies.
+                verdicts += 1
+            elif any(marker in _text for marker in _BOT_CHECK):
                 _last_bot_check = time.monotonic()
                 if not via_proxy:
                     _last_direct_bot_check = _last_bot_check
                 bot_checks += 1
+                verdicts += 1
 
             # It led the ladder because it worked last time and it has just
             # stopped, so drop it rather than paying for the same refusal on
@@ -709,7 +752,7 @@ def ytdlp_run(extra: dict, fn: Callable[[YoutubeDL], T], kind: str = "",
             # Stop here rather than at the next rung, so the journal still
             # names the client that refused before it says why nobody else
             # was asked.
-            if bot_checks >= _BOT_CHECKS_BEFORE_GIVING_UP:
+            if verdicts >= _BOT_CHECKS_BEFORE_GIVING_UP:
                 log.warning("yt-dlp client '%s'%s refused %s after %.1fs (%s)",
                             client or "default",
                             " via the proxy" if via_proxy else "",
@@ -719,7 +762,7 @@ def ytdlp_run(extra: dict, fn: Callable[[YoutubeDL], T], kind: str = "",
                 # answers a bot check, so the walk stops asking here and
                 # carries on from the other side.
                 other = [1 for c, viap in _rungs(kind) if viap != via_proxy]
-                if other:
+                if other and bot_checks:
                     log.warning(
                         "yt-dlp: %d clients were told to sign in %s - trying "
                         "the %s exit instead.", bot_checks,

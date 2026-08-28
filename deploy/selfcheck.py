@@ -3633,6 +3633,109 @@ finally:
     _igs._retired.clear()
 
 
+# An age gate wears the bot check's clothes.
+#
+# YouTube says "Sign in to confirm your AGE", and _BOT_CHECK matches on
+# "sign in to confirm" - so one age-restricted link was read as this address
+# being refused. The wrong error message was the small part: it also set the
+# bot-check clock, which routes EVERY later request through the proxy for ten
+# minutes. One restricted video slowed the whole bot down.
+#
+# These are the seven real answers, measured against tJbzMqJGH4k.
+_age_asked = []
+_AGE_ANSWERS = {
+    "android_vr": "ERROR: [youtube] x: Sign in to confirm your age. Use --cookies-from-browser",
+    "default": "ERROR: [youtube] x: Sign in to confirm your age. Use --cookies-from-browser",
+    "ios": "ERROR: [youtube] x: Sign in to confirm your age. This video may be inappropriate for some users.",
+    "mweb": "ERROR: [youtube] x: Sign in to confirm your age.",
+    "web_embedded": "ERROR: [youtube] x: Sorry, this content is age-restricted",
+    "web_safari": "ERROR: [youtube] x: Sign in to confirm your age.",
+    "tv_simply": "ERROR: [youtube] x: This video is age-restricted and only available to signed-in users",
+}
+
+
+class _AgeYDL:
+    def __init__(self, opts):
+        _age_asked.append(
+            ((opts.get("extractor_args", {})
+              .get("youtube", {}).get("player_client", ["default"]))[0]
+             or "default",
+             "proxy" if opts.get("proxy") else "direct"))
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _age_gated(_ydl):
+    raise RuntimeError(_AGE_ANSWERS[_age_asked[-1][0]])
+
+
+_age_real_ydl = _yt.YoutubeDL
+_age_real_proxy = _yt.settings.yt_proxy
+_age_saved_ref = dict(_yt._refusals)
+_age_saved_pref = dict(_yt._preferred)
+try:
+    _yt.YoutubeDL = _AgeYDL
+    object.__setattr__(_yt.settings, "yt_proxy", "socks5h://127.0.0.1:40000")
+    _yt._refusals.clear()
+    _yt._preferred.clear()
+    _yt._last_bot_check = 0.0
+    _yt._last_direct_bot_check = 0.0
+    _age_asked.clear()
+    try:
+        _yt.ytdlp_run({}, _age_gated, kind="agechk")
+        _age_msg = ""
+    except Exception as _age_e:
+        _age_msg = str(_age_e)
+
+    check("age gate: it is reported as a restricted video, not a server problem",
+          "\u0633\u0646\u06cc" in _age_msg and "ytcookies" in _age_msg,
+          _age_msg.splitlines()[0][:60] if _age_msg else "(no error)")
+    check("age gate: two clients agreeing is enough",
+          len(_age_asked) == _yt._BOT_CHECKS_BEFORE_GIVING_UP,
+          f"asked {[c for c, _ in _age_asked]}")
+    # A different address cannot make someone old enough.
+    check("age gate: the tunnel is not tried, because it cannot help",
+          {e for _, e in _age_asked} == {"direct"},
+          str(sorted({e for _, e in _age_asked})))
+    # The part that made one link slow everything down.
+    check("age gate: the bot-check clock is left alone",
+          not _yt.bot_checked_recently())
+    check("age gate: so the next request still opens on the direct exit",
+          not _yt._rungs("agechk")[0][1])
+
+    # And a genuine bot check must still do all of it.
+    _yt._refusals.clear()
+    _yt._preferred.clear()
+    _age_asked.clear()
+
+    def _real_botcheck(_ydl):
+        raise RuntimeError("ERROR: Sign in to confirm you\u2019re not a bot.")
+
+    try:
+        _yt.ytdlp_run({}, _real_botcheck, kind="agechk")
+    except Exception:
+        pass
+    check("age gate: a real bot check is still treated as one",
+          _yt.bot_checked_recently() and _yt._rungs("agechk")[0][1])
+    check("age gate: and it still falls through to the other exit",
+          {e for _, e in _age_asked} == {"direct", "proxy"},
+          str(sorted({e for _, e in _age_asked})))
+finally:
+    _yt.YoutubeDL = _age_real_ydl
+    object.__setattr__(_yt.settings, "yt_proxy", _age_real_proxy)
+    _yt._refusals.clear()
+    _yt._refusals.update(_age_saved_ref)
+    _yt._preferred.clear()
+    _yt._preferred.update(_age_saved_pref)
+    _yt._last_bot_check = 0.0
+    _yt._last_direct_bot_check = 0.0
+    _yt._save_preferred()
+
+
 print()
 if failures:
     print(f"=== {len(failures)} CHECK(S) FAILED: {failures} ===")
