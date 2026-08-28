@@ -2280,6 +2280,7 @@ try:
     _yt._refusals.clear()
     _yt._preferred.clear()
     _yt._last_bot_check = 0.0
+    _yt._last_direct_bot_check = 0.0
     _px_asked.clear()
     _yt.ytdlp_run({}, lambda _ydl: "served", kind="pxok")
     check("proxy: a download that works never touches the tunnel",
@@ -2290,6 +2291,7 @@ try:
     _yt._refusals.clear()
     _yt._preferred.clear()
     _yt._last_bot_check = 0.0
+    _yt._last_direct_bot_check = 0.0
     _px_asked.clear()
 
     def _proxy_only(_ydl):
@@ -2305,6 +2307,35 @@ try:
           == _yt._BOT_CHECKS_BEFORE_GIVING_UP,
           f"{_px_asked} of {len(_yt._CLIENT_LADDER)} rungs")
 
+    # The tunnel used to get two rungs. That was the don't-hammer rule from
+    # the bot check applied where it does not belong - a bot check is about
+    # one address, and the proxy is a different address - so the exit that
+    # actually works was capped at two clients. Probes that used to succeed
+    # on the fourth or fifth client just failed.
+    _yt._last_direct_bot_check = 0.0
+    check("proxy: the exit gets the whole ladder, not a couple of rungs",
+          sum(1 for _, viap in _yt._rungs("pxok") if viap)
+          == len(_yt._ladder("pxok")),
+          f"{sum(1 for _, viap in _yt._rungs('pxok') if viap)} proxied rungs")
+
+    # And direct always went first, even right after direct was refused -
+    # two refusals of waiting in front of every request, paid over and over
+    # to re-learn the same answer.
+    check("proxy: while direct answers, direct leads",
+          not _yt._rungs("pxok")[0][1])
+    _yt._last_direct_bot_check = _yt.time.monotonic()
+    check("proxy: once direct is refusing, the tunnel leads",
+          _yt._rungs("pxok")[0][1])
+    check("proxy: and direct is still behind it, because the block lifts",
+          any(not viap for _, viap in _yt._rungs("pxok")))
+    _yt._last_direct_bot_check = 0.0
+
+    # A bot check through the TUNNEL is not a reason to lead with the tunnel.
+    _yt._last_bot_check = _yt.time.monotonic()
+    check("proxy: a refusal via the tunnel does not promote the tunnel",
+          not _yt._rungs("pxok")[0][1])
+    _yt._last_bot_check = 0.0
+
     object.__setattr__(_yt.settings, "yt_proxy", "")
     check("proxy: with no exit configured the ladder is direct only",
           all(not viap for _, viap in _yt._rungs("pxok")))
@@ -2316,6 +2347,7 @@ finally:
     _yt._preferred.clear()
     _yt._preferred.update(_px_saved_pref)
     _yt._last_bot_check = _px_saved_check
+    _yt._last_direct_bot_check = 0.0
     _yt._save_preferred()
 
 check("ladder: a refusing client is written down, not just remembered",

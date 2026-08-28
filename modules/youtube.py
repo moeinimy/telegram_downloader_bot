@@ -570,25 +570,49 @@ def _friendly(e: Exception | None) -> RuntimeError:
 # How many clients to re-ask through the proxy. The exit answers the bot
 # check or it does not; a third opinion from the same address costs a tunnel
 # round trip to learn nothing.
-_PROXY_RUNGS = 2
+# How long a bot check on the DIRECT exit keeps the proxy in front.
+#
+# Tracked apart from _last_bot_check because that one is set by whichever
+# exit was refused, and "the tunnel was refused" is not a reason to lead with
+# the tunnel.
+_DIRECT_BLOCKED_FOR = 600.0
+_last_direct_bot_check = 0.0
+
+
+def _direct_is_refusing() -> bool:
+    return bool(_last_direct_bot_check
+                and time.monotonic() - _last_direct_bot_check < _DIRECT_BLOCKED_FOR)
 
 
 def _rungs(kind: str) -> list[tuple[str, bool]]:
-    """The ladder as (client, via_proxy) pairs - direct first, tunnel after.
+    """The ladder as (client, exit) pairs.
 
-    The proxy used to be applied to every request the moment YT_PROXY was
-    set, and that made the cure cost more than the disease. Searches were
-    never the thing being refused; the media transfer is the largest thing
-    the bot moves; and both were sent down a WARP hop that exists only to
-    change which address YouTube sees. Downloads worked and crawled.
+    Two things this got wrong when the proxy stopped being applied to
+    everything, both of which made the bot worse than the blanket proxy it
+    replaced:
 
-    Direct is the server at its own speed. The tunnel is what direct could
-    not get, and nothing else.
+    The tunnel used to get TWO rungs. That was the don't-hammer rule from the
+    bot check applied where it does not belong - a bot check is about one
+    address, and the proxy is a different address, so capping the exit that
+    actually works at two clients threw away the whole point of having a
+    ladder. Probes that used to succeed on the fourth or fifth client simply
+    failed. The exit gets the full ladder.
+
+    And direct always went first, even when direct had just been refused.
+    That is two refusals worth of waiting - about fifteen seconds - in front
+    of every single request, paid over and over to re-learn the same answer.
+    So a bot check on the direct exit puts the tunnel in front for a while.
+    Not permanently, and not exclusively: direct is still there behind it,
+    because the block lifts on its own and the server's own address is the
+    faster one whenever it is working.
     """
     direct = [(c, False) for c in _ladder(kind)]
     if not _proxy_available():
         return direct
-    return direct + [(c, True) for c in _ladder(kind)[:_PROXY_RUNGS]]
+    proxied = [(c, True) for c in _ladder(kind)]
+    if _direct_is_refusing():
+        return proxied + direct
+    return direct + proxied
 
 
 def ytdlp_run(extra: dict, fn: Callable[[YoutubeDL], T], kind: str = "",
@@ -610,17 +634,18 @@ def ytdlp_run(extra: dict, fn: Callable[[YoutubeDL], T], kind: str = "",
     rejected result is kept - if no client does better, a thin answer still
     beats no answer.
     """
-    global _last_bot_check
+    global _last_bot_check, _last_direct_bot_check
 
     thin: T | None = None
     thin_seen = False
     last: Exception | None = None
     bot_checks = 0
-    skip_direct = False
+    # Which exit has already been told to sign in on this walk, if any.
+    skip_direct: bool | None = None
     for client, via_proxy in _rungs(kind):
         # Once this address has been named, the rest of the direct rungs are
         # only there to be refused - and each refusal deepens the block.
-        if skip_direct and not via_proxy:
+        if skip_direct is not None and via_proxy == skip_direct:
             continue
         opts = _base_opts(client, via_proxy) | extra
         started = time.monotonic()
@@ -668,6 +693,8 @@ def ytdlp_run(extra: dict, fn: Callable[[YoutubeDL], T], kind: str = "",
 
             if any(marker in str(e).lower() for marker in _BOT_CHECK):
                 _last_bot_check = time.monotonic()
+                if not via_proxy:
+                    _last_direct_bot_check = _last_bot_check
                 bot_checks += 1
 
             # It led the ladder because it worked last time and it has just
@@ -691,11 +718,14 @@ def ytdlp_run(extra: dict, fn: Callable[[YoutubeDL], T], kind: str = "",
                 # Skipping the proxy would throw away the one exit that
                 # answers a bot check, so the walk stops asking here and
                 # carries on from the other side.
-                if not via_proxy and _proxy_available():
+                other = [1 for c, viap in _rungs(kind) if viap != via_proxy]
+                if other:
                     log.warning(
-                        "yt-dlp: %d clients were told to sign in from this "
-                        "address - going straight to the proxy.", bot_checks)
-                    skip_direct = True
+                        "yt-dlp: %d clients were told to sign in %s - trying "
+                        "the %s exit instead.", bot_checks,
+                        "via the proxy" if via_proxy else "from this address",
+                        "direct" if via_proxy else "proxy")
+                    skip_direct = via_proxy
                     bot_checks = 0
                     continue
                 log.warning(
