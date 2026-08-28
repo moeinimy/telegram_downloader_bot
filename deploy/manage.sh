@@ -1676,6 +1676,65 @@ do_igtest() {
     run_py "$PROJECT_DIR/deploy/igtest.py"
 }
 
+do_backup() {
+    # Default to a dated name in /root: the file is a credential, and /root
+    # is the one place on a fresh box that is not world-readable.
+    local out="${1:-/root/moeinimydl-backup-$(date +%Y%m%d-%H%M).tar.gz}"
+    run_py "$PROJECT_DIR/deploy/backup.py" create "$out" || return 1
+    # run_py runs as the bot user, so the archive lands owned by it. The
+    # person who has to scp it off the box is root.
+    chown root:root "$out" 2>/dev/null || true
+    chmod 600 "$out" 2>/dev/null || true
+}
+
+do_restore() {
+    local src="$1"
+    if [[ -z "$src" ]]; then
+        err "کدوم فایل؟  botctl restore /root/moeinimydl-backup-....tar.gz"
+        return 1
+    fi
+    if [[ ! -f "$src" ]]; then
+        err "فایل پیدا نشد: $src"
+        return 1
+    fi
+
+    echo; info "=== برگرداندن بکاپ ==="
+    warn "این کار .env و کش و سشن اینستاگرام فعلی رو با نسخه‌ی داخل بکاپ عوض می‌کنه."
+    read -r -p "مطمئنی؟ [y/N] " reply
+    [[ "$reply" =~ ^[Yy]$ ]] || { info "لغو شد."; return 1; }
+
+    # Stopped for the whole restore. stats.db and the Instagram cookie jar
+    # are both written by the running bot, and putting a file underneath a
+    # process that has it open is how a restore corrupts the thing it was
+    # supposed to rescue.
+    local was_running=0
+    systemctl is-active --quiet "$SERVICE_NAME" && was_running=1
+    if (( was_running )); then
+        info "موقتا متوقف می‌کنم…"
+        systemctl stop "$SERVICE_NAME"
+    fi
+
+    # The archive is root-owned; the bot user has to be able to read it.
+    local staged
+    staged="$(mktemp -d)"
+    cp "$src" "$staged/backup.tar.gz"
+    chmod 644 "$staged/backup.tar.gz"
+    chmod 755 "$staged"
+
+    local rc=0
+    run_py "$PROJECT_DIR/deploy/backup.py" restore "$staged/backup.tar.gz" || rc=$?
+    rm -rf "$staged"
+
+    chown -R "$BOT_USER:$BOT_USER" "$PROJECT_DIR/.env" 2>/dev/null || true
+    chmod 600 "$PROJECT_DIR/.env" 2>/dev/null || true
+
+    if (( was_running )); then
+        info "دوباره روشن می‌کنم…"
+        systemctl start "$SERVICE_NAME"
+    fi
+    return $rc
+}
+
 do_igprobe() {
     echo; info "=== تست اندپوینت‌های پروفایل / استوری / هایلایت ==="
     # do_igtest covers the DIRECT side - can this session read the inbox.
@@ -2230,6 +2289,8 @@ case "${1:-}" in
     shazamtest) do_shazamtest "${2:-}"; exit $? ;;
     igtest2) do_igtest; exit $? ;;
     igprobe) do_igprobe "$2"; exit $? ;;
+    backup) do_backup "$2"; exit $? ;;
+    restore) do_restore "$2"; exit $? ;;
     igwatch) do_igwatch "${2:-}"; exit $? ;;
     igmqtt)  do_igmqtt;  exit $? ;;
     igreset) do_igreset; exit $? ;;

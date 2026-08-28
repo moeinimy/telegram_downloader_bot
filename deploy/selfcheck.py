@@ -3736,6 +3736,106 @@ finally:
     _yt._save_preferred()
 
 
+# --------------------------------------------------------------------------
+# Moving the bot to another server
+# --------------------------------------------------------------------------
+import json as _bk_json  # noqa: E402
+import sqlite3 as _bk_sql  # noqa: E402
+import tarfile as _bk_tar  # noqa: E402
+import tempfile as _bk_tmp  # noqa: E402
+import shutil as _bk_shutil  # noqa: E402
+import importlib.util as _bk_ilu  # noqa: E402
+
+_bk_spec = _bk_ilu.spec_from_file_location(
+    "_bk", str(Path(__file__).resolve().parent / "backup.py"))
+_bk = _bk_ilu.module_from_spec(_bk_spec)
+_bk_spec.loader.exec_module(_bk)
+
+# The archive has to carry what cannot be regenerated, and nothing else.
+for _bk_need in ("file_ids.json", "stats.db", "ig_web_cookies.json",
+                 "ig_device.json", "ig_device_owner.txt"):
+    check(f"backup: {_bk_need} is in the archive", _bk_need in _bk.STATE_FILES)
+check("backup: the .env goes with it", ".env" in _bk.PROJECT_FILES)
+# Media rebuilds on demand; including it turns a 2KB archive into gigabytes.
+check("backup: downloaded media is left behind",
+      not any(d in _bk.STATE_FILES
+              for d in ("spotify", "instagram", "recognize", "thumbs")))
+
+_bk_root = Path(_bk_tmp.mkdtemp(prefix="selfcheck-bk-"))
+_bk_real_project = _bk.PROJECT_DIR
+try:
+    # An old server with state on it.
+    _bk_old = _bk_root / "old"
+    _bk_old_dl = _bk_old / "downloads"
+    _bk_old_dl.mkdir(parents=True)
+    (_bk_old / ".env").write_text(
+        f"BOT_TOKEN=123:SECRET\nDOWNLOAD_DIR={_bk_old_dl}\n"
+        "CACHE_CHANNEL_ID=-1004441522512\n", encoding="utf-8")
+    (_bk_old_dl / "file_ids.json").write_text(
+        _bk_json.dumps({"audio:sp_a": "FILE_ID_A"}), encoding="utf-8")
+    (_bk_old_dl / "ig_web_cookies.json").write_text(
+        _bk_json.dumps({"sessionid": "ROTATED"}), encoding="utf-8")
+    (_bk_old_dl / "spotify").mkdir()
+    (_bk_old_dl / "spotify" / "big.mp3").write_bytes(b"\0" * 200_000)
+    _bk_conn = _bk_sql.connect(_bk_old_dl / "stats.db")
+    _bk_conn.execute("CREATE TABLE users (user_id INTEGER PRIMARY KEY, lang TEXT)")
+    _bk_conn.execute("INSERT INTO users VALUES (7, 'en')")
+    _bk_conn.commit()
+    _bk_conn.close()
+
+    _bk_archive = _bk_root / "b.tar.gz"
+    _bk.PROJECT_DIR = _bk_old
+    check("backup: it is created", _bk.create(_bk_archive) == 0)
+    check("backup: and stays small, because the media stayed home",
+          _bk_archive.stat().st_size < 100_000,
+          f"{_bk_archive.stat().st_size:,} bytes vs 200,000 of media")
+
+    # A brand new server - installed at a DIFFERENT path, which is the case
+    # that used to fail silently: the archive's DOWNLOAD_DIR pointed at the
+    # old machine, so every file was reported restored into a directory this
+    # bot would never read.
+    _bk_new = _bk_root / "new"
+    _bk_new_dl = _bk_new / "downloads"
+    _bk_new_dl.mkdir(parents=True)
+    (_bk_new / ".env").write_text(
+        f"BOT_TOKEN=placeholder\nDOWNLOAD_DIR={_bk_new_dl}\n", encoding="utf-8")
+    _bk.PROJECT_DIR = _bk_new
+    check("backup: it restores onto a fresh server", _bk.restore(_bk_archive) == 0)
+
+    check("backup: the file_id cache came across",
+          _bk_json.loads((_bk_new_dl / "file_ids.json").read_text(
+              encoding="utf-8")) == {"audio:sp_a": "FILE_ID_A"})
+    check("backup: the live Instagram session came across",
+          (_bk_new_dl / "ig_web_cookies.json").is_file())
+    _bk_conn = _bk_sql.connect(_bk_new_dl / "stats.db")
+    check("backup: stats.db opens and still has its rows",
+          _bk_conn.execute("SELECT lang FROM users WHERE user_id=7"
+                           ).fetchone()[0] == "en")
+    _bk_conn.close()
+    _bk_env = (_bk_new / ".env").read_text(encoding="utf-8")
+    check("backup: the token is the old bot's", "123:SECRET" in _bk_env)
+    check("backup: and so is the cache channel", "-1004441522512" in _bk_env)
+    # The fix: identity from the archive, paths from this machine.
+    check("backup: but DOWNLOAD_DIR points at THIS server",
+          f"DOWNLOAD_DIR={_bk_new_dl}" in _bk_env,
+          [l for l in _bk_env.splitlines() if "DOWNLOAD_DIR" in l])
+    check("backup: media was not dragged along",
+          not (_bk_new_dl / "spotify").exists())
+
+    # A tar can name "../../etc/passwd". Nothing in this archive is ever a
+    # path, so anything that is one did not come from here.
+    _bk_evil = _bk_root / "evil.tar.gz"
+    _bk_probe = _bk_root / "probe.txt"
+    _bk_probe.write_text("x", encoding="utf-8")
+    with _bk_tar.open(_bk_evil, "w:gz") as _bk_t:
+        _bk_t.add(_bk_probe, arcname="../../../../etc/passwd")
+    check("backup: an archive that escapes its directory is refused",
+          _bk.restore(_bk_evil) == 1)
+finally:
+    _bk.PROJECT_DIR = _bk_real_project
+    _bk_shutil.rmtree(_bk_root, ignore_errors=True)
+
+
 print()
 if failures:
     print(f"=== {len(failures)} CHECK(S) FAILED: {failures} ===")
