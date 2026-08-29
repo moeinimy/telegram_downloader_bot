@@ -3836,6 +3836,33 @@ finally:
     _bk_shutil.rmtree(_bk_root, ignore_errors=True)
 
 
+# manage.sh runs under `set -u`, so a dispatch line that names an argument
+# the user did not type aborts the script before the function that knows how
+# to default it is ever reached:
+#
+#     botctl backup
+#     /usr/local/bin/botctl: line 2292: $2: unbound variable
+#
+# The function had `local out="${1:-...}"` and never got to run it. Every
+# optional argument has to be defaulted at the CALL site, not only inside.
+import re as _sh_re  # noqa: E402
+
+_sh_src = (Path(__file__).resolve().parent / "manage.sh").read_text(
+    encoding="utf-8", errors="replace")
+check("manage.sh: it still runs under set -u",
+      _sh_re.search(r"^set -\w*u", _sh_src, _sh_re.M) is not None)
+
+_sh_bare = [
+    line.strip()
+    for line in _sh_src.splitlines()
+    # A case arm that calls a do_* function with a positional argument.
+    if _sh_re.match(r'^\s*[a-z0-9|]+\)\s*do_\w+', line)
+    and _sh_re.search(r'"\$[0-9]"', line)
+]
+check("manage.sh: no dispatch line dereferences a missing argument",
+      not _sh_bare, str(_sh_bare[:3]))
+
+
 print()
 if failures:
     print(f"=== {len(failures)} CHECK(S) FAILED: {failures} ===")

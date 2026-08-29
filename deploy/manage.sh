@@ -2288,9 +2288,9 @@ case "${1:-}" in
     deps)    do_deps;    exit 0 ;;
     shazamtest) do_shazamtest "${2:-}"; exit $? ;;
     igtest2) do_igtest; exit $? ;;
-    igprobe) do_igprobe "$2"; exit $? ;;
-    backup) do_backup "$2"; exit $? ;;
-    restore) do_restore "$2"; exit $? ;;
+    igprobe) do_igprobe "${2:-}"; exit $? ;;
+    backup) do_backup "${2:-}"; exit $? ;;
+    restore) do_restore "${2:-}"; exit $? ;;
     igwatch) do_igwatch "${2:-}"; exit $? ;;
     igmqtt)  do_igmqtt;  exit $? ;;
     igreset) do_igreset; exit $? ;;
