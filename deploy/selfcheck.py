@@ -2218,7 +2218,10 @@ def _always_bot_check(_opts, _fn, kind="", accept=None):
 # spotify imports ytdlp_run from youtube at call time, so the
 # attribute to swap lives on youtube.
 _real_run = _yt.ytdlp_run
+_real_locate = _sp._locate_audio
 _yt.ytdlp_run = _always_bot_check
+# No network from selfcheck, and this check is about the youtube retries.
+_sp._locate_audio = lambda meta: []
 _saved_check2 = _yt._last_bot_check
 try:
     _yt._last_bot_check = 0.0
@@ -2241,6 +2244,7 @@ try:
           "botctl" in _sp_err, _sp_err[:70])
 finally:
     _yt.ytdlp_run = _real_run
+    _sp._locate_audio = _real_locate
     _yt._last_bot_check = _saved_check2
 
 # The exit is a fallback rung, not a toll booth.
@@ -3879,6 +3883,77 @@ _sh_bare = [
 ]
 check("manage.sh: no dispatch line dereferences a missing argument",
       not _sh_bare, str(_sh_bare[:3]))
+
+
+# A locked upload is not a missing song.
+#
+# Picking "Shekastani (Live)" out of the results menu produces an sc_ id and
+# exactly one target - that upload. SoundCloud answered
+#
+#     ERROR: [soundcloud] 1781595549: This video is DRM protected
+#
+# and the track was reported undownloadable, while the same recording sat on
+# four other uploads that were never looked at. What was picked was a song;
+# the url was only how the menu named it.
+_drm_tried = []
+_DRM_ERR = "ERROR: [soundcloud] 1781595549: This video is DRM protected"
+_DRM_ALTS = ["https://www.youtube.com/watch?v=Ir3C3uxKQ1Y",
+             "https://api.soundcloud.com/tracks/1196147050"]
+
+
+def _drm_run(_opts, fn, kind="", accept=None):
+    # The url is not passed here, so the call order is the record.
+    _drm_tried.append(len(_drm_tried))
+    if len(_drm_tried) == 1:
+        raise RuntimeError(_DRM_ERR)
+    raise RuntimeError("ERROR: nothing here either")
+
+
+_drm_real_run = _yt.ytdlp_run
+_drm_real_locate = _sp._locate_audio
+try:
+    _yt.ytdlp_run = _drm_run
+    _sp._locate_audio = lambda meta: list(_DRM_ALTS)
+    # The url is spotify_url (field 7), not cover_url (field 6) - putting it
+    # in the wrong one sends this down the search branch and tests nothing.
+    _drm_meta = _sp.TrackMeta(
+        "sc_1781595549", "Shekastani (Live)", ["Omid"], "", 0, "",
+        "https://api.soundcloud.com/tracks/1781595549")
+    try:
+        _sp.download_track.__wrapped__(_drm_meta)
+        _drm_msg = ""
+    except Exception as _drm_e:
+        _drm_msg = str(_drm_e)
+
+    check("drm: a locked upload sends the bot looking for another one",
+          len(_drm_tried) == 1 + len(_DRM_ALTS),
+          f"{len(_drm_tried)} attempt(s), expected {1 + len(_DRM_ALTS)}")
+
+    # Only once - a widening that widens again is a search loop.
+    _drm_tried.clear()
+    _sp._locate_audio = lambda meta: list(_DRM_ALTS) + ["https://x/3"]
+    try:
+        _sp.download_track.__wrapped__(_drm_meta)
+    except Exception:
+        pass
+    check("drm: and only widens once, never in a loop",
+          len(_drm_tried) <= 1 + len(_DRM_ALTS) + 1,
+          f"{len(_drm_tried)} attempt(s)")
+
+    # A pasted link with no alternatives must still say what happened,
+    # rather than "it failed" - which invites a retry that cannot work.
+    _sp._locate_audio = lambda meta: []
+    _drm_tried.clear()
+    try:
+        _sp.download_track.__wrapped__(_drm_meta)
+        _drm_msg = ""
+    except Exception as _drm_e:
+        _drm_msg = str(_drm_e)
+    check("drm: it is named as DRM, not reported as a failed download",
+          "DRM" in _drm_msg, _drm_msg[:70])
+finally:
+    _yt.ytdlp_run = _drm_real_run
+    _sp._locate_audio = _drm_real_locate
 
 
 print()

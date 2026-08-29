@@ -1609,6 +1609,12 @@ _REFUSED_MARKERS = (
 # format disappears and yt-dlp reports the absence rather than the cause.
 _RUNTIME_MARKERS = ("requested format is not available", "unable to extract")
 
+# SoundCloud locks some uploads - label reposts, mostly. yt-dlp reports it as
+# "This video is DRM protected", video being what its message says whatever
+# the medium. It is a property of that one upload, so the answer is another
+# upload, not another attempt.
+_DRM_MARKERS = ("drm protected", "drm-protected")
+
 
 def _download_failed(
     meta: TrackMeta, targets: list[str], reasons: list[str], last: Exception | None
@@ -1639,6 +1645,16 @@ def _download_failed(
             f"«{meta.display}» پیدا شد ولی یوتیوب دانلودش رو به این سرور نداد "
             f"(هر {len(targets)} گزینه رد شد). آهنگ حذف نشده — مشکل آدرس سروره. "
             f"راه‌حل: botctl ytcookies یا botctl proxy"
+        )
+
+    # DRM is not a refusal aimed at this server and not a missing track: the
+    # uploader locked that copy. Saying "it failed" invites a retry that
+    # cannot work, and the honest advice is to pick another result.
+    if any(m in blob for m in _DRM_MARKERS):
+        log.info("every candidate for %r is DRM-locked", meta.display)
+        return RuntimeError(
+            f"«{meta.display}» روی این سورس قفل DRM داره و دانلودش ممکن نیست.\n"
+            "اگه نسخه‌ی دیگه‌ای ازش هست، از نتایج سرچ یکی دیگه رو انتخاب کن."
         )
 
     if any(m in blob for m in _RUNTIME_MARKERS):
@@ -1885,6 +1901,19 @@ def download_track(meta: TrackMeta) -> Path:
 
     targets = _demote_blocked(targets, meta)
 
+    # Whether this list is one chosen upload rather than a search.
+    #
+    # Picking "Shekastani (Live)" out of the results menu produces an sc_ id
+    # and exactly ONE target - that upload. When SoundCloud then answers
+    #
+    #     ERROR: [soundcloud] 1781595549: This video is DRM protected
+    #
+    # the song is reported as undownloadable, and the same recording was
+    # sitting on four other uploads that were never looked at. What the user
+    # picked was a song; the url was just how the menu happened to name it.
+    picked_one = len(targets) == 1 and meta.id.startswith(("yt_", "sc_"))
+    widened = False
+
     extra = {
         # Highest-bitrate audio available. When it is already AAC, ExtractAudio
         # remuxes with `-acodec copy` (instant, lossless); otherwise it encodes
@@ -2027,6 +2056,28 @@ def download_track(meta: TrackMeta) -> Path:
             # original.
             if _yt_blocked():
                 reasons.append("sign in to confirm")
+
+            # Out of targets, and this was one upload of a song we can
+            # identify. Look for the others.
+            #
+            # `enumerate` over a list reads its length on every step, so
+            # extending it here is picked up by this same loop - no second
+            # pass, and the ordering rules above still apply to whatever
+            # arrives.
+            if picked_one and not widened and i + 1 >= len(targets):
+                widened = True
+                try:
+                    alternatives = [u for u in _locate_audio(meta)
+                                    if u not in targets]
+                except Exception as widen_error:
+                    log.info("no alternative upload for %s (%s)",
+                             meta.display, widen_error)
+                    alternatives = []
+                if alternatives:
+                    log.info("the chosen upload of %s could not be fetched - "
+                             "found %d other upload(s) of it",
+                             meta.display, len(alternatives))
+                    targets.extend(_demote_blocked(alternatives, meta))
             log.info("candidate %d/%d unusable (%s) - trying the next",
                      i + 1, len(targets), str(e)[:120])
             continue
