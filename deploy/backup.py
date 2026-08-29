@@ -86,6 +86,29 @@ def _say(mark, colour, text):
     print(f"  {colour}{mark}{N} {text}")
 
 
+def _match_owner(dest: Path, model: Path) -> None:
+    """Give a restored file the same owner as the directory it lands in.
+
+    This runs as root - it has to, since it writes into /root and reads
+    files owned by the bot user. Everything it creates is therefore
+    root-owned, and a bot that cannot write its own cache or rotate its own
+    Instagram cookie is a bot that fails quietly a few minutes after a
+    restore that reported success.
+
+    The directory already has the right answer, so it is copied rather than
+    guessed at: no user name is hardcoded here, and an install that runs
+    under a different account still works.
+    """
+    if not hasattr(os, "chown"):
+        return          # Windows, where this is only ever under test
+    try:
+        st = model.stat()
+        os.chown(dest, st.st_uid, st.st_gid)
+    except (OSError, PermissionError):
+        # Not root, or the same user already: neither is a reason to stop.
+        pass
+
+
 def _download_dir(env_path: Path) -> Path:
     """Read DOWNLOAD_DIR out of a .env without importing config.
 
@@ -246,6 +269,7 @@ def restore(archive: Path) -> int:
             os.chmod(dest, 0o600 if item.name in PROJECT_FILES
                      or "cookie" in item.name or "session" in item.name
                      or "token" in item.name else 0o644)
+            _match_owner(dest, target_dir)
             restored += 1
             _say("OK", G, f"{item.name} -> {target_dir}")
 

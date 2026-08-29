@@ -3750,6 +3750,10 @@ _bk_spec = _bk_ilu.spec_from_file_location(
     "_bk", str(Path(__file__).resolve().parent / "backup.py"))
 _bk = _bk_ilu.module_from_spec(_bk_spec)
 _bk_spec.loader.exec_module(_bk)
+_bk_py_src = (Path(__file__).resolve().parent / "backup.py").read_text(
+    encoding="utf-8", errors="replace")
+_bk_sh_src = (Path(__file__).resolve().parent / "manage.sh").read_text(
+    encoding="utf-8", errors="replace")
 
 # The archive has to carry what cannot be regenerated, and nothing else.
 for _bk_need in ("file_ids.json", "stats.db", "ig_web_cookies.json",
@@ -3831,6 +3835,20 @@ try:
         _bk_t.add(_bk_probe, arcname="../../../../etc/passwd")
     check("backup: an archive that escapes its directory is refused",
           _bk.restore(_bk_evil) == 1)
+
+    # Both halves are root's job: reading every state file whatever its
+    # owner, and writing into /root. As the bot user, backup collected all
+    # thirteen files and then died on
+    #   PermissionError: '/root/moeinimydl-backup-....tar.gz'
+    check("backup: it runs as root, not as the bot user",
+          'run_py_root "$PROJECT_DIR/deploy/backup.py" create' in _bk_sh_src)
+    check("backup: and so does restore",
+          'run_py_root "$PROJECT_DIR/deploy/backup.py" restore' in _bk_sh_src)
+    # Running as root means everything it writes is root-owned, and a bot
+    # that cannot write its own cache or rotate its own Instagram cookie
+    # fails quietly minutes after a restore that reported success.
+    check("backup: restored files are handed back to whoever owns the directory",
+          "_match_owner(dest, target_dir)" in _bk_py_src)
 finally:
     _bk.PROJECT_DIR = _bk_real_project
     _bk_shutil.rmtree(_bk_root, ignore_errors=True)

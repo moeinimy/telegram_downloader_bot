@@ -28,6 +28,18 @@ run_py() {
 }
 
 
+run_py_root() {
+    # For the two things that are root's job rather than the bot's: reading
+    # every state file regardless of owner, and writing into /root. The bot
+    # user can do neither, so backup as botuser died on
+    #
+    #     PermissionError: '/root/moeinimydl-backup-....tar.gz'
+    #
+    # after successfully collecting all thirteen files.
+    ( cd "$PROJECT_DIR" && exec "$PROJECT_DIR/.venv/bin/python" "$@" )
+}
+
+
 # Set by do_reset so do_install can put the user's files back after a wipe.
 RESTORE_DIR=""
 
@@ -1680,10 +1692,7 @@ do_backup() {
     # Default to a dated name in /root: the file is a credential, and /root
     # is the one place on a fresh box that is not world-readable.
     local out="${1:-/root/moeinimydl-backup-$(date +%Y%m%d-%H%M).tar.gz}"
-    run_py "$PROJECT_DIR/deploy/backup.py" create "$out" || return 1
-    # run_py runs as the bot user, so the archive lands owned by it. The
-    # person who has to scp it off the box is root.
-    chown root:root "$out" 2>/dev/null || true
+    run_py_root "$PROJECT_DIR/deploy/backup.py" create "$out" || return 1
     chmod 600 "$out" 2>/dev/null || true
 }
 
@@ -1714,18 +1723,14 @@ do_restore() {
         systemctl stop "$SERVICE_NAME"
     fi
 
-    # The archive is root-owned; the bot user has to be able to read it.
-    local staged
-    staged="$(mktemp -d)"
-    cp "$src" "$staged/backup.tar.gz"
-    chmod 644 "$staged/backup.tar.gz"
-    chmod 755 "$staged"
-
+    # As root: the archive is root-owned and the restored files have to land
+    # on top of ones the bot user owns. backup.py gives each restored file
+    # the owner of the directory it lands in, so the bot can still write its
+    # own cache and rotate its own Instagram cookie afterwards.
     local rc=0
-    run_py "$PROJECT_DIR/deploy/backup.py" restore "$staged/backup.tar.gz" || rc=$?
-    rm -rf "$staged"
+    run_py_root "$PROJECT_DIR/deploy/backup.py" restore "$src" || rc=$?
 
-    chown -R "$BOT_USER:$BOT_USER" "$PROJECT_DIR/.env" 2>/dev/null || true
+    chown "$BOT_USER:$BOT_USER" "$PROJECT_DIR/.env" 2>/dev/null || true
     chmod 600 "$PROJECT_DIR/.env" 2>/dev/null || true
 
     if (( was_running )); then
