@@ -3956,6 +3956,72 @@ finally:
     _sp._locate_audio = _drm_real_locate
 
 
+# A featured-artist parenthetical is a credit, not part of the title.
+#
+# Spotify calls this track "Hate Me (with Juice WRLD)". Every upload of it on
+# YouTube is "Ellie Goulding, Juice WRLD - Hate Me (Official Video)" - the
+# featured artist goes BEFORE the dash there, so the parenthetical can never
+# appear in their title text:
+#
+#     ours   'hate me with juice wrld'
+#     theirs 'ellie goulding juice wrld hate me official video'   rejected
+#     ours   'hate me'                                            5.0
+#
+# Every result was thrown away and the track reported as not existing, on a
+# song the bot had downloaded before.
+for _cr_in, _cr_out in (
+    ("Hate Me (with Juice WRLD)", "Hate Me"),
+    ("Song (feat. X)", "Song"),
+    ("Song [ft. Y]", "Song"),
+    ("Song (featuring Z)", "Song"),
+):
+    check(f"credits: {_cr_in!r} matches on its title alone",
+          _sp._without_credits(_cr_in) == _cr_out,
+          _sp._without_credits(_cr_in))
+
+# But which RECORDING it is stays part of the title. Dropping these would
+# answer a request for the live version with the studio one, which is the
+# mistake the variant rules exist to prevent.
+for _cr_keep in ("Shekastani (Live)", "Track (Remix)", "Song (Acoustic)",
+                 "Song (Live at Wembley)"):
+    check(f"credits: {_cr_keep!r} keeps what identifies the recording",
+          _sp._without_credits(_cr_keep) == _cr_keep,
+          _sp._without_credits(_cr_keep))
+
+# A title that is nothing BUT a credit must not become empty.
+check("credits: a title that is only a credit is left alone",
+      _sp._without_credits("(feat. A)") == "(feat. A)")
+
+# End to end on the real hits, with no network.
+_cr_meta = _sp.TrackMeta("sp_hm", "Hate Me (with Juice WRLD)",
+                         ["Ellie Goulding", "Juice Wrld"], "", 191000, "", "")
+_cr_hits = [
+    {"title": "Ellie Goulding, Juice WRLD - Hate Me (Official Video)",
+     "channel": "Ellie Goulding", "duration": 191, "id": "UZwi9SHgzGY"},
+    {"title": "Ellie Goulding - Hate Me ft. Juice WRLD (slowed + reverb)",
+     "channel": "1year", "duration": 205, "id": "slowedaaa"},
+]
+_cr_official = _sp._match_entry(_cr_meta, _cr_hits[0], 0, "ytsearch")
+_cr_slowed = _sp._match_entry(_cr_meta, _cr_hits[1], 1, "ytsearch")
+check("credits: the official upload is accepted again",
+      _cr_official is not None,
+      "rejected" if _cr_official is None else round(_cr_official[0], 2))
+check("credits: and a slowed re-upload is still refused",
+      _cr_slowed is None,
+      "accepted" if _cr_slowed else "refused")
+
+# The stripping must not make a live request match a studio upload.
+_cr_live = _sp.TrackMeta("sp_lv", "Shekastani (Live)", ["Omid"], "", 0, "", "")
+# The direction that matters: "live" in the candidate and not in the request
+# means a different recording, and asking FOR the live one makes the same
+# candidate correct. Stripping credits must never blur that.
+check("credits: asking for the studio cut still rejects a live upload",
+      _sp._is_other_recording("Omid - Shekastani (Live)", "Shekastani"))
+check("credits: and asking for the live one accepts it",
+      not _sp._is_other_recording("Omid - Shekastani (Live)",
+                                  "Shekastani (Live)"))
+
+
 print()
 if failures:
     print(f"=== {len(failures)} CHECK(S) FAILED: {failures} ===")

@@ -1450,6 +1450,35 @@ _AUDIO_SOURCES = ("ytsearch", "scsearch", "audius")
 _SOURCE_BIAS = {"ytsearch": 0.0, "scsearch": -0.15}
 
 
+# "(with Juice WRLD)", "(feat. X)", "[ft. Y]" - the catalogue's way of
+# listing a credit, which is not part of what the song is called.
+#
+# Spotify names this track "Hate Me (with Juice WRLD)". Every upload of it on
+# YouTube is "Ellie Goulding, Juice WRLD - Hate Me (Official Video)": the
+# featured artist goes BEFORE the dash there, so the parenthetical can never
+# appear in their title text. Matching one against the other:
+#
+#     ours   'hate me with juice wrld'
+#     theirs 'ellie goulding juice wrld hate me official video'   -> rejected
+#     ours   'hate me'                                            -> 5.0
+#
+# So the credited form is tried as well as the plain one, and the better of
+# the two wins. Both, rather than only the stripped one, because some tracks
+# really are titled with a parenthetical the uploads repeat.
+#
+# Only credit words are stripped. "(Live)", "(Remix)", "(Acoustic)" identify
+# WHICH recording this is, and dropping those would match a studio version to
+# a request for the live one - which is the mistake the variant rules exist
+# to prevent.
+_CREDIT_PAREN = re.compile(
+    r"\s*[\(\[]\s*(?:with|feat\.?|ft\.?|featuring)\b[^)\]]*[\)\]]", re.I)
+
+
+def _without_credits(title: str) -> str:
+    stripped = _CREDIT_PAREN.sub("", title).strip(" -\u2013\u2014")
+    return stripped or title
+
+
 def _marks(candidate: str, wanted: str, words: tuple[str, ...]) -> bool:
     """True when the candidate advertises something the request never asked for."""
     # "Cover Art" is a picture, not a cover version - the one phrase in which
@@ -1497,21 +1526,26 @@ def _match_entry(
     # Sijal - both are on the track, and checking only artists[0] threw the
     # song away. This is why the credit list is resolved before locating.
     score = None
+    # dict.fromkeys keeps the plain title first and drops the duplicate when
+    # there was no credit to strip.
+    our_titles = list(dict.fromkeys((meta.name, _without_credits(meta.name))))
     for candidate_artist in meta.artists or [""]:
-        # The artist is as often inside the video title as it is the channel
-        # name, so both are offered as the haystack it must appear in.
-        got = _same_recording(
-            our_artist=candidate_artist,
-            our_title=meta.name,
-            our_secs=meta.duration_ms / 1000 if meta.duration_ms else 0.0,
-            their_artist=f"{title} {channel}",
-            their_title=title,
-            their_secs=float(e.get("duration") or 0),
-            artist_floor=0.3,
-            unnamed_artist_ok=lenient,
-        )
-        if got is not None and (score is None or got > score):
-            score = got
+        for our_title in our_titles:
+            # The artist is as often inside the video title as it is the
+            # channel name, so both are offered as the haystack it must
+            # appear in.
+            got = _same_recording(
+                our_artist=candidate_artist,
+                our_title=our_title,
+                our_secs=meta.duration_ms / 1000 if meta.duration_ms else 0.0,
+                their_artist=f"{title} {channel}",
+                their_title=title,
+                their_secs=float(e.get("duration") or 0),
+                artist_floor=0.3,
+                unnamed_artist_ok=lenient,
+            )
+            if got is not None and (score is None or got > score):
+                score = got
     if score is None:
         return None
 
