@@ -589,6 +589,13 @@ async def _upload_track(msg, meta, path, *, with_cover: bool = True, thumb=None)
                 ),
             )
         if sent and sent.audio:
+            # So "3:28-4:53" right after a song cuts THAT song, with no reply.
+            try:
+                from handlers import cut_handler
+
+                cut_handler.remember(sent)
+            except Exception:
+                pass
             file_cache.put(cache_key, sent.audio.file_id)
             await archive.mirror(msg.get_bot(), "audio", sent.audio.file_id,
                                  caption=meta.display)

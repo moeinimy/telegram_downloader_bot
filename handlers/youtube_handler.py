@@ -217,6 +217,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                         info.uploader, info.title, chat_id=query.message.chat_id),
                 )
                 if sent and sent.audio:
+                    # So a time range typed next cuts THIS file, no reply.
+                    from handlers import cut_handler
+
+                    cut_handler.remember(sent)
                     file_cache.put(cache_key, sent.audio.file_id)
                     await archive.mirror(context.bot, "audio",
                                          sent.audio.file_id, caption=info.title)
@@ -237,6 +241,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                     thumbnail=thumb_path.open("rb") if thumb_path else None,
                 )
                 if sent and sent.video:
+                    # So a time range typed next cuts THIS file, no reply.
+                    from handlers import cut_handler
+
+                    cut_handler.remember(sent)
                     file_cache.put(cache_key, sent.video.file_id)
                     await archive.mirror(context.bot, "video",
                                          sent.video.file_id, caption=info.title)

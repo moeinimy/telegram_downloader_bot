@@ -229,6 +229,14 @@ async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not media:
         return
 
+    # So a range typed after this message knows what to cut.
+    try:
+        from handlers import cut_handler
+
+        cut_handler.remember(msg)
+    except Exception:
+        pass
+
     # The public Bot API refuses to hand a bot any file over 20MB - a normal
     # phone video clears that easily, and the failure surfaces as an unhelpful
     # "Not Found". Say what actually happened instead.

@@ -4022,6 +4022,110 @@ check("credits: and asking for the live one accepts it",
                                   "Shekastani (Live)"))
 
 
+# --------------------------------------------------------------------------
+# Cutting a piece out of a track or a video
+# --------------------------------------------------------------------------
+import shutil as _cut_shutil  # noqa: E402
+import subprocess as _cut_sub  # noqa: E402
+import tempfile as _cut_tmp  # noqa: E402
+
+from handlers import cut_handler as _cuth  # noqa: E402
+from modules import cut as _cutm  # noqa: E402
+
+# What counts as a range. Persian digits because that is what a Persian
+# keyboard produces, and the bidi marks that come with them are invisible,
+# are not whitespace, and survive .strip().
+for _cut_text, _cut_want in (
+    ("3:28-4:53", (208.0, 293.0)),
+    ("1:02:30-1:05:00", (3750.0, 3900.0)),
+    ("28-53", (28.0, 53.0)),
+    ("3:28 - 4:53", (208.0, 293.0)),
+    ("\u06f3:\u06f2\u06f8-\u06f4:\u06f5\u06f3", (208.0, 293.0)),
+    ("3:28 \u062a\u0627 4:53", (208.0, 293.0)),
+    ("0:05\u20130:10", (5.0, 10.0)),
+    ("1:00 to 2:00", (60.0, 120.0)),
+):
+    check(f"cut: {_cut_text!r} is a range", _cutm.parse_range(_cut_text) == _cut_want,
+          str(_cutm.parse_range(_cut_text)))
+
+# And what is not. Anything that is not a range has to fall through to the
+# search, or typing a song name that happens to contain a dash breaks.
+for _cut_no in ("hello", "3:28", "4:53-3:28", "3:28-3:28", "3:90-4:00",
+                "1:2:3:4-5", "Drake - Jaded", "1-99999"):
+    check(f"cut: {_cut_no!r} is not a range, so search still gets it",
+          _cutm.parse_range(_cut_no) is None,
+          str(_cutm.parse_range(_cut_no)))
+
+# The real thing, when there is an ffmpeg to do it with. Skipped on a box
+# without one rather than faked - a mocked ffmpeg would assert nothing about
+# whether the cut is correct.
+if _cut_shutil.which("ffmpeg") and _cut_shutil.which("ffprobe"):
+    _cut_dir = Path(_cut_tmp.mkdtemp(prefix="selfcheck-cut-"))
+    try:
+        _cut_src = _cut_dir / "src.mp4"
+        # Keyframes 10s apart: the case where a stream copy cannot start
+        # where it was asked to, which is what the re-encode fallback is for.
+        _cut_sub.run(
+            ["ffmpeg", "-y", "-loglevel", "error",
+             "-f", "lavfi", "-i", "testsrc=size=320x240:rate=25:duration=40",
+             "-f", "lavfi", "-i", "sine=frequency=440:duration=40",
+             "-c:v", "libx264", "-g", "250", "-keyint_min", "250",
+             "-preset", "ultrafast", "-c:a", "aac", "-shortest", str(_cut_src)],
+            capture_output=True, timeout=180)
+        check("cut: the fixture was built", _cut_src.is_file())
+
+        _cut_out = _cut_dir / "clip.mp4"
+        _cutm.cut(_cut_src, 13.0, 27.0, _cut_out)
+        _cut_got = _cutm.media_seconds(_cut_out)
+        check("cut: an off-keyframe range still comes out the right length",
+              abs(_cut_got - 14.0) <= 0.4, f"asked 14.0s, got {_cut_got:.2f}s")
+        check("cut: and the clip is not empty",
+              _cut_out.stat().st_size > 1024, f"{_cut_out.stat().st_size} bytes")
+    finally:
+        _cut_shutil.rmtree(_cut_dir, ignore_errors=True)
+else:
+    print("  --  cut: ffmpeg not on this box, skipping the real cut")
+
+# Which file a range applies to.
+_cut_media = type("M", (), {"file_id": "FID", "duration": 200,
+                            "title": "Song", "performer": "A",
+                            "file_name": "s.mp3"})()
+_cut_msg = type("Msg", (), {"audio": _cut_media, "video": None, "voice": None,
+                            "video_note": None, "animation": None,
+                            "document": None,
+                            "chat": type("C", (), {"id": 42})()})()
+_cuth._last.clear()
+_cuth.remember(_cut_msg)
+check("cut: the last media in a chat is remembered, so no reply is needed",
+      _cuth._last.get(42, {}).get("file_id") == "FID")
+
+# A pdf replied to with a time range is not a cut request.
+_cut_pdf = type("Msg", (), {"audio": None, "video": None, "voice": None,
+                            "video_note": None, "animation": None,
+                            "document": type("D", (), {
+                                "file_id": "PDF", "mime_type": "application/pdf"})(),
+                            "chat": type("C", (), {"id": 43})()})()
+check("cut: a document that is not media is ignored",
+      _cuth._media_of(_cut_pdf) == (None, ""))
+_cut_vid_doc = type("Msg", (), {"audio": None, "video": None, "voice": None,
+                                "video_note": None, "animation": None,
+                                "document": type("D", (), {
+                                    "file_id": "MP4",
+                                    "mime_type": "video/mp4"})(),
+                                "chat": type("C", (), {"id": 44})()})()
+check("cut: but a video sent 'as file' is",
+      _cuth._media_of(_cut_vid_doc)[1] == "video")
+
+# The store is a convenience, not something to grow without limit.
+for _cut_i in range(_cuth._LAST_LIMIT + 5):
+    _cuth._last[_cut_i] = {"file_id": "x"}
+    if len(_cuth._last) >= _cuth._LAST_LIMIT:
+        break
+check("cut: the remembered-media map is bounded",
+      len(_cuth._last) <= _cuth._LAST_LIMIT, str(len(_cuth._last)))
+_cuth._last.clear()
+
+
 print()
 if failures:
     print(f"=== {len(failures)} CHECK(S) FAILED: {failures} ===")

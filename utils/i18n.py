@@ -237,6 +237,10 @@ _EN: dict[str, str] = {
     "📸 عکس پروفایل": "📸 Profile picture",
     "📖 استوری‌ها": "📖 Stories",
     "✨ هایلایت‌ها": "✨ Highlights",
+    "✂️ در حال برش…": "✂️ Cutting…",
+    "✂️ اول یه آهنگ یا ویدیو بفرست، بعد بازه رو بنویس — یا روی همون فایل ریپلای کن.": "✂️ Send an audio or a video first, then the range — or reply to the file itself.",
+    "⚠️ این فایل {total} بیشتر نیست، ولی از {start} خواستی.": "⚠️ This file is only {total} long, but you asked from {start}.",
+    "❌ خطا تو برش.": "❌ The cut failed.",
     "🔎 دیدن هایلایت‌ها…": "🔎 Looking up highlights…",
     "این منو قدیمیه — دوباره لینک پیج رو بفرست.": "That menu is stale — send the profile link again.",
     "⌛ فایل ویدیو دیگه موجود نیست. دوباره لینک رو بفرست.":

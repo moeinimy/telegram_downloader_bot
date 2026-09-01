@@ -56,6 +56,19 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     text = msg.text.strip()
 
+    # "3:28-4:53" and nothing else is a cut, not a search. Checked here
+    # because otherwise it goes off looking for a song by that name - and a
+    # bare time range cannot be anything else anybody meant.
+    try:
+        from handlers import cut_handler
+
+        if await cut_handler.try_cut(update, context):
+            return
+    except Exception:
+        log.exception("cut failed")
+        await msg.reply_text(t(msg.chat_id, "\u274c خطا تو برش."))
+        return
+
     try:
         # A pending "which range of the playlist?" prompt claims this message
         # before it is treated as a search query.
