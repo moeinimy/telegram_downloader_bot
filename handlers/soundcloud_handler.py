@@ -13,7 +13,7 @@ from telegram.ext import ContextTypes
 
 from handlers.spotify_handler import _send_and_download_track, _send_tracklist
 from modules import spotify as sp
-from utils.i18n import t
+from utils.i18n import t, localise
 from utils.secrets import scrub
 from utils.url_router import RouteResult
 
@@ -30,7 +30,7 @@ async def handle_url(
         try:
             tracks = await sp.probe_soundcloud_set(route.url)
         except Exception as e:
-            await status.edit_text(t(msg.chat_id, "❌ خطا: {err}").format(err=scrub(e)))
+            await status.edit_text(t(msg.chat_id, "❌ خطا: {err}").format(err=scrub(localise(msg.chat_id, e))))
             return
         if not tracks:
             await status.edit_text(t(msg.chat_id, "ترکی تو این پلی‌لیست پیدا نکردم."))
@@ -45,7 +45,7 @@ async def handle_url(
     try:
         meta = await sp.probe_source_track(route.url, prefix="sc")
     except Exception as e:
-        await status.edit_text(t(msg.chat_id, "❌ خطا: {err}").format(err=scrub(e)))
+        await status.edit_text(t(msg.chat_id, "❌ خطا: {err}").format(err=scrub(localise(msg.chat_id, e))))
         return
     await status.delete()
     await _send_and_download_track(msg, meta)

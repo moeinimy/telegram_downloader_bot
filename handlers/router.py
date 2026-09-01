@@ -16,7 +16,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from utils import limits
-from utils.i18n import t
+from utils.i18n import t, localise
 from utils.url_router import Platform, route
 
 from . import instagram_handler, soundcloud_handler, spotify_handler, youtube_handler
@@ -79,7 +79,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         # Module errors are already user-facing sentences, so run them through
         # t() as well - otherwise an English user gets a Persian error body.
         await msg.reply_text(
-            t(msg.chat_id, "❌ خطا: {err}").format(err=t(msg.chat_id, scrub(e)))
+            t(msg.chat_id, "❌ خطا: {err}").format(err=scrub(localise(msg.chat_id, e)))
         )
         return
 
@@ -106,5 +106,5 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         # Module errors are already user-facing sentences, so run them through
         # t() as well - otherwise an English user gets a Persian error body.
         await msg.reply_text(
-            t(msg.chat_id, "❌ خطا: {err}").format(err=t(msg.chat_id, scrub(e)))
+            t(msg.chat_id, "❌ خطا: {err}").format(err=scrub(localise(msg.chat_id, e)))
         )

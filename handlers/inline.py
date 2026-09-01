@@ -51,6 +51,7 @@ from telegram.ext import ContextTypes
 from config import settings
 from modules import spotify as sp
 from utils import file_cache
+from utils.i18n import t
 
 log = logging.getLogger(__name__)
 
@@ -141,7 +142,7 @@ async def on_inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         # typed, before any song.
         await inline.answer(
             [], cache_time=_CACHE_SECONDS, is_personal=False,
-            switch_pm_text="🎧 اسم آهنگ رو بنویس",
+            switch_pm_text=t(inline.from_user.id, "🎧 اسم آهنگ رو بنویس"),
             switch_pm_parameter="inline",
         )
         return
@@ -171,12 +172,13 @@ async def on_inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     InlineQueryResultArticle(
                         id=str(uuid4()),
                         title=track.name,
-                        description=f"{artists} · تو بات باز می‌شه",
+                        description=t(inline.from_user.id, "{artists} · تو بات باز می‌شه")
+                        .format(artists=artists),
                         thumbnail_url=track.cover_url or None,
                         input_message_content=InputTextMessageContent(
                             f"🎧 {track.name} — {artists}"),
                         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
-                            "⬇️ دریافت آهنگ",
+                            t(inline.from_user.id, "⬇️ دریافت آهنگ"),
                             url=f"https://t.me/{username}?start=trk_{track.id}")]]),
                     )
                 )
@@ -189,7 +191,8 @@ async def on_inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not results:
         await inline.answer(
             [], cache_time=_CACHE_SECONDS,
-            switch_pm_text="🎧 تو بات بگیرش — بعدش اینجا هم میاد",
+            switch_pm_text=t(inline.from_user.id,
+                             "🎧 تو بات بگیرش — بعدش اینجا هم میاد"),
             switch_pm_parameter="inline",
         )
         return

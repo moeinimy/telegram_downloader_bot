@@ -69,12 +69,107 @@ def t(chat_id: int | None, text: str) -> str:
     return _EN.get(text, text)
 
 
+class Localised(RuntimeError):
+    """An error that can still be translated after it has been raised.
+
+    Modules raise; handlers display. In between there is no chat id, so the
+    modules cannot translate their own messages - and the handler cannot
+    either, once the text is an f-string: the table is keyed on exact
+    literals, and "«Drake — Jaded» پیدا نشد" is not a key, while
+    "«{track}» پیدا نشد" is.
+
+    So the template and its values travel with the exception and are only
+    joined when somebody knows which language to join them in. str() still
+    gives the Persian rendering, so logs and any caller that does not know
+    about this class are unaffected.
+    """
+
+    def __init__(self, template: str, **fields):
+        self.template = template
+        self.fields = fields
+        super().__init__(template.format(**fields) if fields else template)
+
+    def localise(self, chat_id: int | None) -> str:
+        text = t(chat_id, self.template)
+        if not self.fields:
+            return text
+        try:
+            return text.format(**self.fields)
+        except (KeyError, IndexError, ValueError):
+            # A translation whose placeholders do not match the original is a
+            # bug in the table, not a reason to lose the error.
+            log.warning("i18n: placeholders do not match for %r", self.template)
+            return str(self)
+
+
+def localise(chat_id: int | None, error: Exception) -> str:
+    """The user-facing text of an exception, in this chat's language.
+
+    Falls back to translating the whole message, which is what makes the
+    plain (non-formatted) module errors work with nothing but a table entry.
+    """
+    if isinstance(error, Localised):
+        return error.localise(chat_id)
+    return t(chat_id, str(error))
+
+
 # --------------------------------------------------------------------------
 # Persian -> English. Keys are the exact literals used in the handlers;
 # {placeholders} are filled with .format() by the caller after translation.
 # --------------------------------------------------------------------------
 
 _EN: dict[str, str] = {
+    # --- added by the English pass ---
+    'Spotify صفحه رو نداد: {why}':
+        'Spotify would not serve the page: {why}',
+    '{artists} · تو بات باز می\u200cشه':
+        '{artists} · opens in the bot',
+    '«{track}» خیلی طول کشید و نیمه\u200cکاره موند. دوباره بفرست — معمولا بار دوم سریع\u200cتره.':
+        '«{track}» took too long and was left unfinished. Send it again — the second try is usually faster.',
+    '«{track}» رو رو یوتیوب و ساندکلاد پیدا نکردم. {detail}{hint}\nاگه لینک مستقیمش رو از یوتیوب یا ساندکلاد داری، همون رو بفرست — لینک مستقیم بدون این بررسی\u200cها دانلود می\u200cشه.':
+        'Could not find «{track}» on YouTube or SoundCloud. {detail}{hint}\nIf you have a direct YouTube or SoundCloud link, send that — a direct link is downloaded without these checks.',
+    "«{track}» رو نتونستم بگردم چون یوتیوب جواب سرور رو نداد («Sign in to confirm you're not a bot»).\nاین یعنی ترک نیست نداره — یعنی سرچ انجام نشد.\nروی سرور:  botctl ytcookies":
+        "I could not search for «{track}» because YouTube did not answer this server (“Sign in to confirm you're not a bot”).\nThat means the search did not happen — not that the track is missing.\nOn the server:  botctl ytcookies",
+    '«{track}» روی این سورس قفل DRM داره و دانلودش ممکن نیست.\nاگه نسخه\u200cی دیگه\u200cای ازش هست، از نتایج سرچ یکی دیگه رو انتخاب کن.':
+        '«{track}» is DRM-locked on this source and cannot be downloaded.\nIf another version exists, pick a different search result.',
+    '«{track}» نصفه موند چون یوتیوب داره این سرور رو رد می\u200cکنه («Sign in to confirm you’re not a bot») و هر گزینه وقت زیادی گرفت.\nدوباره فرستادن فایده نداره تا وقتی این باز نشه.\nراه\u200cحل روی سرور:  botctl ytcookies  یا  botctl proxy':
+        '«{track}» stopped halfway because YouTube is refusing this server (“Sign in to confirm you’re not a bot”) and every candidate took too long.\nSending it again will not help until that clears.\nOn the server:  botctl ytcookies  or  botctl proxy',
+    '«{track}» پیدا شد ولی هیچ\u200cکدوم از {n} گزینه فرمت قابل دانلود نداشت. معمولا یعنی deno یا yt-dlp لنگه. راه\u200cحل: botctl ytdlp':
+        '«{track}» was found, but none of the {n} candidates had a downloadable format. Usually this means deno or yt-dlp is broken.\nFix: botctl ytdlp',
+    '«{track}» پیدا شد ولی یوتیوب دانلودش رو به این سرور نداد (هر {n} گزینه رد شد). آهنگ حذف نشده — مشکل آدرس سروره. راه\u200cحل: botctl ytcookies یا botctl proxy':
+        "«{track}» was found, but YouTube would not serve the download to this server (all {n} candidates refused). The track is not gone — the problem is this server's address.\nFix: botctl ytcookies or botctl proxy",
+    '«{user}» رو نتونستم پیدا کنم.\n{why}':
+        'Could not find «{user}».\n{why}',
+    '«{user}» هایلایتی نداره.':
+        '«{user}» has no highlights.',
+    '«{user}» پیجش خصوصیه و اکانت بات فالوش نمی\u200cکنه.':
+        '«{user}» is private and the bot does not follow them.',
+    '«{user}» پیجش خصوصیه و اکانت بات فالوش نمی\u200cکنه، برای همین استوری\u200cهاش دیده نمی\u200cشن.':
+        '«{user}» is private and the bot does not follow them, so their stories are not visible.',
+    'آهنگ «{track}» رو تو یوتیوب و ساندکلاد پیدا نکردم.':
+        'Could not find «{track}» on YouTube or SoundCloud.',
+    'این آهنگ رو دیگه پیدا نکردم؛ دوباره سرچ کن.':
+        'I can no longer find that track — search again.',
+    'دانلود «{track}» از هر {n} گزینه شکست خورد{detail}':
+        'Downloading «{track}» failed on all {n} candidates{detail}',
+    'عکس پروفایل «{user}» رو نداد.':
+        'Instagram did not return a profile picture for «{user}».',
+    'فضای دیسک سرور پره (فقط {mb} مگ آزاده).\n\nادمین: «botctl clearcache» یا گزینه ۱۲ منو.':
+        'The server is out of disk space (only {mb} MB free).\n\nAdmin: «botctl clearcache» or menu option 12.',
+    'نتیجه جستجو منقضی شده؛ دوباره سرچ کن.':
+        'That search has expired — search again.',
+    'چی از پروفایل *{user}* میخوای؟':
+        'What do you want from *{user}*?',
+    '⚠️ اسپاتیفای بدون اکانت فقط ۱۰۰ ترک اول رو می\u200cده؛ بقیه در دسترس نیست.':
+        '⚠️ Without an account Spotify only returns the first 100 tracks; the rest are not reachable.',
+    '✨ هایلایت\u200cهای *{user}* — کدوم رو می\u200cخوای؟':
+        '✨ Highlights of *{user}* — which one?',
+    '⬇️ دریافت آهنگ':
+        '⬇️ Get the track',
+    '🎧 اسم آهنگ رو بنویس':
+        '🎧 Type a song name',
+    '🎧 تو بات بگیرش — بعدش اینجا هم میاد':
+        '🎧 Get it in the bot — then it shows up here too',
     # --- start / help ---
     "🌐 زبان رو انتخاب کن / Choose your language":
         "🌐 زبان رو انتخاب کن / Choose your language",

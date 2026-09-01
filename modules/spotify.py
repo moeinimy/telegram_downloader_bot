@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from config import settings
+from utils.i18n import Localised
 from utils.helpers import run_in_thread, safe_filename
 from utils.limits import BoundedDict
 
@@ -136,7 +137,7 @@ def get_track_meta(track_id: str) -> TrackMeta:
                 f"https://www.youtube.com/watch?v={track_id[3:]}", "yt"
             )
         # SoundCloud numeric ids cannot be turned back into URLs.
-        raise RuntimeError("نتیجه جستجو منقضی شده؛ دوباره سرچ کن.")
+        raise Localised("نتیجه جستجو منقضی شده؛ دوباره سرچ کن.")
 
     from modules.spotify_scraper import fetch_track_meta
     return fetch_track_meta(track_id)
@@ -472,7 +473,7 @@ def _lookup_metadata_track(track_id: str) -> TrackMeta:
             _yt_cache[track_id] = meta
             return meta
 
-    raise RuntimeError("این آهنگ رو دیگه پیدا نکردم؛ دوباره سرچ کن.")
+    raise Localised("این آهنگ رو دیگه پیدا نکردم؛ دوباره سرچ کن.")
 
 
 # ---------------- yt-dlp based search / probing ----------------
@@ -1666,40 +1667,40 @@ def _download_failed(
     reporting a refusal aimed at us as a fact about the thing we asked for.
     """
     if not targets:
-        return RuntimeError(
-            f"آهنگ «{meta.display}» رو تو یوتیوب و ساندکلاد پیدا نکردم."
-        )
+        return Localised(
+            "آهنگ «{track}» رو تو یوتیوب و ساندکلاد پیدا نکردم.",
+            track=meta.display)
 
     blob = " ".join(reasons)
 
     if any(m in blob for m in _REFUSED_MARKERS):
         log.error("all %d candidates for %r were refused - youtube is turning "
                   "this server away, not missing the track", len(targets), meta.display)
-        return RuntimeError(
-            f"«{meta.display}» پیدا شد ولی یوتیوب دانلودش رو به این سرور نداد "
-            f"(هر {len(targets)} گزینه رد شد). آهنگ حذف نشده — مشکل آدرس سروره. "
-            f"راه‌حل: botctl ytcookies یا botctl proxy"
-        )
+        return Localised(
+            "«{track}» پیدا شد ولی یوتیوب دانلودش رو به این سرور نداد "
+            "(هر {n} گزینه رد شد). آهنگ حذف نشده — مشکل آدرس سروره. "
+            "راه‌حل: botctl ytcookies یا botctl proxy",
+            track=meta.display, n=len(targets))
 
     # DRM is not a refusal aimed at this server and not a missing track: the
     # uploader locked that copy. Saying "it failed" invites a retry that
     # cannot work, and the honest advice is to pick another result.
     if any(m in blob for m in _DRM_MARKERS):
         log.info("every candidate for %r is DRM-locked", meta.display)
-        return RuntimeError(
-            f"«{meta.display}» روی این سورس قفل DRM داره و دانلودش ممکن نیست.\n"
-            "اگه نسخه‌ی دیگه‌ای ازش هست، از نتایج سرچ یکی دیگه رو انتخاب کن."
-        )
+        return Localised(
+            "«{track}» روی این سورس قفل DRM داره و دانلودش ممکن نیست.\n"
+            "اگه نسخه‌ی دیگه‌ای ازش هست، از نتایج سرچ یکی دیگه رو انتخاب کن.",
+            track=meta.display)
 
     if any(m in blob for m in _RUNTIME_MARKERS):
         log.error("all %d candidates for %r reported no usable format - deno "
                   "or yt-dlp is the suspect, not the track",
                   len(targets), meta.display)
-        return RuntimeError(
-            f"«{meta.display}» پیدا شد ولی هیچ‌کدوم از {len(targets)} گزینه فرمت قابل "
-            f"دانلود نداشت. معمولا یعنی deno یا yt-dlp لنگه. "
-            f"راه‌حل: botctl ytdlp"
-        )
+        return Localised(
+            "«{track}» پیدا شد ولی هیچ‌کدوم از {n} گزینه فرمت قابل "
+            "دانلود نداشت. معمولا یعنی deno یا yt-dlp لنگه. "
+            "راه‌حل: botctl ytdlp",
+            track=meta.display, n=len(targets))
 
     # The budget is the last explanation offered, not the first.
     #
@@ -1712,22 +1713,22 @@ def _download_failed(
     # left to say.
     if "time budget exhausted" in blob:
         if _yt_blocked():
-            return RuntimeError(
-                f"«{meta.display}» نصفه موند چون یوتیوب داره این سرور رو رد "
+            return Localised(
+                "«{track}» نصفه موند چون یوتیوب داره این سرور رو رد "
                 "می‌کنه («Sign in to confirm you\u2019re not a bot») و هر گزینه "
                 "وقت زیادی گرفت.\n"
                 "دوباره فرستادن فایده نداره تا وقتی این باز نشه.\n"
-                "راه‌حل روی سرور:  botctl ytcookies  یا  botctl proxy"
-            )
-        return RuntimeError(
-            f"«{meta.display}» خیلی طول کشید و نیمه‌کاره موند. "
-            "دوباره بفرست — معمولا بار دوم سریع‌تره."
-        )
+                "راه‌حل روی سرور:  botctl ytcookies  یا  botctl proxy",
+                track=meta.display)
+        return Localised(
+            "«{track}» خیلی طول کشید و نیمه‌کاره موند. "
+            "دوباره بفرست — معمولا بار دوم سریع‌تره.",
+            track=meta.display)
 
-    return RuntimeError(
-        f"دانلود «{meta.display}» از هر {len(targets)} گزینه شکست خورد"
-        + (f" — {str(last)[:120]}" if last else "")
-    )
+    return Localised(
+        "دانلود «{track}» از هر {n} گزینه شکست خورد{detail}",
+        track=meta.display, n=len(targets),
+        detail=(f" — {str(last)[:120]}" if last else ""))
 
 
 def _locate_audio(meta: TrackMeta) -> list[str]:
@@ -1823,12 +1824,12 @@ def _locate_audio(meta: TrackMeta) -> list[str]:
     # the bot reports the track as absent from the internet - which is a claim
     # about the track made from evidence about the server.
     if not (pools or {}).get("ytsearch") and _yt_blocked():
-        raise RuntimeError(
-            f"«{meta.display}» رو نتونستم بگردم چون یوتیوب جواب سرور رو نداد "
-            "(«Sign in to confirm you're not a bot»).\n"
+        raise Localised(
+            "«{track}» رو نتونستم بگردم چون یوتیوب جواب سرور رو نداد "
+            "(«Sign in to confirm you\'re not a bot»).\n"
             "این یعنی ترک نیست نداره — یعنی سرچ انجام نشد.\n"
-            "روی سرور:  botctl ytcookies"
-        )
+            "روی سرور:  botctl ytcookies",
+            track=meta.display)
 
     if looked_at:
         detail = (
@@ -1857,11 +1858,11 @@ def _locate_audio(meta: TrackMeta) -> list[str]:
             else " و جای دیگه‌ای نیست. هیچ‌کدوم از این‌ها قابل دانلود نیستن."
         )
 
-    raise RuntimeError(
-        f"«{meta.display}» رو رو یوتیوب و ساندکلاد پیدا نکردم. {detail}{hint}\n"
+    raise Localised(
+        "«{track}» رو رو یوتیوب و ساندکلاد پیدا نکردم. {detail}{hint}\n"
         "اگه لینک مستقیمش رو از یوتیوب یا ساندکلاد داری، همون رو بفرست — "
-        "لینک مستقیم بدون این بررسی‌ها دانلود می‌شه."
-    )
+        "لینک مستقیم بدون این بررسی‌ها دانلود می‌شه.",
+        track=meta.display, detail=detail, hint=hint)
 
 
 # ---------------- downloading ----------------

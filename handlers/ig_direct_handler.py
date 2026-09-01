@@ -28,7 +28,7 @@ from config import settings
 from modules import ig_direct, ig_pairing
 from modules import instagram as ig
 from utils import limits
-from utils.i18n import t
+from utils.i18n import t, localise
 from utils.limits import BoundedDict
 
 from utils.secrets import scrub
@@ -314,7 +314,7 @@ async def _fetch_and_send(dm: ig_direct.DirectMessage, chat_id: int, shortcode: 
                 # url that expires within minutes, so it is fetched now.
                 files = await ig.fetch_direct_url(dm.media_url, dm.mid or str(int(dm.timestamp)))
     except Exception as e:
-        await status.edit_text(t(chat_id, "❌ خطا: {err}").format(err=scrub(e)))
+        await status.edit_text(t(chat_id, "❌ خطا: {err}").format(err=scrub(localise(chat_id, e))))
         return
 
     permalink = dm.permalink or (
@@ -331,7 +331,7 @@ async def _fetch_and_send(dm: ig_direct.DirectMessage, chat_id: int, shortcode: 
         await instagram_handler.deliver(bot, chat_id, files, caption=caption)
         await status.delete()
     except Exception as e:
-        await status.edit_text(t(chat_id, "❌ آپلود ناموفق: {err}").format(err=scrub(e)))
+        await status.edit_text(t(chat_id, "❌ آپلود ناموفق: {err}").format(err=scrub(localise(chat_id, e))))
         return
 
     limits.sweep_downloads(settings.download_dir)

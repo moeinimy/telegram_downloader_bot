@@ -16,6 +16,8 @@ from pathlib import Path
 from config import settings
 from utils.helpers import run_in_thread
 
+from utils.i18n import Localised
+
 log = logging.getLogger(__name__)
 
 
@@ -405,10 +407,10 @@ def _require_workspace(folder: Path) -> None:
 
     if free_mb < _MIN_FREE_MB:
         log.error("recognize: only %dMB free on %s - cannot cut windows", free_mb, folder)
-        raise RuntimeError(
-            f"فضای دیسک سرور پره (فقط {free_mb} مگ آزاده).\n\n"
-            "ادمین: «botctl clearcache» یا گزینه ۱۲ منو."
-        )
+        raise Localised(
+            "فضای دیسک سرور پره (فقط {mb} مگ آزاده).\n\n"
+            "ادمین: «botctl clearcache» یا گزینه ۱۲ منو.",
+            mb=free_mb)
 
 
 async def recognize_candidates(path: Path) -> list[tuple[RecognizedSong, int]]:

@@ -52,7 +52,7 @@ def _outage_text(chat_id: int) -> str:
     return text
 from modules import recognize as rec
 from modules import spotify as sp
-from utils.i18n import t
+from utils.i18n import t, localise
 from utils.limits import BoundedDict
 
 from utils.secrets import scrub
@@ -70,7 +70,7 @@ async def recognize_from_url(msg, url: str) -> None:
             snippet = await rec.fetch_audio_snippet(url, seconds=90, offset=offset)
         except Exception as e:
             if offset == 0:
-                await status.edit_text(t(msg.chat_id, "❌ نتونستم صدای ویدیو رو بگیرم: {err}").format(err=scrub(e)))
+                await status.edit_text(t(msg.chat_id, "❌ نتونستم صدای ویدیو رو بگیرم: {err}").format(err=scrub(localise(msg.chat_id, e))))
                 return
             break  # second chunk unavailable (video too short)
 
@@ -110,7 +110,7 @@ async def _recognize_and_send(msg, status, audio_path: Path, *, cleanup: bool) -
         )
         return
     except Exception as e:
-        await status.edit_text(t(msg.chat_id, "❌ خطا در تشخیص آهنگ: {err}").format(err=scrub(e)))
+        await status.edit_text(t(msg.chat_id, "❌ خطا در تشخیص آهنگ: {err}").format(err=scrub(localise(msg.chat_id, e))))
         return
     finally:
         if cleanup:
@@ -166,30 +166,35 @@ async def _handle_candidates(msg, status, candidates: list) -> None:
                               callback_data=f"rec:pick:{key}:{i}")]
         for i, (s, _) in enumerate(candidates[:5])
     ]
-    header = (
+    chat_id = status.chat_id
+    header = t(
+        chat_id,
         "🎧 مطمئن نیستم — این احتمالات رو پیدا کردم:"
         if len(candidates) > 1
         else "🎧 این رو پیدا کردم ولی مطمئن نیستم:"
     )
     await status.edit_text(
-        f"{header}\n\n"
-        "اگه درسته بزن روش. اگه نه، اسم آهنگ رو تایپ کن یا یه تیکه‌ی "
-        "بلندتر/واضح‌تر از ویدیو بفرست.",
+        header + "\n\n" + t(
+            chat_id,
+            "اگه درسته بزن روش. اگه نه، اسم آهنگ رو تایپ کن یا یه تیکه‌ی "
+            "بلندتر/واضح‌تر از ویدیو بفرست."),
         reply_markup=InlineKeyboardMarkup(rows),
     )
 
 
 async def _download_recognized(msg, status, song) -> None:
     await status.edit_text(
-        f"✅ پیدا شد: *{song.artist} — {song.title}*\n⬇️ در حال دانلود…",
+        t(status.chat_id, "✅ پیدا شد: *{artist} — {title}*\n⬇️ در حال دانلود…")
+        .format(artist=song.artist, title=song.title),
         parse_mode="Markdown",
     )
 
     tracks = await sp.search_tracks(song.query, limit=1)
     if not tracks:
         await status.edit_text(
-            f"🎵 آهنگ: {song.artist} — {song.title}\n😕 ولی برای دانلود پیداش نکردم."
-        )
+            t(status.chat_id,
+              "🎵 آهنگ: {artist} — {title}\n😕 ولی برای دانلود پیداش نکردم.")
+            .format(artist=song.artist, title=song.title))
         return
 
     await status.delete()
@@ -260,7 +265,7 @@ async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         saved = await _fetch_to_disk(context, media.file_id, dest)
     except Exception as e:
-        await status.edit_text(t(msg.chat_id, "❌ دریافت فایل ناموفق: {err}").format(err=scrub(e)))
+        await status.edit_text(t(msg.chat_id, "❌ دریافت فایل ناموفق: {err}").format(err=scrub(localise(msg.chat_id, e))))
         return
 
     await status.delete()

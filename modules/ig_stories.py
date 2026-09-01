@@ -39,6 +39,8 @@ import logging
 
 from modules import ig_web
 
+from utils.i18n import Localised
+
 log = logging.getLogger(__name__)
 
 _BASE = "https://www.instagram.com/api/v1"
@@ -164,9 +166,9 @@ def profile(username: str) -> dict:
             return user
         problems.append(f"{name}: no match")
 
-    raise LookupError(
-        f"«{username}» رو نتونستم پیدا کنم.\n" + "\n".join(problems[:3])
-    )
+    raise Localised(
+        "«{user}» رو نتونستم پیدا کنم.\n{why}",
+        user=username, why="\n".join(problems[:3]))
 
 
 def _hd_pic(user: dict) -> str:
@@ -264,5 +266,5 @@ def profile_pic_url(username: str) -> str:
     user = profile(username)
     url = _hd_pic(user)
     if not url:
-        raise LookupError(f"عکس پروفایل «{username}» رو نداد.")
+        raise Localised("عکس پروفایل «{user}» رو نداد.", user=username)
     return str(url)

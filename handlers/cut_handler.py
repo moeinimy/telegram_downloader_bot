@@ -28,7 +28,7 @@ from telegram.ext import ContextTypes
 from config import settings
 from modules import cut as cutter
 from utils.helpers import run_in_thread, safe_filename
-from utils.i18n import t
+from utils.i18n import t, localise
 from utils.secrets import scrub
 
 log = logging.getLogger(__name__)
@@ -193,7 +193,7 @@ async def try_cut(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     except Exception as e:
         log.warning("cut failed: %s", e)
         try:
-            await status.edit_text(f"❌ {scrub(e)}")
+            await status.edit_text("❌ " + scrub(localise(msg.chat_id, e)))
         except Exception:
             pass
     finally:

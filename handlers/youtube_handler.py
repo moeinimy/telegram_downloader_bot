@@ -22,7 +22,7 @@ from telegram.ext import ContextTypes
 from config import settings
 from modules import stats
 from modules import youtube as yt
-from utils.i18n import t
+from utils.i18n import t, localise
 from utils.secrets import scrub
 from utils import archive, file_cache
 from utils.helpers import file_too_big, fmt_duration, prepare_telegram_thumb
@@ -46,7 +46,7 @@ async def _send_video_menu(msg, context, url: str) -> None:
     try:
         info = await yt.probe_video(url)
     except Exception as e:
-        await status.edit_text(t(msg.chat_id, "❌ نتونستم اطلاعات ویدیو رو بگیرم: {err}").format(err=scrub(e)))
+        await status.edit_text(t(msg.chat_id, "❌ نتونستم اطلاعات ویدیو رو بگیرم: {err}").format(err=scrub(localise(msg.chat_id, e))))
         return
 
     # stash for later
@@ -169,7 +169,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             path = await yt.download_video(url, info, quality=choice, progress_hook=reporter.hook)
     except Exception as e:
         log.exception("yt download failed")
-        await status.edit_text(t(query.message.chat_id, "❌ دانلود ناموفق: {err}").format(err=scrub(e)))
+        await status.edit_text(t(query.message.chat_id, "❌ دانلود ناموفق: {err}").format(err=scrub(localise(query.message.chat_id, e))))
         return
 
     if file_too_big(path, settings.max_upload_mb):
@@ -255,7 +255,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     except Exception as e:
         log.exception("upload failed after %.1fs (%.1fMB)",
                       time.monotonic() - upload_started, size_mb)
-        await status.edit_text(t(query.message.chat_id, "❌ آپلود ناموفق: {err}").format(err=scrub(e)))
+        await status.edit_text(t(query.message.chat_id, "❌ آپلود ناموفق: {err}").format(err=scrub(localise(query.message.chat_id, e))))
     finally:
         path.unlink(missing_ok=True)
 

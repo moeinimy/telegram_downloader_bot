@@ -32,6 +32,8 @@ from pathlib import Path
 from config import settings
 from utils.helpers import run_in_thread, safe_filename
 
+from utils.i18n import Localised
+
 log = logging.getLogger(__name__)
 
 
@@ -351,10 +353,9 @@ def _story_urls_web(username: str) -> list[str]:
     try:
         urls, user = ig_stories.story_urls(username)
         if not urls and user.get("is_private"):
-            raise RuntimeError(
-                f"«{username}» پیجش خصوصیه و اکانت بات فالوش نمی‌کنه، "
-                "برای همین استوری‌هاش دیده نمی‌شن."
-            )
+            raise Localised(
+                "«{user}» پیجش خصوصیه و اکانت بات فالوش نمی‌کنه، "
+                "برای همین استوری‌هاش دیده نمی‌شن.", user=username)
         return urls
     except RuntimeError:
         raise
@@ -443,10 +444,10 @@ def list_highlights(username: str) -> list[dict]:
     trays, user = ig_stories.highlights(username)
     if not trays:
         if user.get("is_private"):
-            raise RuntimeError(
-                f"«{username}» پیجش خصوصیه و اکانت بات فالوش نمی‌کنه."
-            )
-        raise RuntimeError(f"«{username}» هایلایتی نداره.")
+            raise Localised(
+                "«{user}» پیجش خصوصیه و اکانت بات فالوش نمی‌کنه.",
+                user=username)
+        raise Localised("«{user}» هایلایتی نداره.", user=username)
     return trays
 
 

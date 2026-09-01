@@ -25,6 +25,8 @@ import time
 
 import httpx
 
+from utils.i18n import Localised
+
 log = logging.getLogger(__name__)
 
 _NEXT_DATA_RE = re.compile(
@@ -90,7 +92,7 @@ def _fetch_entity(kind: str, resource_id: str) -> dict:
             if attempt < 2:
                 time.sleep(0.8 * (attempt + 1))
 
-    raise RuntimeError(f"Spotify صفحه رو نداد: {last}")
+    raise Localised("Spotify صفحه رو نداد: {why}", why=str(last))
 
 
 def _walk_for_entity(obj, want_type: str | None = None):

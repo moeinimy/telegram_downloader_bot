@@ -23,7 +23,7 @@ from telegram import (
 from telegram.ext import ContextTypes
 
 from modules import instagram as ig
-from utils.i18n import t
+from utils.i18n import t, localise
 from utils.url_router import InstagramKind, RouteResult
 
 from utils.secrets import scrub
@@ -55,7 +55,7 @@ async def handle_url(
             await status.edit_text(t(msg.chat_id, "🤔 نوع لینک اینستا رو نشناختم."))
             return
     except Exception as e:
-        await status.edit_text(f"❌ خطا: {scrub(e)}")
+        await status.edit_text("❌ " + scrub(localise(status.chat_id, e)))
         return
 
     await _send_media(msg, files)
@@ -113,7 +113,9 @@ async def _profile_menu(msg, username: str, context: ContextTypes.DEFAULT_TYPE) 
             ],
         ]
     )
-    await msg.reply_text(f"چی از پروفایل *{username}* میخوای؟", parse_mode="Markdown", reply_markup=kb)
+    await msg.reply_text(
+        t(msg.chat_id, "چی از پروفایل *{user}* میخوای؟").format(user=username),
+        parse_mode="Markdown", reply_markup=kb)
 
 
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -173,7 +175,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             await status.edit_text(t(query.message.chat_id, "اکشن نامعتبر."))
             return
     except Exception as e:
-        await status.edit_text(f"❌ {scrub(e)}")
+        await status.edit_text("❌ " + scrub(localise(status.chat_id, e)))
         return
     await status.delete()
 
@@ -193,7 +195,7 @@ async def _highlight_menu(query, context: ContextTypes.DEFAULT_TYPE,
     try:
         trays = await ig.list_highlights(username)
     except Exception as e:
-        await status.edit_text(f"❌ {scrub(e)}")
+        await status.edit_text("❌ " + scrub(localise(status.chat_id, e)))
         return
 
     context.chat_data.setdefault("ig_hl", {})[username] = trays
@@ -211,7 +213,8 @@ async def _highlight_menu(query, context: ContextTypes.DEFAULT_TYPE,
         rows.append(row)
 
     await status.edit_text(
-        f"✨ هایلایت‌های *{username}* — کدوم رو می‌خوای؟",
+        t(query.message.chat_id,
+          "✨ هایلایت‌های *{user}* — کدوم رو می‌خوای؟").format(user=username),
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(rows),
     )

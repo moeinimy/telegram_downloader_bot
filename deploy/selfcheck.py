@@ -100,10 +100,31 @@ for path in SOURCES:
             and isinstance(node.args[1].value, str)
         ):
             used.add(node.args[1].value)
+        # Localised carries a template raised from a module, which is
+        # translated later by whichever handler displays it. Those keys never
+        # pass through t(), so without this they can go missing silently -
+        # the error just stays Persian for an English user.
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "Localised"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ):
+            used.add(node.args[0].value)
 
 missing = sorted(s for s in used if s not in _EN)
-check("i18n: every t() string has an English entry", not missing,
+check("i18n: every t() and Localised string has an English entry", not missing,
       f"{len(used)} strings checked" if not missing else f"MISSING: {missing}")
+
+# A translation whose placeholders differ from the original renders as a
+# KeyError at the worst moment - while reporting some other failure.
+_ph = __import__("re").compile(r"\{(\w+)")
+_bad = [k for k, v in _EN.items()
+        if set(_ph.findall(k)) != set(_ph.findall(v))]
+check("i18n: every translation keeps the original's placeholders",
+      not _bad, f"MISMATCHED: {_bad[:3]}")
 
 untranslated = sorted(k for k, v in _EN.items() if k == v and not k.startswith(("🎤", "🎵 A", "🌐")))
 check("i18n: no accidental identity translations", not untranslated,
@@ -1278,9 +1299,22 @@ check("secrets: scrub never raises on an unprintable value",
       _scrub(type("B", (), {"__str__": lambda self: 1 / 0})()) == "<unprintable>")
 check("secrets: the leak that started this is fixed at the source",
       "scrub(e)" in Path("modules/ig_graph.py").read_text(encoding="utf-8"))
+# Every error shown to a user goes through scrub, whatever else wraps it.
+# This used to assert the exact spelling ".format(err=scrub(e))", which broke
+# the moment the text also had to be translated - scrub was still there,
+# outermost, doing its job. Asserting the intent survives that; asserting the
+# spelling only says the line has not been edited.
+_err_sites, _unscrubbed = 0, []
+for _h in sorted(Path("handlers").glob("*.py")):
+    for _n, _line in enumerate(_h.read_text(encoding="utf-8").splitlines(), 1):
+        if "err=" not in _line or "format(" not in _line:
+            continue
+        _err_sites += 1
+        if "scrub(" not in _line:
+            _unscrubbed.append(f"{_h.name}:{_n}")
 check("secrets: user-facing error templates are scrubbed too",
-      ".format(err=scrub(e))" in
-      Path("handlers/recognize_handler.py").read_text(encoding="utf-8"))
+      _err_sites and not _unscrubbed,
+      f"{_err_sites} sites" if not _unscrubbed else f"BARE: {_unscrubbed[:3]}")
 
 # The rest of the audit, recorded so a regression is caught rather than
 # rediscovered.
@@ -4124,6 +4158,48 @@ for _cut_i in range(_cuth._LAST_LIMIT + 5):
 check("cut: the remembered-media map is bounded",
       len(_cuth._last) <= _cuth._LAST_LIMIT, str(len(_cuth._last)))
 _cuth._last.clear()
+
+
+# An error raised in a module has no chat, and still has to be translated.
+#
+# The table is keyed on exact literals, so an f-string error can never match
+# one: "«Drake — Jaded» پیدا نشد" is not a key, "«{track}» پیدا نشد" is. The
+# template and its values travel with the exception and are joined only once
+# somebody knows the language.
+from utils import i18n as _loc  # noqa: E402
+
+_loc_saved = dict(_loc._cache)
+try:
+    _loc._cache[901], _loc._cache[902] = "en", "fa"
+    _loc_meta = _sp.TrackMeta("sp_l", "Hate Me (with Juice WRLD)",
+                              ["Ellie Goulding"], "", 191000, "", "")
+    _loc_err = _sp._download_failed(_loc_meta, ["a", "b", "c"],
+                                    ["sign in to confirm"], None)
+    _loc_en = _loc.localise(901, _loc_err)
+    _loc_fa = _loc.localise(902, _loc_err)
+    check("i18n: a formatted module error reads as English",
+          "YouTube would not serve" in _loc_en, _loc_en[:60])
+    check("i18n: with the track name still in it",
+          "Hate Me (with Juice WRLD)" in _loc_en)
+    check("i18n: and the count still filled in", " 3 " in _loc_en, _loc_en[:80])
+    check("i18n: the same error is unchanged in Persian",
+          "پیدا شد" in _loc_fa, _loc_fa[:50])
+    # str() has to stay Persian: logs, and any caller that predates this.
+    check("i18n: str() on it is still the Persian rendering",
+          str(_loc_err) == _loc_fa)
+    # A plain module error needs nothing but a table entry.
+    check("i18n: a plain module error translates too",
+          _loc.localise(901, RuntimeError(
+              "این پست خصو"
+              "صیه یا حذف "
+              "شده.")) == "This post is private or has been deleted.")
+    # And a gap degrades to Persian rather than to an empty message.
+    check("i18n: an untranslated error still says something",
+          _loc.localise(901, RuntimeError("یک پیام"))
+          == "یک پیام")
+finally:
+    _loc._cache.clear()
+    _loc._cache.update(_loc_saved)
 
 
 print()

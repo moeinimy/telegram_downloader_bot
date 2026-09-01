@@ -27,7 +27,7 @@ from telegram.ext import ContextTypes
 from modules import instagram as ig
 from utils import limits
 from utils.helpers import fmt_duration
-from utils.i18n import t
+from utils.i18n import t, localise
 from utils.limits import BoundedDict
 
 from utils.secrets import scrub
@@ -207,7 +207,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await handler(query, chat_id, shortcode, parts)
     except Exception as e:
         log.warning("ig post menu %s failed for %s: %s", action, shortcode, e)
-        await query.message.reply_text(t(chat_id, "❌ خطا: {err}").format(err=scrub(e)))
+        await query.message.reply_text(t(chat_id, "❌ خطا: {err}").format(err=scrub(localise(chat_id, e))))
 
 
 # ---------------- actions ----------------
