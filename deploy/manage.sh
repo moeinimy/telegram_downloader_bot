@@ -1752,6 +1752,50 @@ do_restore() {
     return $rc
 }
 
+do_acoustid() {
+    echo; info "=== موتور دوم تشخیص آهنگ (AcoustID) ==="
+    echo
+    # Two things are missing, not one, and the failure looks the same either
+    # way: acoustid_available() wants BOTH a key and fpcalc on PATH, so a
+    # correctly configured key with no fpcalc reports exactly what no key at
+    # all reports.
+    warn "الان بات فقط یه موتور داره (شزم). وقتی شزم جواب نده، هیچی نمی‌مونه."
+    echo
+    echo "AcoustID رایگانه و ۲ دقیقه طول می‌کشه:"
+    echo "  ۱. برو به  https://acoustid.org/new-application"
+    echo "  ۲. با یه اکانت بساز (اسم برنامه مهم نیست)"
+    echo "  ۳. کلید API رو کپی کن"
+    echo
+
+    info "نصب fpcalc…"
+    if command -v fpcalc >/dev/null 2>&1; then
+        ok "fpcalc از قبل هست"
+    elif apt-get install -y -qq libchromaprint-tools >/dev/null 2>&1; then
+        ok "fpcalc نصب شد"
+    else
+        err "fpcalc نصب نشد - بدون این، AcoustID کار نمی‌کنه"
+        return 1
+    fi
+
+    echo
+    read -r -p "کلید AcoustID (خالی = بی‌خیال): " key
+    [[ -z "$key" ]] && { info "لغو شد."; return 0; }
+    set_env ACOUSTID_KEY "$key"
+    ok "کلید ذخیره شد"
+
+    echo
+    info "تست:"
+    run_py -c "
+import sys
+sys.path.insert(0, '.')
+from modules import engines
+print('   ', engines.status())
+print('    active:', engines.active_engines())
+"
+    echo
+    warn "برای اینکه اعمال شه:  botctl restart"
+}
+
 do_fixcurl() {
     echo; info "=== درست کردن curl_cffi برای تیک‌تاک ==="
     # yt-dlp accepts 0.5.10 and 0.10.x-0.15.x only. A newer one installs
@@ -2328,6 +2372,7 @@ case "${1:-}" in
     igtest2) do_igtest; exit $? ;;
     igprobe) do_igprobe "${2:-}"; exit $? ;;
     fixcurl) do_fixcurl; exit $? ;;
+    acoustid) do_acoustid; exit $? ;;
     backup) do_backup "${2:-}"; exit $? ;;
     restore) do_restore "${2:-}"; exit $? ;;
     igwatch) do_igwatch "${2:-}"; exit $? ;;

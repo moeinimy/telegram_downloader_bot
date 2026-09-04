@@ -4331,6 +4331,52 @@ check("media menu: both entry points share one range prompt",
       hasattr(_cuth, "prompt_for_range"))
 
 
+# Recognition: more shots, and shots that differ from each other.
+#
+# Repeating a request is not another chance - a fingerprint misses for a
+# reason, and the same reason meets the same bytes. Each pass prepares the
+# audio differently, so a miss on one is a genuinely different question.
+check("recognize: there are three preparations, not two",
+      len(_rec._PASSES) == 3, str([n for n, _ in _rec._PASSES]))
+check("recognize: one of them is the audio exactly as recorded",
+      any(not chain for _, chain in _rec._PASSES))
+check("recognize: one keeps only the band the music lives in",
+      any("highpass" in chain and "lowpass" in chain
+          for _, chain in _rec._PASSES))
+
+# A 14s clip used to get three windows two seconds apart - nearly the same
+# audio three times, which is one chance dressed up as three.
+_w14, _o14 = _rec._sample_plan(14.0)
+check("recognize: a short clip is sampled at every second",
+      len(_o14) >= 6, f"{len(_o14)} windows at {_o14}")
+# Taking the first N of a per-second list left the END unsampled, which is
+# where a chorus tends to be.
+for _dur in (14.0, 20.0, 24.0):
+    _w, _o = _rec._sample_plan(_dur)
+    check(f"recognize: a {_dur:.0f}s clip is covered to its end",
+          _o[-1] + _w >= _dur - 1, f"reaches {_o[-1] + _w:.0f}s of {_dur:.0f}s")
+check("recognize: and never asks for more windows than the cap",
+      all(len(_rec._sample_plan(d)[1]) <= _rec._MAX_WINDOWS
+          for d in (1, 5, 14, 20, 24, 30, 90, 240)))
+
+# The gate is measured on the ORIGINAL audio, before levelling, so a phone
+# video of a room sits far below a studio track. -45 was discarding windows
+# that dynaudnorm would have rescued.
+check("recognize: the silence gate leaves room for a quiet phone clip",
+      _rec._SILENCE_DB <= -50, f"{_rec._SILENCE_DB} dB")
+
+# The bot had exactly ONE engine: acoustid and audd both unconfigured, so
+# when Shazam missed there was nothing else to ask. acoustid_available()
+# wants BOTH a key and fpcalc, and a key with no fpcalc reports exactly what
+# no key at all reports - hence one command that does both.
+_ac_sh = (Path(__file__).resolve().parent / "manage.sh").read_text(
+    encoding="utf-8")
+check("recognize: there is a command to turn the second engine on",
+      "do_acoustid" in _ac_sh and "acoustid)" in _ac_sh)
+check("recognize: and it installs fpcalc as well as storing the key",
+      "libchromaprint-tools" in _ac_sh and "ACOUSTID_KEY" in _ac_sh)
+
+
 print()
 if failures:
     print(f"=== {len(failures)} CHECK(S) FAILED: {failures} ===")

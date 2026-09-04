@@ -296,11 +296,38 @@ def _media_duration(path: Path) -> float:
         return 0.0
 
 
-_SILENCE_DB = -45.0  # below this a window has nothing to fingerprint
+# Below this a window has nothing to fingerprint.
+#
+# Measured against the alternative rather than picked: this is the level of
+# the ORIGINAL audio, before dynaudnorm, so a phone video of a room with
+# music playing across it sits well under what a studio track would. -45 was
+# discarding windows that levelling would have rescued; -55 keeps them and
+# costs one request each when they really are empty.
+_SILENCE_DB = -55.0
+
+# How each pass prepares the audio.
+#
+# Three passes, because a fingerprint misses for a reason and asking the same
+# bytes again meets the same reason. Each of these fails differently:
+#
+#   levelled  dynaudnorm lifts music buried under speech. It can also smear
+#             an already-loud, compressed track until the fingerprint goes.
+#   raw       exactly what was recorded. The answer whenever levelling was
+#             the thing that broke it.
+#   band      speech and handling noise live low; a phone's mic rumble lives
+#             lower still. Keeping 200Hz-8kHz throws away the parts of the
+#             spectrum that are usually NOT the music, which is the one
+#             preparation that helps when the music is behind something.
+_PASSES = (
+    ("levelled", "dynaudnorm=f=200:g=5"),
+    ("raw", ""),
+    ("band", "highpass=f=200,lowpass=f=8000,dynaudnorm=f=150:g=4"),
+)
 
 
 def _extract_window(
-    src: Path, offset: int, seconds: int, dest: Path, *, normalise: bool = True
+    src: Path, offset: int, seconds: int, dest: Path, *,
+    normalise: bool = True, filters: str | None = None
 ) -> tuple[Path, float] | None:
     """
     Cut one window of audio and report its loudness.
@@ -318,10 +345,12 @@ def _extract_window(
     import subprocess
 
     chain = "volumedetect"
-    if normalise:
-        # Phone clips are often quiet with the music under speech; levelling
-        # gives the fingerprint more to work with. Nothing is removed.
-        chain += ",dynaudnorm=f=200:g=5"
+    # `filters` names the pass explicitly; `normalise` is the older two-state
+    # spelling and still works, so nothing that called this has to change.
+    extra = filters if filters is not None else (
+        "dynaudnorm=f=200:g=5" if normalise else "")
+    if extra:
+        chain += "," + extra
 
     try:
         proc = subprocess.run(
@@ -373,6 +402,22 @@ def _sample_plan(duration: float) -> tuple[int, list[int]]:
     last = max(int(duration - window), 0)
     if last == 0:
         return window, [0]
+
+    # A short clip is where this matters most and where it used to try least.
+    #
+    # A 14-second video got three windows two seconds apart - nearly the same
+    # audio three times, which is one chance dressed up as three. Stepping by
+    # a second instead covers every starting point there is, and on a clip
+    # this short that is still only a handful of requests.
+    if duration < 25:
+        every = list(range(0, last + 1))
+        if len(every) <= _MAX_WINDOWS:
+            return window, every
+        # Spread rather than truncate. Taking the first eight of a
+        # second-by-second list left the END of the clip unsampled, which is
+        # exactly where a chorus tends to be.
+        return window, sorted({
+            int(last * i / (_MAX_WINDOWS - 1)) for i in range(_MAX_WINDOWS)})
 
     # More samples than before. Capping the window at one shazamio segment
     # removed the 12-second sleep that used to make each one expensive, and
@@ -441,11 +486,11 @@ async def recognize_candidates(path: Path) -> list[tuple[RecognizedSong, int]]:
         path.name, duration, len(offsets), offsets,
     )
 
-    async def one_window(i: int, off: int, normalise: bool, label: str):
+    async def one_window(i: int, off: int, chain: str, label: str):
         """Cut and fingerprint a single window. Returns the song or None."""
         clip = tmp_dir / f"{path.stem}_{label}{i}.mp3"
         made = await asyncio.to_thread(
-            _extract_window, path, off, window, clip, normalise=normalise
+            _extract_window, path, off, window, clip, filters=chain
         )
         if made is None:
             return None
@@ -469,7 +514,7 @@ async def recognize_candidates(path: Path) -> list[tuple[RecognizedSong, int]]:
         finally:
             clip_path.unlink(missing_ok=True)
 
-    async def sweep(normalise: bool, label: str, points: list[int]) -> bool:
+    async def sweep(chain: str, label: str, points: list[int]) -> bool:
         """
         One pass over `points`. True once a match is confirmed twice.
 
@@ -483,7 +528,7 @@ async def recognize_candidates(path: Path) -> list[tuple[RecognizedSong, int]]:
             batch = points[start : start + _BATCH]
             results = await asyncio.gather(
                 *[
-                    one_window(start + n, off, normalise, label)
+                    one_window(start + n, off, chain, label)
                     for n, off in enumerate(batch)
                 ],
                 return_exceptions=True,
@@ -513,21 +558,28 @@ async def recognize_candidates(path: Path) -> list[tuple[RecognizedSong, int]]:
     last_timing.clear()
 
     try:
-        if await sweep(normalise=True, label="n", points=offsets):
-            _phase("shazam", started)
-            log.info("recognize: matched in %.1fs (%d windows, batch %d)",
-                     last_timing["shazam"], len(offsets), _BATCH)
-            ranked = sorted(votes.items(), key=lambda kv: kv[1], reverse=True)
-            return [(songs[k], n) for k, n in ranked]
-
-        # Second pass without the loudness filter. dynaudnorm rescues quiet
-        # clips but can smear an already-loud, compressed track enough to lose
-        # the fingerprint. Only a couple of points this time - a full repeat
-        # doubled the wait for the case that was already the slowest.
-        if not votes:
-            probe = offsets[:1] + offsets[len(offsets) // 2 : len(offsets) // 2 + 1]
-            log.info("recognize: retrying %d unprocessed windows", len(probe))
-            await sweep(normalise=False, label="r", points=probe)
+        # Each pass prepares the audio differently, so a miss on one is not
+        # the same question asked twice. They stop at the first that settles
+        # it, so a clip that matches immediately still costs one pass.
+        #
+        # The later passes used to run on TWO windows out of eight, which
+        # made them nearly decorative: the window that would have matched was
+        # usually not one of the two. They run on the whole clip now, and
+        # cost one concurrent batch each because that is how a pass is
+        # already shaped.
+        for index, (label, chain) in enumerate(_PASSES):
+            if index and votes:
+                break            # something already answered; do not overrule it
+            if index:
+                log.info("recognize: nothing yet - trying the '%s' pass over "
+                         "all %d windows", label, len(offsets))
+            if await sweep(chain=chain, label=label[0], points=offsets):
+                _phase("shazam", started)
+                log.info("recognize: matched on the '%s' pass in %.1fs "
+                         "(%d windows, batch %d)",
+                         label, last_timing["shazam"], len(offsets), _BATCH)
+                ranked = sorted(votes.items(), key=lambda kv: kv[1], reverse=True)
+                return [(songs[k], n) for k, n in ranked]
 
         if votes:
             ranked = sorted(votes.items(), key=lambda kv: kv[1], reverse=True)
