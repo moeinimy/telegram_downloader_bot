@@ -4377,6 +4377,35 @@ check("recognize: and it installs fpcalc as well as storing the key",
       "libchromaprint-tools" in _ac_sh and "ACOUSTID_KEY" in _ac_sh)
 
 
+# A short clip's whole file is a different question, not a repeated one.
+#
+# From the journal, on a clip another bot could name:
+#
+#     8 windows, three passes, 24 requests, all "no match"
+#     recognize: 8 windows already covered the file - skipping the
+#                whole-file attempt
+#
+# "Covered" was the wrong word. shazamio segments whatever it is given on
+# its own boundaries, so a continuous twenty seconds is not the same
+# question as eight ten-second slices of it.
+check("recognize: a short clip always gets one whole-audio attempt",
+      _rec._WHOLE_FILE_ALWAYS_UNDER >= 30,
+      f"under {_rec._WHOLE_FILE_ALWAYS_UNDER}s")
+
+# And the size cap was measured on the SOURCE, which for a twenty-second
+# phone video is comfortably over it - so the cheapest attempt available was
+# skipped for being expensive, on the strength of the video track it was
+# about to discard.
+_whole_src = _ig_inspect.getsource(_rec.recognize_candidates)
+check("recognize: the whole-audio attempt extracts audio first",
+      "_whole.mp3" in _whole_src and "_extract_window" in _whole_src)
+check("recognize: and measures the size of THAT, not of the video",
+      _whole_src.index("whole.stat().st_size")
+      < _whole_src.index("_WHOLE_FILE_MAX_MB"))
+check("recognize: the extracted audio is cleaned up either way",
+      _whole_src.count("whole.unlink") >= 2)
+
+
 print()
 if failures:
     print(f"=== {len(failures)} CHECK(S) FAILED: {failures} ===")

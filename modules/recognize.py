@@ -210,6 +210,23 @@ _WHOLE_FILE_MAX_MB = _int_env("RECOGNIZE_WHOLE_FILE_MAX_MB", 4)
 # whole-file attempt is a minute of doing nothing.
 _WHOLE_FILE_TIMEOUT = _int_env("RECOGNIZE_WHOLE_FILE_TIMEOUT", 15)
 
+# Under this, the whole file is always worth one attempt - even when the
+# windows already covered every second of it.
+#
+# From the journal, a clip that WAS identifiable (another bot named it):
+#
+#     8 windows, three passes, 24 requests, all "no match"
+#     recognize: 8 windows already covered the file - skipping the
+#                whole-file attempt
+#
+# "Covered" was the wrong word for it. shazamio segments whatever it is
+# given on its own boundaries, so handing it a continuous twenty seconds is
+# not the same question as eight ten-second slices of that twenty seconds -
+# different starting points, different segment alignment, and one unbroken
+# stretch rather than overlapping fragments. On a short clip it is also the
+# cheapest thing here: one or two segments.
+_WHOLE_FILE_ALWAYS_UNDER = _int_env("RECOGNIZE_WHOLE_FILE_UNDER_SECONDS", 60)
+
 # shazamio splits whatever it is given into segments of this length:
 #
 #   shazamio_core | Recognizer created with segment_duration_seconds = 10
@@ -601,27 +618,49 @@ async def recognize_candidates(path: Path) -> list[tuple[RecognizedSong, int]]:
         #
         # Only run it when windowing did not really happen (a file too short
         # to sample), and put a ceiling on it even then.
-        size_mb = path.stat().st_size / 1e6 if path.exists() else 0
-        if len(offsets) >= 3:
+        short = 0 < duration <= _WHOLE_FILE_ALWAYS_UNDER
+        if len(offsets) >= 3 and not short:
             log.info(
                 "recognize: %d windows already covered the file - skipping the "
                 "whole-file attempt", len(offsets),
             )
-        elif size_mb > _WHOLE_FILE_MAX_MB:
-            log.info("recognize: whole-file attempt skipped (%.1fMB > %dMB)",
-                     size_mb, _WHOLE_FILE_MAX_MB)
         else:
-            log.info("recognize: no window matched - trying the whole file")
-            try:
-                song = await asyncio.wait_for(
-                    _recognize_once(path), timeout=_WHOLE_FILE_TIMEOUT
-                )
-            except asyncio.TimeoutError:
-                log.info("recognize: whole-file attempt timed out after %ds",
-                         _WHOLE_FILE_TIMEOUT)
-                song = None
-            if song:
-                return [(song, 1)]
+            # The whole AUDIO, not the whole file.
+            #
+            # The size cap used to be measured on the source, which for a
+            # twenty-second phone video is comfortably over it - so the one
+            # attempt that would have been cheapest was skipped for being
+            # expensive, on the strength of the video track it was about to
+            # throw away. Extracting first makes the same clip a few hundred
+            # kilobytes and gives shazamio audio rather than an mp4.
+            whole = tmp_dir / f"{path.stem}_whole.mp3"
+            made = await asyncio.to_thread(
+                _extract_window, path, 0, int(duration) + 1 or 60, whole,
+                filters="")
+            size_mb = (whole.stat().st_size / 1e6) if whole.exists() else 0
+            if made is None:
+                log.info("recognize: could not extract the whole audio")
+            elif size_mb > _WHOLE_FILE_MAX_MB:
+                log.info("recognize: whole-file attempt skipped (%.1fMB > %dMB)",
+                         size_mb, _WHOLE_FILE_MAX_MB)
+                whole.unlink(missing_ok=True)
+            else:
+                log.info("recognize: no window matched - trying the whole "
+                         "audio (%.0fs, %.1fMB)", duration, size_mb)
+                try:
+                    song = await asyncio.wait_for(
+                        _recognize_once(whole), timeout=_WHOLE_FILE_TIMEOUT
+                    )
+                except asyncio.TimeoutError:
+                    log.info("recognize: whole-file attempt timed out after %ds",
+                             _WHOLE_FILE_TIMEOUT)
+                    song = None
+                finally:
+                    whole.unlink(missing_ok=True)
+                if song:
+                    log.info("recognize: the whole audio matched where the "
+                             "windows did not - %s - %s", song.artist, song.title)
+                    return [(song, 1)]
     except RecognitionUnavailable as e:
         down = e
         log.warning("recognize: Shazam unavailable (%s) - falling through to the others", e)
