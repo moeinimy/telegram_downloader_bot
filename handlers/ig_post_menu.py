@@ -27,7 +27,7 @@ from telegram.ext import ContextTypes
 from modules import instagram as ig
 from utils import limits
 from utils.helpers import fmt_duration
-from utils.i18n import t, localise
+from utils.i18n import admin_note, localise, t
 from utils.limits import BoundedDict
 
 from utils.secrets import scrub
@@ -308,7 +308,8 @@ async def _do_subtitles(query, chat_id: int, shortcode: str, _parts) -> None:
 
     if not transcribe.available():
         await query.message.reply_text(
-            t(chat_id, "💬 زیرنویس هنوز روی این سرور نصب نشده.\n\nادمین: `botctl whisper`"),
+            t(chat_id, "💬 زیرنویس هنوز روی این سرور فعال نیست.")
+            + admin_note(chat_id, "نصبش: `botctl whisper`"),
             parse_mode="Markdown",
         )
         return

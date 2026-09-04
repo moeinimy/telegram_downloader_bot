@@ -1677,9 +1677,11 @@ def _download_failed(
         log.error("all %d candidates for %r were refused - youtube is turning "
                   "this server away, not missing the track", len(targets), meta.display)
         return Localised(
-            "«{track}» پیدا شد ولی یوتیوب دانلودش رو به این سرور نداد "
-            "(هر {n} گزینه رد شد). آهنگ حذف نشده — مشکل آدرس سروره. "
-            "راه‌حل: botctl ytcookies یا botctl proxy",
+            "«{track}» پیدا شد ولی یوتیوب دانلودش رو نداد "
+            "(هر {n} گزینه رد شد). آهنگ حذف نشده — مشکل موقتیه، "
+            "یکم بعد دوباره امتحان کن.",
+            admin="یوتیوب داره آدرس این سرور رو رد می‌کنه.\n"
+                  "راه‌حل: botctl ytcookies یا botctl proxy",
             track=meta.display, n=len(targets))
 
     # DRM is not a refusal aimed at this server and not a missing track: the
@@ -1698,8 +1700,8 @@ def _download_failed(
                   len(targets), meta.display)
         return Localised(
             "«{track}» پیدا شد ولی هیچ‌کدوم از {n} گزینه فرمت قابل "
-            "دانلود نداشت. معمولا یعنی deno یا yt-dlp لنگه. "
-            "راه‌حل: botctl ytdlp",
+            "دانلود نداشت.",
+            admin="معمولا یعنی deno یا yt-dlp لنگه.\nراه‌حل: botctl ytdlp",
             track=meta.display, n=len(targets))
 
     # The budget is the last explanation offered, not the first.
@@ -1714,11 +1716,10 @@ def _download_failed(
     if "time budget exhausted" in blob:
         if _yt_blocked():
             return Localised(
-                "«{track}» نصفه موند چون یوتیوب داره این سرور رو رد "
-                "می‌کنه («Sign in to confirm you\u2019re not a bot») و هر گزینه "
-                "وقت زیادی گرفت.\n"
-                "دوباره فرستادن فایده نداره تا وقتی این باز نشه.\n"
-                "راه‌حل روی سرور:  botctl ytcookies  یا  botctl proxy",
+                "«{track}» نصفه موند — یوتیوب فعلا درخواست‌ها رو رد می‌کنه.\n"
+                "یه مدت بعد دوباره امتحان کن.",
+                admin="«Sign in to confirm you\u2019re not a bot» روی هر گزینه.\n"
+                      "راه‌حل روی سرور:  botctl ytcookies  یا  botctl proxy",
                 track=meta.display)
         return Localised(
             "«{track}» خیلی طول کشید و نیمه‌کاره موند. "
@@ -1825,10 +1826,10 @@ def _locate_audio(meta: TrackMeta) -> list[str]:
     # about the track made from evidence about the server.
     if not (pools or {}).get("ytsearch") and _yt_blocked():
         raise Localised(
-            "«{track}» رو نتونستم بگردم چون یوتیوب جواب سرور رو نداد "
-            "(«Sign in to confirm you\'re not a bot»).\n"
-            "این یعنی ترک نیست نداره — یعنی سرچ انجام نشد.\n"
-            "روی سرور:  botctl ytcookies",
+            "«{track}» رو نتونستم بگردم — یوتیوب الان جواب نمی‌ده.\n"
+            "این یعنی سرچ انجام نشد، نه اینکه ترک نیست.",
+            admin="«Sign in to confirm you\'re not a bot».\n"
+                  "روی سرور:  botctl ytcookies",
             track=meta.display)
 
     if looked_at:

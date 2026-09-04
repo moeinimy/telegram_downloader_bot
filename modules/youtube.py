@@ -34,6 +34,8 @@ from config import settings
 from utils import proxies
 from utils.helpers import run_in_thread, safe_filename
 
+from utils.i18n import Localised
+
 log = logging.getLogger(__name__)
 
 T = TypeVar("T")
@@ -583,11 +585,9 @@ def _friendly(e: Exception | None) -> RuntimeError:
     # "Sign in to confirm your age" and report a restricted video as a
     # server problem.
     if _is_age_gate(s):
-        return RuntimeError(
-            "این ویدیو محدودیت سنی داره و یوتیوب بدون اکانت نمی‌دش.\n"
-            "ربطی به سرور یا این ویدیو نداره — خود یوتیوب لاگین می‌خواد.\n"
-            "راه‌حل روی سرور:  botctl ytcookies"
-        )
+        return Localised(
+            "این ویدیو محدودیت سنی داره و یوتیوب بدون اکانت نمی‌دش.",
+            admin="راه‌حل روی سرور:  botctl ytcookies")
     if "private" in s or "members-only" in s:
         return RuntimeError("این ویدیو خصوصیه و قابل دانلود نیست.")
     if "removed" in s or "unavailable" in s or "not a bot" in s or "sign in" in s:

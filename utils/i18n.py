@@ -69,6 +69,29 @@ def t(chat_id: int | None, text: str) -> str:
     return _EN.get(text, text)
 
 
+def is_admin(chat_id: int | None) -> bool:
+    """Whether this chat is one of the bot's operators."""
+    if not chat_id:
+        return False
+    try:
+        from config import settings
+
+        return chat_id in settings.admin_ids
+    except Exception:
+        return False
+
+
+def admin_note(chat_id: int | None, text: str) -> str:
+    """A line only the operator sees, or nothing.
+
+    Returned rather than appended so a caller can decide where it goes, and
+    so "" is the natural result for everybody else.
+    """
+    if not text or not is_admin(chat_id):
+        return ""
+    return "\n\n———\n👤 " + t(chat_id, text)
+
+
 class Localised(RuntimeError):
     """An error that can still be translated after it has been raised.
 
@@ -82,24 +105,34 @@ class Localised(RuntimeError):
     joined when somebody knows which language to join them in. str() still
     gives the Persian rendering, so logs and any caller that does not know
     about this class are unaffected.
+
+    `admin` is the half of the message that is an instruction to the person
+    who runs the server: "botctl ytcookies", "menu option 10", a cookie to
+    re-copy. A user cannot act on any of it - they do not have the server -
+    so telling them is noise that reads like blame, and it also publishes
+    how the bot is put together to anybody who sends a bad link. It is
+    attached to the same exception rather than a separate one because the
+    two halves describe one event and would otherwise drift apart.
     """
 
-    def __init__(self, template: str, **fields):
+    def __init__(self, template: str, *, admin: str = "", **fields):
         self.template = template
+        self.admin = admin
         self.fields = fields
         super().__init__(template.format(**fields) if fields else template)
 
     def localise(self, chat_id: int | None) -> str:
         text = t(chat_id, self.template)
-        if not self.fields:
-            return text
-        try:
-            return text.format(**self.fields)
-        except (KeyError, IndexError, ValueError):
-            # A translation whose placeholders do not match the original is a
-            # bug in the table, not a reason to lose the error.
-            log.warning("i18n: placeholders do not match for %r", self.template)
-            return str(self)
+        if self.fields:
+            try:
+                text = text.format(**self.fields)
+            except (KeyError, IndexError, ValueError):
+                # A translation whose placeholders do not match the original
+                # is a bug in the table, not a reason to lose the error.
+                log.warning("i18n: placeholders do not match for %r",
+                            self.template)
+                text = str(self)
+        return text + admin_note(chat_id, self.admin)
 
 
 def localise(chat_id: int | None, error: Exception) -> str:
@@ -119,6 +152,54 @@ def localise(chat_id: int | None, error: Exception) -> str:
 # --------------------------------------------------------------------------
 
 _EN: dict[str, str] = {
+    "❌ تیک‌تاک این ویدیو رو به سرور نداد.":
+        "❌ TikTok would not serve this video to the server.",
+    "💬 زیرنویس هنوز روی این سرور فعال نیست.":
+        "💬 Subtitles are not enabled on this server yet.",
+    "نصبش: `botctl whisper`": "To install it: `botctl whisper`",
+    "معمولا یعنی curl_cffi نصب نیست یا نسخه‌ش با yt-dlp نمی‌خونه.\nروی سرور:  botctl fixcurl":
+        "Usually means curl_cffi is missing or its version does not match yt-dlp.\nOn the server:  botctl fixcurl",
+    # --- the user half, and the operator half ---
+    "«Sign in to confirm you're not a bot».\nروی سرور:  botctl ytcookies":
+        "“Sign in to confirm you're not a bot”.\nOn the server:  botctl ytcookies",
+    '«Sign in to confirm you’re not a bot» روی هر گزینه.\nراه\u200cحل روی سرور:  botctl ytcookies  یا  botctl proxy':
+        '“Sign in to confirm you’re not a bot” on every candidate.\nOn the server:  botctl ytcookies  or  botctl proxy',
+    '«{track}» رو نتونستم بگردم — یوتیوب الان جواب نمی\u200cده.\nاین یعنی سرچ انجام نشد، نه اینکه ترک نیست.':
+        'I could not search for «{track}» — YouTube is not answering right now.\nThat means the search did not happen, not that the track is missing.',
+    '«{track}» نصفه موند — یوتیوب فعلا درخواست\u200cها رو رد می\u200cکنه.\nیه مدت بعد دوباره امتحان کن.':
+        '«{track}» stopped halfway — YouTube is refusing requests at the moment.\nTry again in a while.',
+    '«{track}» پیدا شد ولی هیچ\u200cکدوم از {n} گزینه فرمت قابل دانلود نداشت.':
+        '«{track}» was found, but none of the {n} candidates had a downloadable format.',
+    '«{track}» پیدا شد ولی یوتیوب دانلودش رو نداد (هر {n} گزینه رد شد). آهنگ حذف نشده — مشکل موقتیه، یکم بعد دوباره امتحان کن.':
+        '«{track}» was found, but YouTube would not serve the download (all {n} candidates refused). The track is not gone — this is temporary, try again shortly.',
+    'استوری بدون اکانت اینستاگرام قابل دانلود نیست.':
+        'Stories cannot be downloaded without an Instagram account.',
+    'الان نمی\u200cتونم از اینستاگرام بگیرم — دسترسی بات به اینستاگرام قطع شده.':
+        "I cannot fetch from Instagram right now — the bot's access to Instagram has been cut off.",
+    'الان نمی\u200cتونم پردازش کنم — سرور جا نداره. یکم بعد دوباره امتحان کن.':
+        'I cannot process this right now — the server is out of space. Try again in a bit.',
+    'این ویدیو محدودیت سنی داره و یوتیوب بدون اکانت نمی\u200cدش.':
+        'This video is age-restricted and YouTube will not serve it without an account.',
+    'اینستاگرام این پست رو نداد. ممکنه خصوصی یا حذف شده باشه.':
+        'Instagram would not give me that post. It may be private or deleted.',
+    'دو راه داره:\n• «botctl igdirect» و گزینه ۲ — یه اکانت کامل لاگین می\u200cکنه و بهترین گزینه\u200cست\n• یا کوکی یه اکانت یه\u200cبارمصرف تو .env (IG_SESSIONID / IG_CSRFTOKEN / IG_DS_USER_ID / INSTAGRAM_USERNAME)':
+        "Two ways:\n• «botctl igdirect» option 2 — a full account login, the best option\n• or a throwaway account's cookies in .env (IG_SESSIONID / IG_CSRFTOKEN / IG_DS_USER_ID / INSTAGRAM_USERNAME)",
+    'راه\u200cحل روی سرور:  botctl ytcookies':
+        "“Sign in to confirm you're not a bot”.\nOn the server:  botctl ytcookies",
+    'سرویس رایگانی که استفاده می\u200cکردیم پولی شد؛ این مسیر فقط با اکانت کار می\u200cکنه.\nروی سرور:  botctl igdirect':
+        'The free service we used went paid; this route only works with an account now.\nOn the server:  botctl igdirect',
+    'سشن اینستاگرام دیگه معتبر نیست. کوکی\u200cها رو از مرورگر دوباره بگیر و تو سرور با «botctl → گزینه ۱۰» آپدیتشون کن.':
+        'The Instagram session is no longer valid. Take fresh cookies from the browser and update them on the server with «botctl → option 10».',
+    'عکس پروفایل الان در دسترس نیست.':
+        'Profile pictures are not available right now.',
+    'فضای دیسک پره (فقط {mb} مگ آزاده).\n«botctl clearcache» یا گزینه ۱۲ منو.':
+        'Disk is full (only {mb} MB free).\n«botctl clearcache» or menu option 12.',
+    'معمولا یعنی deno یا yt-dlp لنگه.\nراه\u200cحل: botctl ytdlp':
+        'Usually means deno or yt-dlp is broken.\nFix: botctl ytdlp',
+    'یا کوکی\u200cهای اکانت منقضی شدن — کوکی تازه بگیر و با «botctl → گزینه ۱۰» ست کن.':
+        'Or the account cookies expired — take fresh ones and set them with «botctl → option 10».',
+    'یوتیوب داره آدرس این سرور رو رد می\u200cکنه.\nراه\u200cحل: botctl ytcookies یا botctl proxy':
+        "YouTube is refusing this server's address.\nFix: botctl ytcookies or botctl proxy",
     # --- the menu under a file the user sends ---
     "با این فایل چیکار کنم؟": "What should I do with this file?",
     "🎧 پیدا کردن آهنگ": "🎧 Identify the music",

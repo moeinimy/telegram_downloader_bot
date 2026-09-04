@@ -43,8 +43,10 @@ _ig_gate = threading.Lock()
 _last_op = 0.0
 _MIN_INTERVAL = 20.0  # seconds
 
-_NO_SESSION_MSG = (
-    "استوری بدون اکانت اینستاگرام قابل دانلود نیست.\n\n"
+_NO_SESSION_MSG = "استوری بدون اکانت اینستاگرام قابل دانلود نیست."
+
+# The half only the operator can act on.
+_NO_SESSION_ADMIN = (
     "دو راه داره:\n"
     "• «botctl igdirect» و گزینه ۲ — یه اکانت کامل لاگین می‌کنه و بهترین گزینه‌ست\n"
     "• یا کوکی یه اکانت یه‌بارمصرف تو .env "
@@ -84,10 +86,10 @@ def _friendly_error(e: Exception) -> RuntimeError:
 
     # The session is present but Instagram rejected it.
     if any(k in low for k in ("login_required", "checkpoint_required", "401", "not logged in")):
-        return RuntimeError(
-            "سشن اینستاگرام دیگه معتبر نیست. کوکی‌ها رو از مرورگر دوباره بگیر "
-            "و تو سرور با «botctl → گزینه ۱۰» آپدیتشون کن."
-        )
+        return Localised(
+            "الان نمی‌تونم از اینستاگرام بگیرم — دسترسی بات به اینستاگرام قطع شده.",
+            admin="سشن اینستاگرام دیگه معتبر نیست. کوکی‌ها رو از مرورگر دوباره "
+                  "بگیر و تو سرور با «botctl → گزینه ۱۰» آپدیتشون کن.")
 
     # The common case. Note this is per POST, not a blanket block: most posts
     # download fine anonymously, and only ones Instagram marks restricted
@@ -99,11 +101,10 @@ def _friendly_error(e: Exception) -> RuntimeError:
         "you need to log in", "rate-limit reached", "no media",
     )):
         if have_session:
-            return RuntimeError(
-                "اینستاگرام این پست رو نداد. معمولا یعنی کوکی‌های اکانت منقضی شدن "
-                "یا پست خصوصی/حذف شده‌ست.\n\n"
-                "کوکی‌های تازه بگیر و با «botctl → گزینه ۱۰» ست کن."
-            )
+            return Localised(
+                "اینستاگرام این پست رو نداد. ممکنه خصوصی یا حذف شده باشه.",
+                admin="یا کوکی‌های اکانت منقضی شدن — کوکی تازه بگیر و با "
+                      "«botctl → گزینه ۱۰» ست کن.")
         return RuntimeError(
             "😕 این پست رو نتونستم بگیرم.\n\n"
             "خود اینستاگرام بعضی پست‌ها رو محدود می‌کنه (محدودیت سنی، "
@@ -409,14 +410,14 @@ def fetch_story(username: str) -> list[Path]:
         return _download_urls(urls, target)
 
     if not settings.has_instagram_session:
-        raise RuntimeError(_NO_SESSION_MSG)
+        raise Localised(_NO_SESSION_MSG, admin=_NO_SESSION_ADMIN)
 
     _throttle()
     import instaloader
 
     L = _loader_instance()
     if not L.context.is_logged_in:
-        raise RuntimeError(_NO_SESSION_MSG)
+        raise Localised(_NO_SESSION_MSG, admin=_NO_SESSION_ADMIN)
     try:
         profile = instaloader.Profile.from_username(L.context, username)
         target.mkdir(parents=True, exist_ok=True)
@@ -440,7 +441,7 @@ def list_highlights(username: str) -> list[dict]:
     from modules import ig_stories
 
     if not ig_stories.usable():
-        raise RuntimeError(_NO_SESSION_MSG)
+        raise Localised(_NO_SESSION_MSG, admin=_NO_SESSION_ADMIN)
     trays, user = ig_stories.highlights(username)
     if not trays:
         if user.get("is_private"):
@@ -457,7 +458,7 @@ def fetch_highlight(username: str, highlight_id: str) -> list[Path]:
     from modules import ig_stories
 
     if not ig_stories.usable():
-        raise RuntimeError(_NO_SESSION_MSG)
+        raise Localised(_NO_SESSION_MSG, admin=_NO_SESSION_ADMIN)
     urls = ig_stories.highlight_urls(highlight_id, username)
     if not urls:
         raise RuntimeError("این هایلایت خالیه یا دیگه در دسترس نیست.")
@@ -1287,7 +1288,7 @@ def diagnose(shortcode: str | None = None) -> str:
     else:
         lines.append(
             "❌ هیچ پستی بدون کوکی نمیاد — اینستاگرام IP این سرور رو محدود کرده.\n"
-            "چند ساعت صبر کن، یا کوکی ست کن (botctl → گزینه ۱۰)."
+            "چند ساعت صبر کن، یا کوکی ست کن (botctl → گزینه ۱۰)."  # noqa: E501 - admin-only report
         )
 
     lines.append("")
@@ -1350,11 +1351,10 @@ def _anonymous_profile_pic(username: str, out: Path) -> Path:
     with httpx.Client(timeout=20, follow_redirects=True) as client:
         r = client.get(url, headers={"User-Agent": "Mozilla/5.0"})
         if r.status_code == 403 and "EPRO" in r.text:
-            raise RuntimeError(
-                "عکس پروفایل بدون لاگین دیگه در دسترس نیست — سرویس رایگانی "
-                "که استفاده می‌کردیم پولی شد.\n"
-                "روی سرور:  botctl igdirect"
-            )
+            raise Localised(
+                "عکس پروفایل الان در دسترس نیست.",
+                admin="سرویس رایگانی که استفاده می‌کردیم پولی شد؛ این مسیر "
+                      "فقط با اکانت کار می‌کنه.\nروی سرور:  botctl igdirect")
         r.raise_for_status()
         if not r.headers.get("content-type", "").startswith("image"):
             raise RuntimeError("عکس پروفایل رو پیدا نکردم.")

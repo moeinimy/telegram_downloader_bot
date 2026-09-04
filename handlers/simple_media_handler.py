@@ -34,7 +34,7 @@ from config import settings
 from modules.youtube import ytdlp_run
 from utils import file_cache, limits
 from utils.helpers import run_in_thread, safe_filename
-from utils.i18n import Localised, localise, t
+from utils.i18n import Localised, admin_note, localise, t
 from utils.secrets import scrub
 from utils.url_router import Platform, RouteResult
 
@@ -192,11 +192,11 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE,
             files = await _fetch(result.url, target)
     except Exception as e:
         if _looks_like_impersonation(e) and result.platform == Platform.TIKTOK:
-            await status.edit_text(t(
-                chat_id,
-                "❌ تیک‌تاک این سرور رو نپذیرفت. معمولا یعنی curl_cffi نصب "
-                "نیست یا نسخه‌ش با yt-dlp نمی‌خونه.\n"
-                "روی سرور:  botctl fixcurl"))
+            await status.edit_text(
+                t(chat_id, "❌ تیک‌تاک این ویدیو رو به سرور نداد.")
+                + admin_note(chat_id,
+                             "معمولا یعنی curl_cffi نصب نیست یا نسخه‌ش با "
+                             "yt-dlp نمی‌خونه.\nروی سرور:  botctl fixcurl"))
             return
         await status.edit_text("❌ " + scrub(localise(chat_id, e)))
         return

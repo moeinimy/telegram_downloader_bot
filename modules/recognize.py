@@ -470,8 +470,9 @@ def _require_workspace(folder: Path) -> None:
     if free_mb < _MIN_FREE_MB:
         log.error("recognize: only %dMB free on %s - cannot cut windows", free_mb, folder)
         raise Localised(
-            "فضای دیسک سرور پره (فقط {mb} مگ آزاده).\n\n"
-            "ادمین: «botctl clearcache» یا گزینه ۱۲ منو.",
+            "الان نمی‌تونم پردازش کنم — سرور جا نداره. یکم بعد دوباره امتحان کن.",
+            admin="فضای دیسک پره (فقط {mb} مگ آزاده).\n"
+                  "«botctl clearcache» یا گزینه ۱۲ منو.",
             mb=free_mb)
 
 

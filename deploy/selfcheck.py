@@ -2228,8 +2228,10 @@ _yt._last_bot_check = _yt.time.monotonic()
 _msg = str(_sp._download_failed(
     _sp_meta, _cands,
     ["Sign in to confirm you’re not a bot", "time budget exhausted"], None))
+# The CAUSE belongs to the user; the REMEDY is the operator's, and no
+# longer appears in what a user is shown.
 check("failure: a bot check is named, not hidden behind 'it took too long'",
-      "botctl" in _msg and "دوباره بفرست" not in _msg,
+      "پیدا شد" in _msg and "دوباره بفرست" not in _msg,
       _msg[:70])
 _yt._last_bot_check = _saved_check
 
@@ -2275,7 +2277,7 @@ try:
     # none of its English markers and the one failure the bot can explain
     # precisely came out as the generic "all N candidates failed".
     check("download: the cause survives the translation shown to the user",
-          "botctl" in _sp_err, _sp_err[:70])
+          "پیدا شد" in _sp_err, _sp_err[:70])
 finally:
     _yt.ytdlp_run = _real_run
     _sp._locate_audio = _real_locate
@@ -2906,12 +2908,18 @@ check("spotify: a bot check is not reported as a missing file",
 check("spotify: a bot check says the track was not deleted",
       "حذف نشده" in str(_spd._download_failed(
           _fmeta, _five, ["sign in to confirm you're not a bot"] * 5, None)))
+# The remedy moved to the operator's half, so str() - which is the user
+# half - must NOT carry it, and .admin must.
+_f403 = _spd._download_failed(_fmeta, _five,
+                              ["http error 403: forbidden"] * 5, None)
 check("spotify: a 403 on every candidate blames the address, not the track",
-      "botctl ytcookies" in str(_spd._download_failed(
-          _fmeta, _five, ["http error 403: forbidden"] * 5, None)))
+      "botctl ytcookies" in _f403.admin, _f403.admin[:60])
+check("spotify: and the user is not told to run a server command",
+      "botctl" not in str(_f403), str(_f403)[:60])
+_fruntime = _spd._download_failed(
+    _fmeta, _five, ["requested format is not available"] * 5, None)
 check("spotify: no usable format points at the runtime instead",
-      "botctl ytdlp" in str(_spd._download_failed(
-          _fmeta, _five, ["requested format is not available"] * 5, None)))
+      "botctl ytdlp" in _fruntime.admin, _fruntime.admin[:60])
 check("spotify: nothing located is still reported as nothing located",
       "پیدا نکردم" in str(
           _spd._download_failed(_fmeta, [], [], None)))
@@ -3133,8 +3141,12 @@ try:
         _require_workspace(sweep_root)
         check("recognize: a full disk raises instead of returning no match", False, "it returned")
     except RuntimeError as e:
+        # "disk" is the operator's word for it now; the user is told the
+        # server has no room and to try again.
         check("recognize: a full disk raises instead of returning no match",
-              "دیسک" in str(e), str(e).splitlines()[0])
+              "سرور جا نداره" in str(e), str(e).splitlines()[0])
+        check("recognize: and the free-space figure is for the operator only",
+              "دیسک" in getattr(e, "admin", ""), getattr(e, "admin", "")[:50])
 
     _shutil.disk_usage = _fake_free(5000)
     try:
@@ -3730,8 +3742,10 @@ try:
         _age_msg = str(_age_e)
 
     check("age gate: it is reported as a restricted video, not a server problem",
-          "\u0633\u0646\u06cc" in _age_msg and "ytcookies" in _age_msg,
+          "\u0633\u0646\u06cc" in _age_msg,
           _age_msg.splitlines()[0][:60] if _age_msg else "(no error)")
+    check("age gate: and the cookie remedy is the operator's half",
+          "ytcookies" not in _age_msg, _age_msg[:60])
     check("age gate: two clients agreeing is enough",
           len(_age_asked) == _yt._BOT_CHECKS_BEFORE_GIVING_UP,
           f"asked {[c for c, _ in _age_asked]}")
@@ -4404,6 +4418,64 @@ check("recognize: and measures the size of THAT, not of the video",
       < _whole_src.index("_WHOLE_FILE_MAX_MB"))
 check("recognize: the extracted audio is cleaned up either way",
       _whole_src.count("whole.unlink") >= 2)
+
+
+# A user cannot run botctl.
+#
+# The message that started this told an ordinary person to "take the cookies
+# from the browser and update them on the server with botctl option 10".
+# They do not have the server. It reads as being blamed for the bot's own
+# configuration, and it publishes how the thing is put together to anybody
+# who sends a bad link.
+#
+# Every operator instruction lives in Localised(admin=...) now, which renders
+# only for a chat in ADMIN_IDS. This is what keeps it there.
+import ast as _adm_ast  # noqa: E402
+
+_adm_leaks = []
+for _adm_path in (sorted(Path("modules").glob("*.py"))
+                  + sorted(Path("handlers").glob("*.py"))):
+    _adm_tree = _adm_ast.parse(_adm_path.read_text(encoding="utf-8"))
+    for _adm_node in _adm_ast.walk(_adm_tree):
+        if not isinstance(_adm_node, _adm_ast.Call):
+            continue
+        _adm_name = (_adm_node.func.id
+                     if isinstance(_adm_node.func, _adm_ast.Name)
+                     else getattr(_adm_node.func, "attr", ""))
+        # The user half is Localised's first positional argument and t()'s
+        # second. admin= and admin_note() are exempt by design.
+        if _adm_name == "Localised" and _adm_node.args:
+            _adm_args = [_adm_node.args[0]]
+        elif _adm_name == "t" and len(_adm_node.args) >= 2:
+            _adm_args = [_adm_node.args[1]]
+        else:
+            continue
+        for _adm_arg in _adm_args:
+            _adm_text = ""
+            if isinstance(_adm_arg, _adm_ast.Constant) and isinstance(_adm_arg.value, str):
+                _adm_text = _adm_arg.value
+            elif isinstance(_adm_arg, _adm_ast.JoinedStr):
+                _adm_text = "".join(
+                    v.value for v in _adm_arg.values
+                    if isinstance(v, _adm_ast.Constant) and isinstance(v.value, str))
+            if "botctl" in _adm_text:
+                _adm_leaks.append(f"{_adm_path.name}:{_adm_node.lineno}")
+
+check("admin: no message shown to a user tells them to run botctl",
+      not _adm_leaks, f"LEAKS: {_adm_leaks[:4]}")
+
+_adm_real = _loc.is_admin
+try:
+    _adm_err = _loc.Localised("something broke", admin="botctl fixit")
+    _loc.is_admin = lambda cid: cid == 999
+    check("admin: the operator is shown the remedy",
+          "botctl fixit" in _adm_err.localise(999))
+    check("admin: and a user is not",
+          "botctl" not in _adm_err.localise(111), _adm_err.localise(111))
+    check("admin: the user still learns what happened",
+          "something broke" in _adm_err.localise(111))
+finally:
+    _loc.is_admin = _adm_real
 
 
 print()
