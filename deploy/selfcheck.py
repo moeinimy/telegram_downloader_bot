@@ -4202,6 +4202,91 @@ finally:
     _loc._cache.update(_loc_saved)
 
 
+# TikTok and Pinterest, and the button that makes the cutter discoverable.
+from utils.url_router import Platform as _Plat, route as _route  # noqa: E402
+
+for _u, _want in (
+    ("https://www.tiktok.com/@x/video/123", _Plat.TIKTOK),
+    ("https://vm.tiktok.com/ZM1/", _Plat.TIKTOK),      # share sheet
+    ("https://vt.tiktok.com/ZS2/", _Plat.TIKTOK),
+    ("https://m.tiktok.com/v/1.html", _Plat.TIKTOK),
+    ("https://pin.it/abc", _Plat.PINTEREST),           # share sheet
+    ("https://www.pinterest.com/pin/999/", _Plat.PINTEREST),
+    ("https://pinterest.co.uk/pin/1/", _Plat.PINTEREST),
+    ("https://de.pinterest.com/pin/1/", _Plat.PINTEREST),
+):
+    _got = _route(_u)
+    check(f"route: {_u[:38]} -> {_want.value}",
+          _got is not None and _got.platform == _want,
+          _got.platform.value if _got else "None")
+
+# The platforms that already worked must not have been captured by the new
+# patterns - pinterest's country-domain rule is the broad one.
+for _u, _want in (("https://youtu.be/abc", _Plat.YOUTUBE),
+                  ("https://open.spotify.com/track/a", _Plat.SPOTIFY),
+                  ("https://instagram.com/reel/x/", _Plat.INSTAGRAM),
+                  ("https://soundcloud.com/a/b", _Plat.SOUNDCLOUD)):
+    _got = _route(_u)
+    check(f"route: {_want.value} is untouched by the new patterns",
+          _got is not None and _got.platform == _want,
+          _got.platform.value if _got else "None")
+check("route: plain text is still a search", _route("drake jaded") is None)
+
+# The button carries no id: the file is the message it hangs under, so it
+# cannot go stale and cannot outgrow Telegram's 64-byte callback_data.
+_cb = _cuth.cut_button(1).inline_keyboard[0][0]
+check("cut button: its callback_data is tiny and fixed",
+      _cb.callback_data == "cut:ask" and len(_cb.callback_data.encode()) <= 64,
+      _cb.callback_data)
+
+# Pressing it has to make the file unambiguous - Telegram gives a bot no way
+# to ask a question and wait, so the button's job is to point the NEXT range
+# at this file even if other things arrive in between.
+class _BtnMsg:
+    chat_id = 66
+    chat = type("C", (), {"id": 66})()
+    audio = type("A", (), {"file_id": "BTN", "duration": 100, "title": "T",
+                           "performer": "P", "file_name": "f.mp3"})()
+    video = voice = video_note = animation = document = None
+    said = []
+
+    async def reply_text(self, text, **kw):
+        _BtnMsg.said.append(text)
+        return self
+
+
+class _BtnQuery:
+    def __init__(self):
+        self.data = "cut:ask"
+        self.message = _BtnMsg()
+
+    async def answer(self):
+        pass
+
+
+_cuth._last.clear()
+_BtnMsg.said.clear()
+_bk_aio = __import__("asyncio")
+_bk_aio.run(_cuth.on_callback(
+    type("U", (), {"callback_query": _BtnQuery()})(), None))
+check("cut button: pressing it points the next range at that file",
+      _cuth._last.get(66, {}).get("file_id") == "BTN")
+check("cut button: and it says what to type",
+      any("0:" in s for s in _BtnMsg.said), str(_BtnMsg.said)[:60])
+_cuth._last.clear()
+
+# yt-dlp accepts curl_cffi 0.5.10 and 0.10.x-0.15.x. A newer one installs and
+# imports fine and is then refused: every impersonation target reads
+# "(unavailable)", so the TLS fingerprinting was never on and TikTok - whose
+# extractor requires impersonation - could not work at all.
+_curl_sh = (Path(__file__).resolve().parent / "manage.sh").read_text(
+    encoding="utf-8")
+check("tiktok: curl_cffi is pinned to a version yt-dlp accepts",
+      "curl_cffi>=0.10,<0.16" in _curl_sh)
+check("tiktok: and there is a command to repair it",
+      "do_fixcurl" in _curl_sh and "fixcurl)" in _curl_sh)
+
+
 print()
 if failures:
     print(f"=== {len(failures)} CHECK(S) FAILED: {failures} ===")

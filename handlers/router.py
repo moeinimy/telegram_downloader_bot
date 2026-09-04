@@ -99,8 +99,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             await spotify_handler.handle_url(update, context, result)
         elif result.platform == Platform.SOUNDCLOUD:
             await soundcloud_handler.handle_url(update, context, result)
+        elif result.platform in (Platform.TIKTOK, Platform.PINTEREST):
+            from handlers import simple_media_handler
+
+            await simple_media_handler.handle_url(update, context, result)
         else:
-            await msg.reply_text(t(msg.chat_id, "🤔 لینک رو نشناختم. یوتوب / اینستا / اسپاتیفای ساپورت میشه."))
+            await msg.reply_text(t(msg.chat_id, "🤔 لینک رو نشناختم. یوتوب / اینستا / اسپاتیفای / ساندکلاد / تیک‌تاک / پینترست ساپورت می‌شه."))
     except Exception as e:
         log.exception("handle_text failed")
         # Module errors are already user-facing sentences, so run them through

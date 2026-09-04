@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from config import settings
@@ -84,6 +84,48 @@ def _media_of(message):
                 kind = "video" if mime.startswith("video/") else "audio"
             return media, kind
     return None, ""
+
+
+def cut_button(chat_id: int | None = None) -> InlineKeyboardMarkup:
+    """The button that goes under a file the bot just sent.
+
+    It carries no id. The file is the message the button is attached to, so
+    the callback reads it off `query.message` - which means the button never
+    goes stale, never outgrows Telegram's 64-byte callback_data, and works
+    the same on a track, a clip and a TikTok.
+    """
+    return InlineKeyboardMarkup([[InlineKeyboardButton(
+        t(chat_id, "✂️ برش بزن"), callback_data="cut:ask")]])
+
+
+async def on_callback(update, context) -> None:
+    """Pressing ✂️ points the next time range at THIS file.
+
+    Telegram gives a bot no way to ask a question and wait for the answer, so
+    the button cannot collect a range by itself. What it can do is make the
+    file unambiguous: remember it as this chat's current one, then say what
+    to type. The range that arrives next is handled by the ordinary text
+    path, and lands on the right file even if three other things were sent
+    in between.
+    """
+    query = update.callback_query
+    await query.answer()
+    media, _ = _media_of(query.message)
+    if media is None:
+        await query.message.reply_text(
+            t(query.message.chat_id, "این پیام فایلی نداره."))
+        return
+    remember(query.message)
+    total = getattr(media, "duration", 0) or 0
+    example = ("0:15-0:45" if not total or total > 60
+               else f"0:05-{cutter.format_stamp(max(6, total - 2))}")
+    await query.message.reply_text(
+        t(query.message.chat_id,
+          "✂️ بازه رو بنویس، مثلا `{example}`{total}")
+        .format(example=example,
+                total=(t(query.message.chat_id, "\n(کل فایل {len})")
+                       .format(len=cutter.format_stamp(total)) if total else "")),
+        parse_mode="Markdown")
 
 
 @run_in_thread(heavy=True)
@@ -170,11 +212,13 @@ async def try_cut(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
                     or getattr(source, "title", None),
                     performer=(remembered or {}).get("performer")
                     or getattr(source, "performer", None),
-                    duration=int(end - start))
+                    duration=int(end - start),
+                    reply_markup=cut_button(msg.chat_id))
             else:
                 sent = await msg.reply_video(
                     video=fh, caption=caption, duration=int(end - start),
-                    supports_streaming=True)
+                    supports_streaming=True,
+                    reply_markup=cut_button(msg.chat_id))
         await status.delete()
 
         # The clip is a file of its own: cutting a cut is a normal thing to

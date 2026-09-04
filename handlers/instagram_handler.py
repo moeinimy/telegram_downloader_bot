@@ -262,6 +262,14 @@ async def _archive_sent(bot, sent, caption: str = "") -> None:
 
     if sent is None:
         return
+    # An Instagram video was the one download a time range could not reach
+    # without a reply: nothing noted it as the chat's most recent file.
+    try:
+        from handlers import cut_handler
+
+        cut_handler.remember(sent)
+    except Exception:
+        pass
     for kind, obj in (("video", getattr(sent, "video", None)),
                       ("photo", (getattr(sent, "photo", None) or [None])[-1]),
                       ("audio", getattr(sent, "audio", None)),
@@ -320,8 +328,11 @@ async def deliver(bot, chat_id: int, files: list[Path], caption: str | None = No
         path, kind = items[0]
         with path.open("rb") as handle:
             if kind == "video":
+                from handlers.cut_handler import cut_button
+
                 sent = await bot.send_video(chat_id=chat_id, video=handle,
                                             caption=caption,
+                                            reply_markup=cut_button(chat_id),
                                             **video_kwargs(path))
             elif kind == "photo":
                 sent = await bot.send_photo(chat_id=chat_id, photo=handle,

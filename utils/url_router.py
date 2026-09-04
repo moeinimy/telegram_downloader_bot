@@ -15,6 +15,8 @@ class Platform(str, Enum):
     YOUTUBE = "youtube"
     SPOTIFY = "spotify"
     SOUNDCLOUD = "soundcloud"
+    TIKTOK = "tiktok"
+    PINTEREST = "pinterest"
     UNKNOWN = "unknown"
 
 
@@ -50,6 +52,20 @@ _SOUNDCLOUD_RE = re.compile(
     r"^(https?://)?(www\.|m\.|on\.)?soundcloud\.com/", re.IGNORECASE
 )
 _INSTAGRAM_RE = re.compile(r"^(https?://)?(www\.)?instagram\.com/", re.IGNORECASE)
+
+# TikTok has more hostnames than any other platform here: the share sheet
+# produces vm./vt. short links, the app produces m., and the desktop site
+# produces www. All of them resolve to the same video and yt-dlp follows the
+# redirect itself, so they are one pattern rather than four.
+_TIKTOK_RE = re.compile(
+    r"^(https?://)?((www|m|vm|vt)\.)?tiktok\.com/", re.IGNORECASE
+)
+# pin.it is Pinterest's share-sheet shortener, and country domains are their
+# own hostnames rather than a path prefix - pinterest.co.uk, .com.au, .de.
+_PINTEREST_RE = re.compile(
+    r"^(https?://)?((www|[a-z]{2})\.)?(pinterest\.[a-z.]{2,6}|pin\.it)/",
+    re.IGNORECASE,
+)
 _SPOTIFY_RE = re.compile(
     r"^(https?://)?(open\.)?spotify\.com/(?:intl-[a-z]+/)?(track|album|playlist|artist)/([A-Za-z0-9]+)",
     re.IGNORECASE,
@@ -87,6 +103,24 @@ def route(text: str) -> RouteResult | None:
             kind="video",
             url=text,
             resource_id=_extract_youtube_id(text),
+        )
+
+    # TikTok
+    if _TIKTOK_RE.search(text):
+        return RouteResult(
+            platform=Platform.TIKTOK,
+            kind="video",
+            url=text,
+            resource_id=text,
+        )
+
+    # Pinterest
+    if _PINTEREST_RE.search(text):
+        return RouteResult(
+            platform=Platform.PINTEREST,
+            kind="pin",
+            url=text,
+            resource_id=text,
         )
 
     # Instagram

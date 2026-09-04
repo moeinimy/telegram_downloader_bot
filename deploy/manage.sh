@@ -180,10 +180,22 @@ ensure_venv() {
     # install with it. curl_cffi reproduces Chrome's TLS handshake, which is
     # what modules/ig_web.py uses to stop the header and the handshake telling
     # different stories. Absent, that module falls back to httpx unchanged.
-    if sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/pip" install -q             --progress-bar off curl_cffi 2>/dev/null; then
+    #
+    # PINNED, and the pin is the whole point. This used to install the newest
+    # release, and yt-dlp only accepts 0.5.10 and 0.10.x-0.15.x. With 0.16
+    # installed it reports
+    #
+    #     ImportError: Only curl_cffi versions 0.5.10 and 0.10.x through
+    #     0.15.x are supported
+    #
+    # and then lists every impersonation target as "(unavailable)" - so the
+    # TLS fingerprinting this was installed for was never actually on, and
+    # TikTok, whose extractor requires impersonation, cannot work at all.
+    # Nothing failed loudly; it just quietly did nothing.
+    if sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/pip" install -q             --progress-bar off "curl_cffi>=0.10,<0.16" 2>/dev/null; then
         ok "curl_cffi نصب شد - اثر انگشت TLS شبیه کروم می‌شه"
     else
-        warn "curl_cffi نصب نشد - بدونش هم کار می‌کنه"
+        warn "curl_cffi نصب نشد - بدونش هم کار می‌کنه (تیک‌تاک لازمش داره)"
     fi
 
     ok "پکیج‌های پایتون آماده‌ن"
@@ -1740,6 +1752,27 @@ do_restore() {
     return $rc
 }
 
+do_fixcurl() {
+    echo; info "=== درست کردن curl_cffi برای تیک‌تاک ==="
+    # yt-dlp accepts 0.5.10 and 0.10.x-0.15.x only. A newer one installs
+    # fine, imports fine, and is then refused - every impersonation target
+    # reads "(unavailable)" and TikTok fails with a message about the
+    # webpage, which points nowhere near the real cause.
+    sudo -u "$BOT_USER" "$PROJECT_DIR/.venv/bin/pip" install -q \
+        --progress-bar off "curl_cffi>=0.10,<0.16" || {
+        err "نصب نشد"; return 1; }
+    echo
+    info "هدف‌های impersonation که yt-dlp الان می‌بینه:"
+    run_py -m yt_dlp --list-impersonate-targets 2>&1 | head -6
+    echo
+    if run_py -m yt_dlp --list-impersonate-targets 2>&1 | grep -q "unavailable"; then
+        warn "هنوز unavailable هست — نسخه‌ی نصب‌شده رو بفرست:"
+        run_py -c "import curl_cffi; print(curl_cffi.__version__)"
+        return 1
+    fi
+    ok "impersonation فعاله — تیک‌تاک باید کار کنه"
+}
+
 do_igprobe() {
     echo; info "=== تست اندپوینت‌های پروفایل / استوری / هایلایت ==="
     # do_igtest covers the DIRECT side - can this session read the inbox.
@@ -2294,6 +2327,7 @@ case "${1:-}" in
     shazamtest) do_shazamtest "${2:-}"; exit $? ;;
     igtest2) do_igtest; exit $? ;;
     igprobe) do_igprobe "${2:-}"; exit $? ;;
+    fixcurl) do_fixcurl; exit $? ;;
     backup) do_backup "${2:-}"; exit $? ;;
     restore) do_restore "${2:-}"; exit $? ;;
     igwatch) do_igwatch "${2:-}"; exit $? ;;

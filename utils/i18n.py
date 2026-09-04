@@ -119,6 +119,19 @@ def localise(chat_id: int | None, error: Exception) -> str:
 # --------------------------------------------------------------------------
 
 _EN: dict[str, str] = {
+    # --- cut button, tiktok, pinterest ---
+    "✂️ برش بزن": "✂️ Cut it",
+    "این پیام فایلی نداره.": "There is no file on that message.",
+    "✂️ بازه رو بنویس، مثلا `{example}`{total}":
+        "✂️ Send the range, e.g. `{example}`{total}",
+    "\n(کل فایل {len})": "\n(the file is {len} long)",
+    "چیزی برای دانلود پیدا نشد.":
+        "Nothing downloadable was found there.",
+    "⬇️ در حال گرفتن از {site}…": "⬇️ Fetching from {site}…",
+    "❌ تیک‌تاک این سرور رو نپذیرفت. معمولا یعنی curl_cffi نصب نیست یا نسخه‌ش با yt-dlp نمی‌خونه.\nروی سرور:  botctl fixcurl":
+        "❌ TikTok would not accept this server. Usually that means curl_cffi is missing or its version does not match yt-dlp.\nOn the server:  botctl fixcurl",
+    "🤔 لینک رو نشناختم. یوتوب / اینستا / اسپاتیفای / ساندکلاد / تیک‌تاک / پینترست ساپورت می‌شه.":
+        "🤔 I did not recognise that link. YouTube / Instagram / Spotify / SoundCloud / TikTok / Pinterest are supported.",
     # --- added by the English pass ---
     'Spotify صفحه رو نداد: {why}':
         'Spotify would not serve the page: {why}',

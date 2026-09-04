@@ -143,9 +143,15 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                         info.uploader, info.title, chat_id=query.message.chat_id),
                 )
             else:
-                await query.message.reply_video(
-                    video=cached, caption=info.title, supports_streaming=True
+                from handlers.cut_handler import cut_button
+
+                sent = await query.message.reply_video(
+                    video=cached, caption=info.title, supports_streaming=True,
+                    reply_markup=cut_button(query.message.chat_id),
                 )
+                from handlers import cut_handler as _cut
+
+                _cut.remember(sent)
             return
         except Exception as e:
             # Only drop an id Telegram has actually disowned. The previous
@@ -231,6 +237,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 # length as 00:00 - both visible on a 710MB upload that was
                 # otherwise perfectly fine.
                 width, height, probed = yt.probe_dimensions(path)
+                from handlers.cut_handler import cut_button
+
                 sent = await query.message.reply_video(
                     video=fh,
                     caption=info.title,
@@ -239,6 +247,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                     width=width or None,
                     height=height or None,
                     thumbnail=thumb_path.open("rb") if thumb_path else None,
+                    reply_markup=cut_button(query.message.chat_id),
                 )
                 if sent and sent.video:
                     # So a time range typed next cuts THIS file, no reply.
