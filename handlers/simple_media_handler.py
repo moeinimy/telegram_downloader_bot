@@ -57,6 +57,66 @@ def _looks_like_impersonation(error: Exception) -> bool:
     return any(marker in text for marker in _IMPERSONATION_MARKERS)
 
 
+# Pinterest answers this for any pin that is a picture, which is most of
+# them. It is not a failure - there is simply no video, and the picture is
+# sitting right there in the metadata.
+_NO_VIDEO_MARKERS = ("no video formats found", "no video could be found",
+                     "unable to extract video")
+
+
+def _is_image_only(error: Exception) -> bool:
+    text = str(error).lower()
+    return any(marker in text for marker in _NO_VIDEO_MARKERS)
+
+
+def _canonical_pin(url: str) -> str:
+    """Resolve a pin.it short link, and drop the invite code it arrives with.
+
+    Measured: extracting from the short link gives ZERO thumbnails, and from
+    the resolved one gives nine - the redirect has to be followed before
+    there is anything to read. What it redirects to also carries an
+    ?invite_code=..., which is a share token belonging to whoever sent it and
+    has no business in a request this bot makes.
+    """
+    import re
+
+    from utils import http
+
+    if "pin.it/" not in url:
+        return url
+    try:
+        response = http.get(url)
+        resolved = str(response.url)
+    except Exception as e:
+        log.info("could not resolve %s (%s)", url, e)
+        return url
+    match = re.search(r"/pin/(\d+)", resolved)
+    return f"https://www.pinterest.com/pin/{match.group(1)}/" if match else resolved
+
+
+def _largest_image(url: str) -> str:
+    """The full-size picture behind a pin.
+
+    `process=False` is the whole trick. yt-dlp raises "No video formats
+    found!" during its format-selection step, before returning anything -
+    so the metadata that already contains the image is never handed over.
+    Skipping that step gives the thumbnail list, and Pinterest's own
+    /originals/ rendition is in it: measured on the pin that failed, the
+    largest entry was 1024x1536 and 149KB, which IS the picture, not a
+    preview of it.
+    """
+    from yt_dlp import YoutubeDL
+
+    with YoutubeDL({"quiet": True, "no_warnings": True}) as ydl:
+        info = ydl.extract_info(_canonical_pin(url), download=False,
+                                process=False)
+    thumbs = [t for t in (info or {}).get("thumbnails") or [] if t.get("url")]
+    if not thumbs:
+        raise Localised("چیزی برای دانلود پیدا نشد.")
+    best = max(thumbs, key=lambda t: (t.get("width") or 0) * (t.get("height") or 0))
+    return str(best["url"])
+
+
 @run_in_thread(heavy=True)
 def _fetch(url: str, target: Path) -> list[Path]:
     target.mkdir(parents=True, exist_ok=True)
@@ -69,12 +129,36 @@ def _fetch(url: str, target: Path) -> list[Path]:
         "quiet": True,
         "no_warnings": True,
     }
-    ytdlp_run(opts, lambda ydl: ydl.download([url]), kind="simple")
+    try:
+        ytdlp_run(opts, lambda ydl: ydl.download([url]), kind="simple")
+    except Exception as e:
+        if not _is_image_only(e):
+            raise
+        log.info("no video at %s - taking the picture instead", url)
+        _save_image(_largest_image(url), target)
+
     files = sorted(p for p in target.iterdir()
                    if p.is_file() and p.suffix.lower() in _IMAGE_EXTS | _VIDEO_EXTS)
     if not files:
         raise Localised("چیزی برای دانلود پیدا نشد.")
     return files
+
+
+def _save_image(url: str, target: Path) -> Path:
+    from utils import http
+
+    response = http.get(url, headers={"Referer": "https://www.pinterest.com/"})
+    response.raise_for_status()
+    ctype = (response.headers.get("content-type") or "").lower()
+    if not ctype.startswith("image"):
+        # 200 is not the same as "this is a picture": a refused or expired
+        # link comes back as an html page with a 200, and saving that hands
+        # the user a .jpg that no viewer will open.
+        raise Localised("چیزی برای دانلود پیدا نشد.")
+    suffix = ".png" if "png" in ctype else ".webp" if "webp" in ctype else ".jpg"
+    dest = target / f"pin{suffix}"
+    dest.write_bytes(response.content)
+    return dest
 
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE,

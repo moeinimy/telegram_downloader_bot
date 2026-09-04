@@ -179,6 +179,8 @@ def build_app() -> Application:
 
     # Inline button callbacks — namespaced by prefix so each module handles its own
     app.add_handler(CallbackQueryHandler(cut_handler.on_callback, pattern=r"^cut:"))
+    app.add_handler(CallbackQueryHandler(
+        recognize_handler.on_media_choice, pattern=r"^med:"))
     app.add_handler(CallbackQueryHandler(youtube_handler.on_callback, pattern=r"^yt:"))
     app.add_handler(CallbackQueryHandler(instagram_handler.on_callback, pattern=r"^ig:"))
     app.add_handler(CallbackQueryHandler(ig_direct_handler.on_callback, pattern=r"^igd:"))

@@ -119,6 +119,12 @@ def localise(chat_id: int | None, error: Exception) -> str:
 # --------------------------------------------------------------------------
 
 _EN: dict[str, str] = {
+    # --- the menu under a file the user sends ---
+    "با این فایل چیکار کنم؟": "What should I do with this file?",
+    "🎧 پیدا کردن آهنگ": "🎧 Identify the music",
+    "✂️ برش": "✂️ Cut",
+    "این منو قدیمیه — دوباره فایل رو بفرست.":
+        "That menu is stale — send the file again.",
     # --- cut button, tiktok, pinterest ---
     "✂️ برش بزن": "✂️ Cut it",
     "این پیام فایلی نداره.": "There is no file on that message.",

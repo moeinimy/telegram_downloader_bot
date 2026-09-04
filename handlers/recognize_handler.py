@@ -257,6 +257,58 @@ async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
+    # A menu rather than starting straight away.
+    #
+    # Identifying was the only thing this bot could do with a file you sent,
+    # so it did it unasked. Now there are two, and guessing which one was
+    # meant is worse than asking - especially since the wrong guess spends a
+    # Shazam lookup on a file somebody only wanted to trim.
+    #
+    # The menu quotes the file explicitly. reply_text's own quoting has
+    # changed between library versions, and reading the media back off
+    # reply_to_message only works if it is definitely there.
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    await msg.reply_text(
+        t(msg.chat_id, "با این فایل چیکار کنم؟"),
+        reply_to_message_id=msg.message_id,
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton(t(msg.chat_id, "🎧 پیدا کردن آهنگ"),
+                                 callback_data="med:rec"),
+            InlineKeyboardButton(t(msg.chat_id, "✂️ برش"),
+                                 callback_data="med:cut"),
+        ]]),
+    )
+
+
+async def on_media_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """The two buttons under a file somebody sent."""
+    query = update.callback_query
+    await query.answer()
+    source = query.message.reply_to_message
+    if source is None:
+        await query.message.reply_text(
+            t(query.message.chat_id, "این منو قدیمیه — دوباره فایل رو بفرست."))
+        return
+
+    if query.data.endswith(":cut"):
+        from handlers import cut_handler
+
+        cut_handler.remember(source)
+        await cut_handler.prompt_for_range(query.message, source)
+        return
+
+    await _identify(source, context)
+
+
+async def _identify(msg, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Fetch the file this message carries and name the music in it."""
+    media = msg.video or msg.audio or msg.voice or msg.video_note
+    if media is None and msg.document:
+        media = msg.document
+    if media is None:
+        return
+
     status = await msg.reply_text(t(msg.chat_id, "📥 در حال دریافت فایل…"))
     out_dir = settings.download_dir / "recognize"
     out_dir.mkdir(parents=True, exist_ok=True)

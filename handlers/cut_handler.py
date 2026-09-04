@@ -116,14 +116,24 @@ async def on_callback(update, context) -> None:
             t(query.message.chat_id, "این پیام فایلی نداره."))
         return
     remember(query.message)
-    total = getattr(media, "duration", 0) or 0
+    await prompt_for_range(query.message, query.message)
+
+
+async def prompt_for_range(reply_to, source) -> None:
+    """Say what to type, with an example sized to the actual file.
+
+    Shared with the menu under a file the user sent, so the two entry points
+    cannot drift into saying different things.
+    """
+    media, _ = _media_of(source)
+    total = getattr(media, "duration", 0) or 0 if media else 0
     example = ("0:15-0:45" if not total or total > 60
                else f"0:05-{cutter.format_stamp(max(6, total - 2))}")
-    await query.message.reply_text(
-        t(query.message.chat_id,
-          "✂️ بازه رو بنویس، مثلا `{example}`{total}")
+    chat_id = reply_to.chat_id
+    await reply_to.reply_text(
+        t(chat_id, "✂️ بازه رو بنویس، مثلا `{example}`{total}")
         .format(example=example,
-                total=(t(query.message.chat_id, "\n(کل فایل {len})")
+                total=(t(chat_id, "\n(کل فایل {len})")
                        .format(len=cutter.format_stamp(total)) if total else "")),
         parse_mode="Markdown")
 

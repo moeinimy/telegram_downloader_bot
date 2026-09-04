@@ -4287,6 +4287,50 @@ check("tiktok: and there is a command to repair it",
       "do_fixcurl" in _curl_sh and "fixcurl)" in _curl_sh)
 
 
+# Pinterest: most pins are a picture, and yt-dlp only speaks video.
+#
+#   ERROR: [Pinterest] 1013380353672083804: No video formats found!
+#
+# Not a failure - there is no video, and the picture is in the metadata the
+# whole time. yt-dlp raises during FORMAT SELECTION, before returning
+# anything, so process=False is what makes it reachable.
+from handlers import simple_media_handler as _smh  # noqa: E402
+
+check("pinterest: 'no video formats' is read as 'this is a picture'",
+      _smh._is_image_only(RuntimeError(
+          "ERROR: [Pinterest] 1013380353672083804: No video formats found!")))
+check("pinterest: a real failure is still a failure",
+      not _smh._is_image_only(RuntimeError("HTTP Error 404: Not Found")))
+check("pinterest: the picture is fetched without yt-dlp's format step",
+      "process=False" in _ig_inspect.getsource(_smh._largest_image))
+# Measured: extracting from the short link gives zero thumbnails and from the
+# resolved one gives nine, and the redirect carries an ?invite_code belonging
+# to whoever shared it.
+check("pinterest: a pin.it link is resolved before anything is read",
+      "pin.it/" in _ig_inspect.getsource(_smh._canonical_pin))
+check("pinterest: and the sharer's invite code is dropped",
+      "invite_code" in _ig_inspect.getsource(_smh._canonical_pin))
+# 200 is not the same as "this is a picture".
+check("pinterest: an html page served as an image is refused",
+      "startswith(\"image\")" in _ig_inspect.getsource(_smh._save_image))
+
+# The menu under a file the user sends. Identifying used to happen unasked,
+# which is the wrong guess half the time now that cutting exists - and it
+# spends a Shazam lookup on a file somebody only wanted to trim.
+from handlers import recognize_handler as _rh  # noqa: E402
+
+_rh_src = _ig_inspect.getsource(_rh.on_media)
+check("media menu: sending a file offers both actions",
+      '"med:rec"' in _rh_src and '"med:cut"' in _rh_src)
+check("media menu: and it quotes the file explicitly",
+      "reply_to_message_id=msg.message_id" in _rh_src,
+      "reply_text's own quoting has changed between library versions")
+check("media menu: a stale button says so instead of acting on the wrong file",
+      "reply_to_message" in _ig_inspect.getsource(_rh.on_media_choice))
+check("media menu: both entry points share one range prompt",
+      hasattr(_cuth, "prompt_for_range"))
+
+
 print()
 if failures:
     print(f"=== {len(failures)} CHECK(S) FAILED: {failures} ===")
