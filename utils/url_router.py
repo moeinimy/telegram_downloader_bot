@@ -17,6 +17,7 @@ class Platform(str, Enum):
     SOUNDCLOUD = "soundcloud"
     TIKTOK = "tiktok"
     PINTEREST = "pinterest"
+    DEEZER = "deezer"
     UNKNOWN = "unknown"
 
 
@@ -52,6 +53,20 @@ _SOUNDCLOUD_RE = re.compile(
     r"^(https?://)?(www\.|m\.|on\.)?soundcloud\.com/", re.IGNORECASE
 )
 _INSTAGRAM_RE = re.compile(r"^(https?://)?(www\.)?instagram\.com/", re.IGNORECASE)
+
+# Deezer puts an optional language segment in the path - /en/track/, /fr/,
+# /us/ - and deezer.page.link is its share-sheet shortener. The id is what
+# matters and it is the last thing in the path either way.
+_DEEZER_RE = re.compile(
+    r"^(https?://)?(www\.)?deezer\.(?:com|page\.link)"
+    r"(?:/[a-z]{2})?/(track|album|playlist|artist)/(\d+)",
+    re.IGNORECASE,
+)
+# The shortener has no id in it at all until it is followed.
+_DEEZER_SHORT_RE = re.compile(
+    r"^(https?://)?(www\.)?(deezer\.page\.link|dzr\.page\.link)/", re.IGNORECASE
+)
+
 
 # TikTok has more hostnames than any other platform here: the share sheet
 # produces vm./vt. short links, the app produces m., and the desktop site
@@ -103,6 +118,25 @@ def route(text: str) -> RouteResult | None:
             kind="video",
             url=text,
             resource_id=_extract_youtube_id(text),
+        )
+
+    # Deezer
+    m = _DEEZER_RE.search(text)
+    if m:
+        return RouteResult(
+            platform=Platform.DEEZER,
+            kind=m.group(3).lower(),
+            url=m.group(0),
+            resource_id=m.group(4),
+        )
+    if _DEEZER_SHORT_RE.search(text):
+        # Resolved by the handler, which can make a request; this function
+        # is pure and is called on every message that arrives.
+        return RouteResult(
+            platform=Platform.DEEZER,
+            kind="short",
+            url=text,
+            resource_id="",
         )
 
     # TikTok

@@ -152,6 +152,9 @@ def localise(chat_id: int | None, error: Exception) -> str:
 # --------------------------------------------------------------------------
 
 _EN: dict[str, str] = {
+    "این لینک دیزر رو نتونستم باز کنم.": "I could not open that Deezer link.",
+    "🤔 لینک رو نشناختم. یوتوب / اینستا / اسپاتیفای / ساندکلاد / دیزر / تیک‌تاک / پینترست ساپورت می‌شه.":
+        "🤔 I did not recognise that link. YouTube / Instagram / Spotify / SoundCloud / Deezer / TikTok / Pinterest are supported.",
     "❌ تیک‌تاک این ویدیو رو به سرور نداد.":
         "❌ TikTok would not serve this video to the server.",
     "💬 زیرنویس هنوز روی این سرور فعال نیست.":

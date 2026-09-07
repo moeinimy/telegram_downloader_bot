@@ -4478,6 +4478,60 @@ finally:
     _loc.is_admin = _adm_real
 
 
+# Deezer links.
+#
+# Deezer has been a metadata source for a while - _deezer_search produces
+# dz_<id> tracks and get_track_meta re-fetches them. The only thing missing
+# was the URL: a Deezer link fell through to the free-text search, which then
+# searched for the URL itself.
+from handlers import deezer_handler as _dzh  # noqa: E402
+
+for _dz_url, _dz_kind, _dz_id in (
+    ("https://www.deezer.com/track/2486117571", "track", "2486117571"),
+    ("https://www.deezer.com/en/track/2486117571", "track", "2486117571"),
+    ("https://www.deezer.com/fr/album/123", "album", "123"),
+    ("https://www.deezer.com/us/playlist/999", "playlist", "999"),
+    ("https://deezer.page.link/abcXYZ", "short", ""),
+):
+    _dz_r = _route(_dz_url)
+    check(f"deezer: {_dz_url[:40]} -> {_dz_kind}",
+          _dz_r is not None and _dz_r.platform == _Plat.DEEZER
+          and _dz_r.kind == _dz_kind and _dz_r.resource_id == _dz_id,
+          f"{_dz_r.platform.value}/{_dz_r.kind}/{_dz_r.resource_id}" if _dz_r else "None")
+
+check("deezer: the other platforms are untouched",
+      _route("https://open.spotify.com/track/a").platform == _Plat.SPOTIFY
+      and _route("https://youtu.be/a").platform == _Plat.YOUTUBE)
+
+# The credit is the half that finds the audio. Deezer's own record carries
+# every contributor and the ISRC; the older by-id lookup returns neither, and
+# a search built from the lead artist alone is missing the word somebody
+# would actually type.
+_dz_rec = {
+    "id": 2486117571, "title": "First Person Shooter", "duration": 247,
+    "isrc": "USUG12306071", "link": "https://www.deezer.com/track/2486117571",
+    "artist": {"name": "Drake"},
+    "contributors": [{"name": "Drake"}, {"name": "J. Cole"}],
+    "album": {"title": "For All The Dogs", "cover_xl": "https://cdn/x.jpg"},
+}
+_dz_meta = _dzh._to_meta(_dz_rec)
+check("deezer: every credited artist survives, not just the lead",
+      _dz_meta.artists == ["Drake", "J. Cole"], str(_dz_meta.artists))
+check("deezer: the isrc comes across", _dz_meta.isrc == "USUG12306071")
+check("deezer: and the id is the shape the rest of the bot understands",
+      _dz_meta.id == "dz_2486117571")
+check("deezer: credits are marked resolved, so nothing re-fetches them",
+      _dz_meta.credits_done)
+check("deezer: the cover is the largest one offered",
+      _dz_meta.cover_url == "https://cdn/x.jpg")
+
+# A record with no contributors must still name somebody.
+_dz_bare = _dzh._to_meta({"id": 1, "title": "T", "artist": {"name": "A"},
+                          "album": {}, "duration": 10})
+check("deezer: a record with no contributor list falls back to the artist",
+      _dz_bare.artists == ["A"], str(_dz_bare.artists))
+
+
 print()
 if failures:
     print(f"=== {len(failures)} CHECK(S) FAILED: {failures} ===")
