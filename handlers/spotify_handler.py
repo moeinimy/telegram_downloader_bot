@@ -570,12 +570,16 @@ def _thumb_task(meta):
 
 async def _upload_track(msg, meta, path, *, with_cover: bool = True, thumb=None) -> bool:
     """Send the cover message and then the audio itself."""
+    import time as _time
+
     from handlers.lyrics_handler import lyrics_button
     from utils import file_cache
 
     cache_key = f"audio:{meta.id}"
+    _phase_started = _time.monotonic()
     if with_cover:
         await _send_cover(msg, meta)
+    _cover_took = _time.monotonic() - _phase_started
 
     if thumb is None:
         thumb = _thumb_task(meta)
@@ -593,6 +597,13 @@ async def _upload_track(msg, meta, path, *, with_cover: bool = True, thumb=None)
                     ", ".join(meta.artists), meta.name, track_id=meta.id
                 ),
             )
+        _upload_took = _time.monotonic() - _phase_started - _cover_took
+        log.info(
+            "track upload: %.1fMB cover %.1fs upload %.1fs - the part after "
+            "the download, which the yt-dlp log does not cover",
+            (path.stat().st_size / 1e6) if path.exists() else 0.0,
+            _cover_took, _upload_took,
+        )
         if sent and sent.audio:
             # So "3:28-4:53" right after a song cuts THAT song, with no reply.
             try:

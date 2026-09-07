@@ -2119,6 +2119,13 @@ def download_track(meta: TrackMeta) -> Path:
             continue
         out_path = _find_output(base)
         if out_path is not None:
+            # Fetch AND ffmpeg. The yt-dlp line in the journal covers only the
+            # fetch, so the gap between the two numbers is the transcode -
+            # which is the part that has never been measured and that I have
+            # twice guessed at.
+            log.info("candidate %d/%d produced a file in %.1fs total "
+                     "(fetch + ffmpeg)", i + 1, len(targets),
+                     time.monotonic() - started_at)
             # A file is not the same thing as the RIGHT file. On this server
             # YouTube's client ladder sometimes lands on a client that offers
             # only the 48kbps rungs, and the download succeeds perfectly - it
