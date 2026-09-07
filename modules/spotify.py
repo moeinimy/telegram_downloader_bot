@@ -748,6 +748,49 @@ def _focus(query: str, ranked: list[TrackMeta], keep_min: int = 3) -> list[Track
 # the most ordinary length a song has. The artist must agree too.
 
 
+# Persian and Arabic have no agreed romanisation, so the same word arrives
+# spelled differently by whoever typed it. Measured, on a track that exists on
+# both sources and was reported as missing:
+#
+#     Spotify     "Ghoorob"     -> ghoorob
+#     YouTube     "GHOROOB"     -> ghoroob     no shared token, no match
+#     SoundCloud  "GHOROOB"     -> ghoroob
+#
+# Both are غروب. The vowels are the only thing that moved, which is exactly
+# what varies: the script itself does not write short vowels, so the person
+# romanising is guessing at them.
+#
+# Consonants are therefore the part that carries the word, and comparing
+# those is the same thing the writing system does. On their own they are too
+# blunt - "ghoorob" and "gharib" both reduce to ghrb - so a skeleton match
+# has to be corroborated by the letters actually being similar, which those
+# two are not (0.44) and these two are (0.86).
+_VOWELS = frozenset("aeiouy")
+_SKELETON_MIN = 3
+_TRANSLIT_RATIO = 0.7
+
+
+def _skeleton(word: str) -> str:
+    bones = "".join(c for c in word if c.isalpha() and c not in _VOWELS)
+    # A final "h" is the silent Persian ه - naghmeh, shabeh, taraneh, khaneh -
+    # and whether it gets written at all is a coin flip. Dropping it cannot
+    # collide on anything short, because a skeleton under three letters is
+    # rejected regardless.
+    return bones[:-1] if bones.endswith("h") and len(bones) > 1 else bones
+
+
+def _same_romanisation(a: str, b: str) -> bool:
+    """Whether two words are one word spelled two ways."""
+    import difflib
+
+    if a == b:
+        return True
+    ska, skb = _skeleton(a), _skeleton(b)
+    if ska != skb or len(ska) < _SKELETON_MIN:
+        return False
+    return difflib.SequenceMatcher(None, a, b).ratio() >= _TRANSLIT_RATIO
+
+
 def _agree(ours: str, theirs: str, floor: float) -> float | None:
     """How far two names agree, or None when they plainly do not."""
     a, b = _norm(ours), _norm(theirs)
@@ -758,7 +801,19 @@ def _agree(ours: str, theirs: str, floor: float) -> float | None:
     if f" {a} " in f" {b} " or f" {b} " in f" {a} ":
         return 1.0
     score = _overlap(ours, theirs)
-    return score if score >= floor else None
+    if score >= floor:
+        return score
+
+    # Last: the same words, romanised differently. Scored below an exact
+    # agreement so a literal match always wins, and only when every word
+    # lines up - a single re-spelled word inside an otherwise different title
+    # is a coincidence, not a translation.
+    ours_words, theirs_words = a.split(), b.split()
+    if (ours_words and len(ours_words) == len(theirs_words)
+            and all(_same_romanisation(x, y)
+                    for x, y in zip(ours_words, theirs_words))):
+        return 0.9
+    return None
 
 
 def _claims_no_other_artist(their_title: str, our_artist: str) -> bool:
@@ -1732,6 +1787,20 @@ def _download_failed(
         detail=(f" — {str(last)[:120]}" if last else ""))
 
 
+def _confirmable(meta: TrackMeta, pools: dict) -> bool:
+    """Whether these results already contain a confident match.
+
+    Strict only - the lenient pass exists for when nothing is confirmable
+    anywhere, and treating a lenient guess as a reason to stop searching
+    would settle for it while a better answer was still in flight.
+    """
+    return any(
+        _match_entry(meta, entry, i, source) is not None
+        for source, entries in pools.items()
+        for i, entry in enumerate(entries)
+    )
+
+
 def _locate_audio(meta: TrackMeta) -> list[str]:
     """
     Find the uploads that actually *are* this track, best first.
@@ -1752,7 +1821,8 @@ def _locate_audio(meta: TrackMeta) -> list[str]:
     video, while SoundCloud carries the 2:28 audio release the catalogue
     actually describes - the better answer, and previously never even looked at.
     """
-    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import (FIRST_COMPLETED,
+                                    ThreadPoolExecutor, wait)
 
     queries = [meta.search_query]
     if meta.album and _norm(meta.album) != _norm(meta.name):
@@ -1777,12 +1847,53 @@ def _locate_audio(meta: TrackMeta) -> list[str]:
     pools: dict[str, list[dict]] = {}
     for q in queries:
         with ThreadPoolExecutor(max_workers=len(_AUDIO_SOURCES)) as pool:
-            pools = {
-                source: fut.result()
-                for source, fut in {
-                    src: pool.submit(fetch, src, q) for src in _AUDIO_SOURCES
-                }.items()
-            }
+            futures = {src: pool.submit(fetch, src, q) for src in _AUDIO_SOURCES}
+
+            # The sources run together and used to be collected together, so
+            # the search took as long as the slowest one however quickly the
+            # others answered. Measured on one download:
+            #
+            #     ytsearch   2.3s
+            #     scsearch   4.8s      <- what the user waited for
+            #     total      9s
+            #
+            # More than half the wait, for a second opinion that was only
+            # needed if the first had nothing. So the slow ones get a grace
+            # period, and if what has already arrived is enough to identify
+            # the track, the rest is abandoned - the pool is left to finish
+            # in the background rather than cancelled, since a search already
+            # in flight costs nothing more to complete.
+            # Wait for sources to finish one at a time, and stop as soon as
+            # what has arrived already identifies the track.
+            #
+            # A fixed deadline was the obvious version and it does not work:
+            # the grace has to be shorter than the slow source to save
+            # anything and longer than the fast one to save it safely, and
+            # those numbers are not known in advance. Measured on the server,
+            # ytsearch answers in 2.3s and scsearch in 4.8s - a 1.5s deadline
+            # would expire before EITHER, wait for both, and gain nothing.
+            #
+            # Waiting per-completion needs no such number. The fast source
+            # sets the pace, whatever it happens to be that day.
+            pending = set(futures.values())
+            while pending:
+                done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                pools = {src: (f.result() if f.done() else [])
+                         for src, f in futures.items()}
+                if not pending:
+                    break
+                # IDENTIFIES it, not merely answered. Those are different
+                # questions and only the first is safe: on the track that
+                # prompted this, YouTube returned one hit and it was a
+                # different song, while SoundCloud - the slower source - had
+                # the right one. Leaving on "something arrived" would have
+                # discarded the only match, as a speed optimisation.
+                if _confirmable(meta, pools):
+                    late = [src for src, f in futures.items() if not f.done()]
+                    log.info("search: %s identified it - not waiting for %s",
+                             ", ".join(s for s, v in pools.items() if v),
+                             ", ".join(late))
+                    break
 
         # Strict first. Only if nothing at all is confirmable is the bar
         # lowered, so a track that *can* be identified never gets a guess.

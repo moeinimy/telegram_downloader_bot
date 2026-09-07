@@ -4532,6 +4532,59 @@ check("deezer: a record with no contributor list falls back to the artist",
       _dz_bare.artists == ["A"], str(_dz_bare.artists))
 
 
+# Persian and Arabic have no agreed romanisation, so the same word arrives
+# spelled differently by whoever typed it. Measured on a track reported as
+# missing that exists on BOTH sources:
+#
+#     Spotify     "Ghoorob"   -> ghoorob
+#     YouTube     "GHOROOB"   -> ghoroob    no shared token, no match
+#     SoundCloud  "GHOROOB"   -> ghoroob
+#
+# Both are غروب. Only the vowels moved, which is exactly what varies: the
+# script does not write short vowels, so whoever romanises is guessing them.
+for _tr_a, _tr_b in (("ghoorob", "ghoroob"), ("doost", "dost"),
+                     ("mikham", "mikhaam"),
+                     # The silent final ه - naghmeh, taraneh, khaneh - which
+                     # gets written or not on a coin flip.
+                     ("shabe", "shabeh"), ("naghme", "naghmeh"),
+                     ("taraneh", "tarane"), ("khaneh", "khane")):
+    check(f"translit: {_tr_a!r} and {_tr_b!r} are one word",
+          _sp._same_romanisation(_tr_a, _tr_b))
+
+# Consonants alone are too blunt - "ghoorob" and "gharib" both reduce to
+# ghrb - so the skeleton has to be corroborated by the letters actually
+# being similar, which those two are not.
+for _tr_a, _tr_b in (("ghoorob", "gharib"), ("good", "guide"),
+                     ("love", "live"), ("man", "moon"), ("bad", "bud"),
+                     ("shah", "shab"), ("sara", "sina")):
+    check(f"translit: {_tr_a!r} and {_tr_b!r} stay different",
+          not _sp._same_romanisation(_tr_a, _tr_b))
+
+check("translit: a real title agrees through _agree",
+      _sp._agree("IcyMoon Ghoorob", "IcyMoon - GHOROOB", 0.55) == 0.9)
+check("translit: and an exact match still scores higher",
+      _sp._agree("Ghoorob", "Ghoorob", 0.55) == 1.0)
+# One re-spelled word inside an otherwise different title is a coincidence.
+check("translit: a single matching word does not carry a whole title",
+      _sp._agree("Ghoorob Shabe Man", "GHOROOB Different Song", 0.55) is None)
+
+# The search stops as soon as what arrived IDENTIFIES the track - not as
+# soon as something arrives. On the track above, YouTube returned one hit
+# and it was a different song while SoundCloud, the slower source, had the
+# right one; leaving on "something arrived" would have discarded the only
+# match, as a speed optimisation.
+_conf_meta = _sp.TrackMeta("sp_c", "Ghoorob", ["IcyMoon"], "", 0, "", "")
+_conf_wrong = {"ytsearch": [{"title": "Some Other Song", "id": "x",
+                             "uploader": "Nobody", "duration": 200}]}
+check("search: a pool of wrong answers is not treated as identified",
+      not _sp._confirmable(_conf_meta, _conf_wrong))
+_conf_right = {"scsearch": [{"title": "GHOROOB", "id": "1",
+                             "url": "https://soundcloud.com/icymoon/ghoroob",
+                             "uploader": "IcyMoon", "duration": 0}]}
+check("search: and a pool with the track in it is",
+      _sp._confirmable(_conf_meta, _conf_right))
+
+
 print()
 if failures:
     print(f"=== {len(failures)} CHECK(S) FAILED: {failures} ===")
